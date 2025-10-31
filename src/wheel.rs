@@ -2,7 +2,6 @@ use crate::config::{BatchConfig, WheelConfig};
 use crate::task::{TaskCompletionReason, TaskId, TaskLocation, TimerTask};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
-use smallvec::SmallVec;
 
 /// 时间轮单层数据结构
 /// (Timing wheel single layer data structure)
@@ -422,10 +421,8 @@ impl Wheel {
         let l0_slot_count = self.l0.slot_count;
         let l1_slot_count = self.l1.slot_count;
         
-        let mut l0_tasks_by_slot: Vec<SmallVec<[(TaskId, usize); 4]>> = 
-            vec![SmallVec::new(); l0_slot_count];
-        let mut l1_tasks_by_slot: Vec<SmallVec<[(TaskId, usize); 4]>> = 
-            vec![SmallVec::new(); l1_slot_count];
+        let mut l0_tasks_by_slot: Vec<Vec<(TaskId, usize)>> = vec![Vec::new(); l0_slot_count];
+        let mut l1_tasks_by_slot: Vec<Vec<(TaskId, usize)>> = vec![Vec::new(); l1_slot_count];
         
         // 收集需要取消的任务信息
         // (Collect information of tasks to be cancelled)

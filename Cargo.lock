@@ -309,7 +309,6 @@ dependencies = [
  "futures",
  "parking_lot",
  "rustc-hash",
- "smallvec",
  "tokio",
 ]
 

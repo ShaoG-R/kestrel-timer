@@ -3,41 +3,52 @@ use crate::task::{TaskCompletionReason, TaskId, TaskLocation, TimerTask};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
 
+/// Timing wheel single layer data structure
+/// 
 /// 时间轮单层数据结构
-/// (Timing wheel single layer data structure)
 struct WheelLayer {
-    /// 槽位数组，每个槽位存储一组定时器任务
-    /// (Slot array, each slot stores a group of timer tasks)
+    /// Slot array, each slot stores a group of timer tasks
+    /// 
+    /// 槽数组，每个槽存储一组定时器任务
     slots: Vec<Vec<TimerTask>>,
     
+    /// Current time pointer (tick index)
+    /// 
     /// 当前时间指针（tick 索引）
-    /// (Current time pointer (tick index))
     current_tick: u64,
     
-    /// 槽位数量
-    /// (Slot count)
+    /// Slot count
+    /// 
+    /// 槽数量
     slot_count: usize,
     
-    /// 每个 tick 的时间长度
-    /// (Duration of each tick)
+    /// Duration of each tick
+    /// 
+    /// 每个 tick 的持续时间
     tick_duration: Duration,
     
-    /// 缓存：tick 时长（毫秒，u64）- 避免重复转换
-    /// (Cache: tick duration in milliseconds (u64) - avoid repeated conversion)
+    /// Cache: tick duration in milliseconds (u64) - avoid repeated conversion
+    /// 
+    /// 缓存：tick 持续时间（毫秒，u64）- 避免重复转换
     tick_duration_ms: u64,
     
-    /// 缓存：槽位掩码（slot_count - 1）- 用于快速取模
-    /// (Cache: slot mask (slot_count - 1) - for fast modulo operation)
+    /// Cache: slot mask (slot_count - 1) - for fast modulo operation
+    /// 
+    /// 缓存：槽掩码（slot_count - 1）- 用于快速取模运算
     slot_mask: usize,
 }
 
 impl WheelLayer {
+    /// Create a new wheel layer
+    /// 
+    /// 创建一个新的时间轮层
     fn new(slot_count: usize, tick_duration: Duration) -> Self {
         let mut slots = Vec::with_capacity(slot_count);
-        // 为每个槽位预分配容量，减少后续 push 时的重新分配
-        // 大多数槽位通常包含 0-4 个任务，预分配 4 个容量
-        // (Pre-allocate capacity for each slot to reduce subsequent reallocation during push)
-        // (Most slots typically contain 0-4 tasks, pre-allocate capacity of 4)
+        // Pre-allocate capacity for each slot to reduce subsequent reallocation during push
+        // Most slots typically contain 0-4 tasks, pre-allocate capacity of 4
+        // 
+        // 为每个槽预分配容量以减少后续 push 时的重新分配
+        // 大多数槽通常包含 0-4 个任务，预分配容量为 4
         for _ in 0..slot_count {
             slots.push(Vec::with_capacity(4));
         }
@@ -55,69 +66,83 @@ impl WheelLayer {
         }
     }
     
-    /// 计算延迟对应的 tick 数
-    /// (Calculate the number of ticks corresponding to the delay)
+    /// Calculate the number of ticks corresponding to the delay
+    /// 
+    /// 计算延迟对应的 tick 数量
     fn delay_to_ticks(&self, delay: Duration) -> u64 {
         let ticks = delay.as_millis() as u64 / self.tick_duration.as_millis() as u64;
-        ticks.max(1) // 至少 1 个 tick (at least 1 tick)
+        ticks.max(1) // at least 1 tick (至少 1 个 tick)
     }
 }
 
+/// Timing wheel data structure (hierarchical mode)
+/// 
 /// 时间轮数据结构（分层模式）
-/// (Timing wheel data structure (hierarchical mode))
 pub struct Wheel {
+    /// L0 layer (bottom layer)
+    /// 
     /// L0 层（底层）
-    /// (L0 layer (bottom layer))
     l0: WheelLayer,
     
-    /// L1 层（高层）
-    /// (L1 layer (top layer))
+    /// L1 layer (top layer)
+    /// 
+    /// L1 层（顶层）
     l1: WheelLayer,
     
+    /// L1 tick ratio relative to L0 tick
+    /// 
     /// L1 tick 相对于 L0 tick 的比率
-    /// (L1 tick ratio relative to L0 tick)
     l1_tick_ratio: u64,
     
-    /// 任务索引，用于快速查找和取消任务
-    /// (Task index for fast lookup and cancellation)
+    /// Task index for fast lookup and cancellation
+    /// 
+    /// 任务索引，用于快速查找和取消
     task_index: FxHashMap<TaskId, TaskLocation>,
     
+    /// Batch processing configuration
+    /// 
     /// 批处理配置
-    /// (Batch processing configuration)
     batch_config: BatchConfig,
     
+    /// Cache: L0 layer capacity in milliseconds - avoid repeated calculation
+    /// 
     /// 缓存：L0 层容量（毫秒）- 避免重复计算
-    /// (Cache: L0 layer capacity in milliseconds - avoid repeated calculation)
     l0_capacity_ms: u64,
     
+    /// Cache: L1 layer capacity in ticks - avoid repeated calculation
+    /// 
     /// 缓存：L1 层容量（tick 数）- 避免重复计算
-    /// (Cache: L1 layer capacity in ticks - avoid repeated calculation)
     l1_capacity_ticks: u64,
 }
 
 impl Wheel {
+    /// Create new timing wheel
+    ///
+    /// # Parameters
+    /// - `config`: Timing wheel configuration (already validated)
+    /// - `batch_config`: Batch processing configuration
+    ///
+    /// # Notes
+    /// Configuration parameters have been validated in WheelConfig::builder().build(), so this method will not fail.
+    /// 
     /// 创建新的时间轮
-    /// (Create new timing wheel)
     ///
-    /// # 参数 (Parameters)
-    /// - `config`: 时间轮配置（已经过验证）
-    ///      (Timing wheel configuration (already validated))
+    /// # 参数
+    /// - `config`: 时间轮配置（已验证）
     /// - `batch_config`: 批处理配置
-    ///      (Batch processing configuration)
     ///
-    /// # 注意 (Notes)
+    /// # 注意
     /// 配置参数已在 WheelConfig::builder().build() 中验证，因此此方法不会失败。
-    ///      (Configuration parameters have been validated in WheelConfig::builder().build(), so this method will not fail.)
     pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
         let l0 = WheelLayer::new(config.l0_slot_count, config.l0_tick_duration);
         let l1 = WheelLayer::new(config.l1_slot_count, config.l1_tick_duration);
         
+        // Calculate L1 tick ratio relative to L0 tick
         // 计算 L1 tick 相对于 L0 tick 的比率
-        // (Calculate L1 tick ratio relative to L0 tick)
         let l1_tick_ratio = l1.tick_duration_ms / l0.tick_duration_ms;
         
+        // Pre-calculate capacity to avoid repeated calculation in insert
         // 预计算容量，避免在 insert 中重复计算
-        // (Pre-calculate capacity to avoid repeated calculation in insert)
         let l0_capacity_ms = (l0.slot_count as u64) * l0.tick_duration_ms;
         let l1_capacity_ticks = l1.slot_count as u64;
         
@@ -132,59 +157,66 @@ impl Wheel {
         }
     }
 
-    /// 获取当前 tick（L0 层的 tick）
-    /// (Get current tick (L0 layer tick))
+    /// Get current tick (L0 layer tick)
+    /// 
+    /// 获取当前 tick（L0 层 tick）
     #[allow(dead_code)]
     pub fn current_tick(&self) -> u64 {
         self.l0.current_tick
     }
 
-    /// 获取 tick 时长（L0 层的 tick 时长）
-    /// (Get tick duration (L0 layer tick duration))
+    /// Get tick duration (L0 layer tick duration)
+    /// 
+    /// 获取 tick 持续时间（L0 层 tick 持续时间）
     #[allow(dead_code)]
     pub fn tick_duration(&self) -> Duration {
         self.l0.tick_duration
     }
 
-    /// 获取槽位数量（L0 层的槽位数量）
-    /// (Get slot count (L0 layer slot count))
+    /// Get slot count (L0 layer slot count)
+    /// 
+    /// 获取槽数量（L0 层槽数量）
     #[allow(dead_code)]
     pub fn slot_count(&self) -> usize {
         self.l0.slot_count
     }
 
-    /// 计算延迟对应的 tick 数（基于 L0 层）
-    /// (Calculate the number of ticks corresponding to the delay (based on L0 layer))
+    /// Calculate the number of ticks corresponding to the delay (based on L0 layer)
+    /// 
+    /// 计算延迟对应的 tick 数量（基于 L0 层）
     #[allow(dead_code)]
     pub fn delay_to_ticks(&self, delay: Duration) -> u64 {
         self.l0.delay_to_ticks(delay)
     }
     
-    /// 判断延迟应该插入到哪一层
-    /// (Determine which layer the delay should be inserted into)
+    /// Determine which layer the delay should be inserted into
+    ///
+    /// # Returns
+    /// Returns: (layer, ticks, rounds)
+    /// - Layer: 0 = L0, 1 = L1
+    /// - Ticks: number of ticks calculated from current tick
+    /// - Rounds: number of rounds (only used for very long delays in L1 layer)
     /// 
-    /// # 返回 (Returns)
-    /// 返回：(层级, tick数, rounds)
-    ///      (Returns: (layer, ticks, rounds))
+    /// 确定延迟应该插入到哪一层
+    ///
+    /// # 返回值
+    /// 返回：(层级, ticks, 轮数)
     /// - 层级：0 = L0, 1 = L1
-    ///      (Layer: 0 = L0, 1 = L1)
-    /// - tick数：从当前 tick 开始计算的 tick 数
-    ///      (Ticks: number of ticks calculated from current tick)
-    /// - rounds：轮次（仅在 L1 层超长延迟时使用）
-    ///      (Rounds: number of rounds (only used for very long delays in L1 layer))
+    /// - Ticks：从当前 tick 计算的 tick 数量
+    /// - 轮数：轮数（仅用于 L1 层的超长延迟）
     #[inline(always)]
     fn determine_layer(&self, delay: Duration) -> (u8, u64, u32) {
         let delay_ms = delay.as_millis() as u64;
         
+        // Fast path: most tasks are within L0 range (using cached capacity)
         // 快速路径：大多数任务在 L0 范围内（使用缓存的容量）
-        // (Fast path: most tasks are within L0 range (using cached capacity))
         if delay_ms < self.l0_capacity_ms {
             let l0_ticks = (delay_ms / self.l0.tick_duration_ms).max(1);
             return (0, l0_ticks, 0);
         }
         
+        // Slow path: L1 layer tasks (using cached values)
         // 慢速路径：L1 层任务（使用缓存的值）
-        // (Slow path: L1 layer tasks (using cached values))
         let l1_ticks = (delay_ms / self.l1.tick_duration_ms).max(1);
         
         if l1_ticks < self.l1_capacity_ticks {
@@ -195,34 +227,41 @@ impl Wheel {
         }
     }
 
+    /// Insert timer task
+    ///
+    /// # Parameters
+    /// - `task`: Timer task
+    /// - `notifier`: Completion notifier (used to send notifications when tasks expire or are cancelled)
+    ///
+    /// # Returns
+    /// Unique identifier of the task (TaskId)
+    ///
+    /// # Implementation Details
+    /// - Automatically calculate the layer and slot where the task should be inserted
+    /// - Hierarchical mode: short delay tasks are inserted into L0, long delay tasks are inserted into L1
+    /// - Use bit operations to optimize slot index calculation
+    /// - Maintain task index to support O(1) lookup and cancellation
+    /// 
     /// 插入定时器任务
-    /// (Insert timer task)
     ///
-    /// # 参数 (Parameters)
+    /// # 参数
     /// - `task`: 定时器任务
-    ///      (Timer task)
-    /// - `notifier`: 完成通知器（用于在任务到期或取消时发送通知）
-    ///      (Completion notifier (used to send notifications when tasks expire or are cancelled))
+    /// - `notifier`: 完成通知器（用于在任务过期或取消时发送通知）
     ///
-    /// # 返回 (Returns)
+    /// # 返回值
     /// 任务的唯一标识符（TaskId）
-    ///      (Unique identifier of the task (TaskId))
     ///
-    /// # 实现细节 (Implementation Details)
+    /// # 实现细节
     /// - 自动计算任务应该插入的层级和槽位
-    ///      (Automatically calculate the layer and slot where the task should be inserted)
     /// - 分层模式：短延迟任务插入 L0，长延迟任务插入 L1
-    ///      (Hierarchical mode: short delay tasks are inserted into L0, long delay tasks are inserted into L1)
-    /// - 使用位运算优化槽位索引计算
-    ///      (Use bit operations to optimize slot index calculation)
+    /// - 使用位运算优化槽索引计算
     /// - 维护任务索引以支持 O(1) 查找和取消
-    ///      (Maintain task index to support O(1) lookup and cancellation)
     #[inline]
     pub fn insert(&mut self, mut task: TimerTask, notifier: crate::task::CompletionNotifier) -> TaskId {
         let (level, ticks, rounds) = self.determine_layer(task.delay);
         
-        // 使用 match 减少分支，并使用缓存的槽位掩码
-        // (Use match to reduce branches, and use cached slot mask)
+        // Use match to reduce branches, and use cached slot mask
+        // 使用 match 减少分支，并使用缓存的槽掩码
         let (current_tick, slot_mask, slots) = match level {
             0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
             _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
@@ -231,50 +270,57 @@ impl Wheel {
         let total_ticks = current_tick + ticks;
         let slot_index = (total_ticks as usize) & slot_mask;
 
-        // 准备任务注册（设置 notifier 和时间轮参数）
-        // (Prepare task registration (set notifier and timing wheel parameters))
+        // Prepare task registration (set notifier and timing wheel parameters)
+        // 准备任务注册（设置通知器和时间轮参数）
         task.prepare_for_registration(notifier, total_ticks, rounds);
 
         let task_id = task.id;
         
+        // Get the index position of the task in Vec (the length before insertion is the index of the new task)
         // 获取任务在 Vec 中的索引位置（插入前的长度就是新任务的索引）
-        // (Get the index position of the task in Vec (the length before insertion is the index of the new task))
         let vec_index = slots[slot_index].len();
         let location = TaskLocation::new(level, slot_index, vec_index);
 
-        // 插入任务到槽位
-        // (Insert task into slot)
+        // Insert task into slot
+        // 将任务插入槽中
         slots[slot_index].push(task);
         
+        // Record task location
         // 记录任务位置
-        // (Record task location)
         self.task_index.insert(task_id, location);
 
         task_id
     }
 
+    /// Batch insert timer tasks
+    ///
+    /// # Parameters
+    /// - `tasks`: List of tuples of (task, completion notifier)
+    ///
+    /// # Returns
+    /// List of task IDs
+    ///
+    /// # Performance Advantages
+    /// - Reduce repeated boundary checks and capacity adjustments
+    /// - For tasks with the same delay, calculation results can be reused
+    /// 
     /// 批量插入定时器任务
-    /// (Batch insert timer tasks)
     ///
-    /// # 参数 (Parameters)
-    /// - `tasks`: (任务, 完成通知器) 的元组列表
-    ///      (List of tuples of (task, completion notifier))
+    /// # 参数
+    /// - `tasks`: (任务, 完成通知器) 元组列表
     ///
-    /// # 返回 (Returns)
+    /// # 返回值
     /// 任务 ID 列表
-    ///      (List of task IDs)
     ///
-    /// # 性能优势 (Performance Advantages)
+    /// # 性能优势
     /// - 减少重复的边界检查和容量调整
-    ///      (Reduce repeated boundary checks and capacity adjustments)
-    /// - 对于相同延迟的任务，可以复用计算结果
-    ///      (For tasks with the same delay, calculation results can be reused)
+    /// - 对于相同延迟的任务，可以重用计算结果
     #[inline]
     pub fn insert_batch(&mut self, tasks: Vec<(TimerTask, crate::task::CompletionNotifier)>) -> Vec<TaskId> {
         let task_count = tasks.len();
         
-        // 优化：预先分配 HashMap 容量，避免重新分配
-        // (Optimize: pre-allocate HashMap capacity to avoid reallocation)
+        // Optimize: pre-allocate HashMap capacity to avoid reallocation
+        // 优化：预分配 HashMap 容量以避免重新分配
         self.task_index.reserve(task_count);
         
         let mut task_ids = Vec::with_capacity(task_count);
@@ -282,8 +328,8 @@ impl Wheel {
         for (mut task, notifier) in tasks {
             let (level, ticks, rounds) = self.determine_layer(task.delay);
             
-            // 使用 match 减少分支，并使用缓存的槽位掩码
-            // (Use match to reduce branches, and use cached slot mask)
+            // Use match to reduce branches, and use cached slot mask
+            // 使用 match 减少分支，并使用缓存的槽掩码
             let (current_tick, slot_mask, slots) = match level {
                 0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
                 _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
@@ -292,23 +338,23 @@ impl Wheel {
             let total_ticks = current_tick + ticks;
             let slot_index = (total_ticks as usize) & slot_mask;
 
-            // 准备任务注册（设置 notifier 和时间轮参数）
-            // (Prepare task registration (set notifier and timing wheel parameters))
+            // Prepare task registration (set notifier and timing wheel parameters)
+            // 准备任务注册（设置通知器和时间轮参数）
             task.prepare_for_registration(notifier, total_ticks, rounds);
 
             let task_id = task.id;
             
+            // Get the index position of the task in Vec
             // 获取任务在 Vec 中的索引位置
-            // (Get the index position of the task in Vec)
             let vec_index = slots[slot_index].len();
             let location = TaskLocation::new(level, slot_index, vec_index);
 
-            // 插入任务到槽位
-            // (Insert task into slot)
+            // Insert task into slot
+            // 将任务插入槽中
             slots[slot_index].push(task);
             
+            // Record task location
             // 记录任务位置
-            // (Record task location)
             self.task_index.insert(task_id, location);
             
             task_ids.push(task_id);
@@ -317,94 +363,106 @@ impl Wheel {
         task_ids
     }
 
+    /// Cancel timer task
+    ///
+    /// # Parameters
+    /// - `task_id`: Task ID
+    ///
+    /// # Returns
+    /// Returns true if the task exists and is successfully cancelled, otherwise returns false
+    /// 
     /// 取消定时器任务
-    /// (Cancel timer task)
     ///
-    /// # 参数 (Parameters)
+    /// # 参数
     /// - `task_id`: 任务 ID
-    ///      (Task ID)
     ///
-    /// # 返回 (Returns)
-    /// 如果任务存在且成功取消返回 true，否则返回 false
-    ///      (Returns true if the task exists and is successfully cancelled, otherwise returns false)
+    /// # 返回值
+    /// 如果任务存在且成功取消则返回 true，否则返回 false
     #[inline]
     pub fn cancel(&mut self, task_id: TaskId) -> bool {
+        // Remove task location from index
         // 从索引中移除任务位置
-        // (Remove task location from index)
         let location = match self.task_index.remove(&task_id) {
             Some(loc) => loc,
             None => return false,
         };
         
-        // 使用 match 获取槽位引用，减少分支
-        // (Use match to get slot reference, reduce branches)
+        // Use match to get slot reference, reduce branches
+        // 使用 match 获取槽引用，减少分支
         let slot = match location.level {
             0 => &mut self.l0.slots[location.slot_index],
             _ => &mut self.l1.slots[location.slot_index],
         };
         
+        // Boundary check and ID verification
         // 边界检查和 ID 验证
-        // (Boundary check and ID verification)
         if location.vec_index >= slot.len() || slot[location.vec_index].id != task_id {
-            // 索引不一致，重新插入 location 以保持数据一致性
-            // (Index inconsistent, re-insert location to maintain data consistency)
+            // Index inconsistent, re-insert location to maintain data consistency
+            // 索引不一致，重新插入位置以保持数据一致性
             self.task_index.insert(task_id, location);
             return false;
         }
         
+        // Send cancellation notification
         // 发送取消通知
-        // (Send cancellation notification)
         if let Some(notifier) = slot[location.vec_index].completion_notifier.take() {
             let _ = notifier.0.send(TaskCompletionReason::Cancelled);
         }
         
+        // Use swap_remove to remove task, record swapped task ID
         // 使用 swap_remove 移除任务，记录被交换的任务 ID
-        // (Use swap_remove to remove task, record swapped task ID)
         let removed_task = slot.swap_remove(location.vec_index);
         
+        // If a swap occurred (vec_index is not the last element)
         // 如果发生了交换（vec_index 不是最后一个元素）
-        // (If a swap occurred (vec_index is not the last element))
         if location.vec_index < slot.len() {
             let swapped_task_id = slot[location.vec_index].id;
-            // 一次性更新被交换元素的索引，避免再次 HashMap 查询
-            // (Update swapped element's index in one go, avoid another HashMap query)
+            // Update swapped element's index in one go, avoid another HashMap query
+            // 一次性更新被交换元素的索引，避免再次查询 HashMap
             if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
                 swapped_location.vec_index = location.vec_index;
             }
         }
         
-        // 确保移除的是正确的任务
-        // (Ensure the correct task was removed)
+        // Ensure the correct task was removed
+        // 确保移除了正确的任务
         debug_assert_eq!(removed_task.id, task_id);
         true
     }
 
+    /// Batch cancel timer tasks
+    ///
+    /// # Parameters
+    /// - `task_ids`: List of task IDs to cancel
+    ///
+    /// # Returns
+    /// Number of successfully cancelled tasks
+    ///
+    /// # Performance Advantages
+    /// - Reduce repeated HashMap lookup overhead
+    /// - Multiple cancellation operations on the same slot can be batch processed
+    /// - Use unstable sort to improve performance
+    /// - Small batch optimization: skip sorting based on configuration threshold, process directly
+    /// 
     /// 批量取消定时器任务
-    /// (Batch cancel timer tasks)
     ///
-    /// # 参数 (Parameters)
+    /// # 参数
     /// - `task_ids`: 要取消的任务 ID 列表
-    ///      (List of task IDs to cancel)
     ///
-    /// # 返回 (Returns)
+    /// # 返回值
     /// 成功取消的任务数量
-    ///      (Number of successfully cancelled tasks)
     ///
-    /// # 性能优势 (Performance Advantages)
+    /// # 性能优势
     /// - 减少重复的 HashMap 查找开销
-    ///      (Reduce repeated HashMap lookup overhead)
-    /// - 对同一槽位的多个取消操作可以批量处理
-    ///      (Multiple cancellation operations on the same slot can be batch processed)
-    /// - 使用不稳定排序提升性能
-    ///      (Use unstable sort to improve performance)
+    /// - 同一槽位的多个取消操作可以批量处理
+    /// - 使用不稳定排序提高性能
     /// - 小批量优化：根据配置阈值跳过排序，直接处理
-    ///      (Small batch optimization: skip sorting based on configuration threshold, process directly)
     #[inline]
     pub fn cancel_batch(&mut self, task_ids: &[TaskId]) -> usize {
         let mut cancelled_count = 0;
         
-        // 小批量优化：直接逐个取消，避免分组和排序的开销
-        // (Small batch optimization: cancel one by one to avoid grouping and sorting overhead)
+        // Small batch optimization: cancel one by one to avoid grouping and sorting overhead
+        // 小批量优化：逐个取消以避免分组和排序开销
         if task_ids.len() <= self.batch_config.small_batch_threshold {
             for &task_id in task_ids {
                 if self.cancel(task_id) {
@@ -414,18 +472,18 @@ impl Wheel {
             return cancelled_count;
         }
         
+        // Group by layer and slot to optimize batch cancellation
+        // Use SmallVec to avoid heap allocation in most cases
         // 按层级和槽位分组以优化批量取消
-        // 使用 SmallVec 避免大多数情况下的堆分配
-        // (Group by layer and slot to optimize batch cancellation)
-        // (Use SmallVec to avoid heap allocation in most cases)
+        // 使用 SmallVec 避免在大多数情况下进行堆分配
         let l0_slot_count = self.l0.slot_count;
         let l1_slot_count = self.l1.slot_count;
         
         let mut l0_tasks_by_slot: Vec<Vec<(TaskId, usize)>> = vec![Vec::new(); l0_slot_count];
         let mut l1_tasks_by_slot: Vec<Vec<(TaskId, usize)>> = vec![Vec::new(); l1_slot_count];
         
-        // 收集需要取消的任务信息
-        // (Collect information of tasks to be cancelled)
+        // Collect information of tasks to be cancelled
+        // 收集要取消的任务信息
         for &task_id in task_ids {
             if let Some(location) = self.task_index.get(&task_id) {
                 if location.level == 0 {
@@ -436,15 +494,15 @@ impl Wheel {
             }
         }
         
-        // 处理 L0 层的取消
-        // (Process L0 layer cancellation)
+        // Process L0 layer cancellation
+        // 处理 L0 层取消
         for (slot_index, tasks) in l0_tasks_by_slot.iter_mut().enumerate() {
             if tasks.is_empty() {
                 continue;
             }
             
-            // 按 vec_index 降序排序，从后往前删除避免索引失效
-            // (Sort by vec_index in descending order, delete from back to front to avoid index invalidation)
+            // Sort by vec_index in descending order, delete from back to front to avoid index invalidation
+            // 按 vec_index 降序排序，从后向前删除以避免索引失效
             tasks.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             
             let slot = &mut self.l0.slots[slot_index];
@@ -470,8 +528,8 @@ impl Wheel {
             }
         }
         
-        // 处理 L1 层的取消
-        // (Process L1 layer cancellation)
+        // Process L1 layer cancellation
+        // 处理 L1 层取消
         for (slot_index, tasks) in l1_tasks_by_slot.iter_mut().enumerate() {
             if tasks.is_empty() {
                 continue;
@@ -505,29 +563,34 @@ impl Wheel {
         cancelled_count
     }
 
-    /// 推进时间轮一个 tick，返回所有到期的任务
-    /// (Advance the timing wheel by one tick, return all expired tasks)
+    /// Advance the timing wheel by one tick, return all expired tasks
     ///
-    /// # 返回 (Returns)
-    /// 到期的任务列表
-    ///      (List of expired tasks)
+    /// # Returns
+    /// List of expired tasks
     ///
-    /// # 实现细节 (Implementation Details)
-    /// - L0 层每次推进 1 tick（无 rounds 检查）
-    ///      (L0 layer advances 1 tick each time (no rounds check))
+    /// # Implementation Details
+    /// - L0 layer advances 1 tick each time (no rounds check)
+    /// - L1 layer advances once every (L1_tick / L0_tick) times
+    /// - L1 expired tasks are batch demoted to L0
+    /// 
+    /// 推进时间轮一个 tick，返回所有过期的任务
+    ///
+    /// # 返回值
+    /// 过期任务列表
+    ///
+    /// # 实现细节
+    /// - L0 层每次推进 1 个 tick（无轮数检查）
     /// - L1 层每 (L1_tick / L0_tick) 次推进一次
-    ///      (L1 layer advances once every (L1_tick / L0_tick) times)
-    /// - L1 到期任务批量降级到 L0
-    ///      (L1 expired tasks are batch demoted to L0)
+    /// - L1 层过期任务批量降级到 L0
     pub fn advance(&mut self) -> Vec<TimerTask> {
+        // Advance L0 layer
         // 推进 L0 层
-        // (Advance L0 layer)
         self.l0.current_tick += 1;
         
         let mut expired_tasks = Vec::new();
         
-        // 处理 L0 层的到期任务（分层模式：L0 层没有 rounds，直接返回所有任务）
-        // (Process L0 layer expired tasks (hierarchical mode: L0 layer has no rounds, return all tasks directly))
+        // Process L0 layer expired tasks (hierarchical mode: L0 layer has no rounds, return all tasks directly)
+        // 处理 L0 层过期任务（分层模式：L0 层无轮数，直接返回所有任务）
         let l0_slot_index = (self.l0.current_tick as usize) & self.l0.slot_mask;
         let l0_slot = &mut self.l0.slots[l0_slot_index];
         
@@ -535,16 +598,16 @@ impl Wheel {
         while i < l0_slot.len() {
             let task = &l0_slot[i];
             
+            // Remove from index
             // 从索引中移除
-            // (Remove from index)
             self.task_index.remove(&task.id);
             
+            // Use swap_remove to remove task
             // 使用 swap_remove 移除任务
-            // (Use swap_remove to remove task)
             let expired_task = l0_slot.swap_remove(i);
             
+            // Update swapped element's index
             // 更新被交换元素的索引
-            // (Update swapped element's index)
             if i < l0_slot.len() {
                 let swapped_task_id = l0_slot[i].id;
                 if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
@@ -555,33 +618,33 @@ impl Wheel {
             expired_tasks.push(expired_task);
         }
         
+        // Process L1 layer
+        // Check if L1 layer needs to be advanced
         // 处理 L1 层
         // 检查是否需要推进 L1 层
-        // (Process L1 layer)
-        // (Check if L1 layer needs to be advanced)
         if self.l0.current_tick % self.l1_tick_ratio == 0 {
             self.l1.current_tick += 1;
             let l1_slot_index = (self.l1.current_tick as usize) & self.l1.slot_mask;
             let l1_slot = &mut self.l1.slots[l1_slot_index];
             
-            // 收集 L1 层到期的任务
-            // (Collect L1 layer expired tasks)
+            // Collect L1 layer expired tasks
+            // 收集 L1 层过期任务
             let mut tasks_to_demote = Vec::new();
             let mut i = 0;
             while i < l1_slot.len() {
                 let task = &mut l1_slot[i];
                 
                 if task.rounds > 0 {
-                    // 还有轮次，减少轮次并保留
-                    // (Still has rounds, decrease rounds and keep)
+                    // Still has rounds, decrease rounds and keep
+                    // 还有轮数，减少轮数并保留
                     task.rounds -= 1;
                     if let Some(location) = self.task_index.get_mut(&task.id) {
                         location.vec_index = i;
                     }
                     i += 1;
                 } else {
+                    // rounds = 0, need to demote to L0
                     // rounds = 0，需要降级到 L0
-                    // (rounds = 0, need to demote to L0)
                     self.task_index.remove(&task.id);
                     let task_to_demote = l1_slot.swap_remove(i);
                     
@@ -596,46 +659,48 @@ impl Wheel {
                 }
             }
             
-            // 降级任务到 L0
-            // (Demote tasks to L0)
+            // Demote tasks to L0
+            // 将任务降级到 L0
             self.demote_tasks(tasks_to_demote);
         }
         
         expired_tasks
     }
     
-    /// 降级任务从 L1 到 L0
-    /// (Demote tasks from L1 to L0)
+    /// Demote tasks from L1 to L0
     /// 
-    /// 将 L1 到期的任务重新计算并插入到 L0 层
-    ///      (Recalculate and insert L1 expired tasks into L0 layer)
+    /// Recalculate and insert L1 expired tasks into L0 layer
+    /// 
+    /// 将任务从 L1 降级到 L0
+    /// 
+    /// 重新计算并将 L1 过期任务插入到 L0 层
     fn demote_tasks(&mut self, tasks: Vec<TimerTask>) {
         for task in tasks {
+            // Calculate the remaining delay of the task in L0 layer
+            // The task's deadline_tick is based on L1 tick, needs to be converted to L0 tick
             // 计算任务在 L0 层的剩余延迟
-            // 任务的 deadline_tick 是基于 L1 tick 的，需要转换为 L0 tick
-            // (Calculate the remaining delay of the task in L0 layer)
-            // (The task's deadline_tick is based on L1 tick, needs to be converted to L0 tick)
+            // 任务的 deadline_tick 基于 L1 tick，需要转换为 L0 tick
             let l1_tick_ratio = self.l1_tick_ratio;
             
-            // 计算任务原本的到期时间（L1 tick）
-            // (Calculate the original expiration time of the task (L1 tick))
+            // Calculate the original expiration time of the task (L1 tick)
+            // 计算任务的原始过期时间（L1 tick）
             let l1_deadline = task.deadline_tick;
             
-            // 转换为 L0 tick 的到期时间
-            // (Convert to L0 tick expiration time)
+            // Convert to L0 tick expiration time
+            // 转换为 L0 tick 过期时间
             let l0_deadline_tick = l1_deadline * l1_tick_ratio;
             let l0_current_tick = self.l0.current_tick;
             
-            // 计算剩余的 L0 ticks
-            // (Calculate remaining L0 ticks)
+            // Calculate remaining L0 ticks
+            // 计算剩余 L0 ticks
             let remaining_l0_ticks = if l0_deadline_tick > l0_current_tick {
                 l0_deadline_tick - l0_current_tick
             } else {
-                1 // 至少在下一个 tick 触发 (at least trigger in next tick)
+                1 // At least trigger in next tick (至少在下一个 tick 触发)
             };
             
-            // 计算 L0 槽位索引
-            // (Calculate L0 slot index)
+            // Calculate L0 slot index
+            // 计算 L0 槽索引
             let target_l0_tick = l0_current_tick + remaining_l0_ticks;
             let l0_slot_index = (target_l0_tick as usize) & self.l0.slot_mask;
             
@@ -643,48 +708,56 @@ impl Wheel {
             let vec_index = self.l0.slots[l0_slot_index].len();
             let location = TaskLocation::new(0, l0_slot_index, vec_index);
             
+            // Insert into L0 layer
             // 插入到 L0 层
-            // (Insert into L0 layer)
             self.l0.slots[l0_slot_index].push(task);
             self.task_index.insert(task_id, location);
         }
     }
 
+    /// Check if the timing wheel is empty
+    /// 
     /// 检查时间轮是否为空
-    /// (Check if the timing wheel is empty)
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.task_index.is_empty()
     }
 
-    /// 推迟定时器任务（保持原 TaskId）
-    /// (Postpone timer task (keep original TaskId))
+    /// Postpone timer task (keep original TaskId)
     ///
-    /// # 参数 (Parameters)
-    /// - `task_id`: 要推迟的任务 ID
-    ///      (Task ID to postpone)
-    /// - `new_delay`: 新的延迟时间（从当前 tick 重新开始计算，而非从原定延迟时间继续）
-    ///      (New delay time (recalculated from current tick, not continuing from original delay time))
-    /// - `new_callback`: 新的回调函数（如果为 None 则保持原回调）
-    ///      (New callback function (if None, keep original callback))
+    /// # Parameters
+    /// - `task_id`: Task ID to postpone
+    /// - `new_delay`: New delay time (recalculated from current tick, not continuing from original delay time)
+    /// - `new_callback`: New callback function (if None, keep original callback)
     ///
-    /// # 返回 (Returns)
-    /// 如果任务存在且成功推迟返回 true，否则返回 false
-    ///      (Returns true if the task exists and is successfully postponed, otherwise returns false)
+    /// # Returns
+    /// Returns true if the task exists and is successfully postponed, otherwise returns false
     ///
-    /// # 实现细节 (Implementation Details)
+    /// # Implementation Details
+    /// - Remove task from original layer/slot, keep its completion_notifier (will not trigger cancellation notification)
+    /// - Update delay time and callback function (if provided)
+    /// - Recalculate target layer, slot, and rounds based on new_delay
+    /// - Cross-layer migration may occur (L0 <-> L1)
+    /// - Re-insert to new position using original TaskId
+    /// - Keep consistent with external held TaskId reference
+    /// 
+    /// 延期定时器任务（保留原始 TaskId）
+    ///
+    /// # 参数
+    /// - `task_id`: 要延期的任务 ID
+    /// - `new_delay`: 新延迟时间（从当前 tick 重新计算，而非从原延迟时间继续）
+    /// - `new_callback`: 新回调函数（如果为 None，则保留原回调）
+    ///
+    /// # 返回值
+    /// 如果任务存在且成功延期则返回 true，否则返回 false
+    ///
+    /// # 实现细节
     /// - 从原层级/槽位移除任务，保留其 completion_notifier（不会触发取消通知）
-    ///      (Remove task from original layer/slot, keep its completion_notifier (will not trigger cancellation notification))
     /// - 更新延迟时间和回调函数（如果提供）
-    ///      (Update delay time and callback function (if provided))
-    /// - 根据 new_delay 重新计算目标层级、槽位和轮次
-    ///      (Recalculate target layer, slot, and rounds based on new_delay)
+    /// - 根据 new_delay 重新计算目标层级、槽位和轮数
     /// - 可能发生跨层迁移（L0 <-> L1）
-    ///      (Cross-layer migration may occur (L0 <-> L1))
-    /// - 使用原 TaskId 重新插入到新位置
-    ///      (Re-insert to new position using original TaskId)
-    /// - 保持与外部持有的 TaskId 引用一致
-    ///      (Keep consistent with external held TaskId reference)
+    /// - 使用原始 TaskId 重新插入到新位置
+    /// - 与外部持有的 TaskId 引用保持一致
     #[inline]
     pub fn postpone(
         &mut self,
@@ -692,35 +765,35 @@ impl Wheel {
         new_delay: Duration,
         new_callback: Option<crate::task::CallbackWrapper>,
     ) -> bool {
-        // 步骤1: 查找并移除原任务
-        // (Step 1: Find and remove original task)
+        // Step 1: Find and remove original task
+        // 步骤 1: 查找并移除原任务
         let old_location = match self.task_index.remove(&task_id) {
             Some(loc) => loc,
             None => return false,
         };
         
-        // 使用 match 获取槽位引用
-        // (Use match to get slot reference)
+        // Use match to get slot reference
+        // 使用 match 获取槽引用
         let slot = match old_location.level {
             0 => &mut self.l0.slots[old_location.slot_index],
             _ => &mut self.l1.slots[old_location.slot_index],
         };
         
+        // Verify task is still at expected position
         // 验证任务仍在预期位置
-        // (Verify task is still at expected position)
         if old_location.vec_index >= slot.len() || slot[old_location.vec_index].id != task_id {
+            // Index inconsistent, re-insert and return failure
             // 索引不一致，重新插入并返回失败
-            // (Index inconsistent, re-insert and return failure)
             self.task_index.insert(task_id, old_location);
             return false;
         }
         
+        // Use swap_remove to remove task
         // 使用 swap_remove 移除任务
-        // (Use swap_remove to remove task)
         let mut task = slot.swap_remove(old_location.vec_index);
         
+        // Update swapped element's index (if a swap occurred)
         // 更新被交换元素的索引（如果发生了交换）
-        // (Update swapped element's index (if a swap occurred))
         if old_location.vec_index < slot.len() {
             let swapped_task_id = slot[old_location.vec_index].id;
             if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
@@ -728,19 +801,19 @@ impl Wheel {
             }
         }
         
-        // 步骤2: 更新任务的延迟和回调
-        // (Step 2: Update task's delay and callback)
+        // Step 2: Update task's delay and callback
+        // 步骤 2: 更新任务的延迟和回调
         task.delay = new_delay;
         if let Some(callback) = new_callback {
             task.callback = Some(callback);
         }
         
-        // 步骤3: 根据新延迟重新计算层级、槽位和轮次
-        // (Step 3: Recalculate layer, slot, and rounds based on new delay)
+        // Step 3: Recalculate layer, slot, and rounds based on new delay
+        // 步骤 3: 根据新延迟重新计算层级、槽位和轮数
         let (new_level, ticks, new_rounds) = self.determine_layer(new_delay);
         
-        // 使用 match 减少分支，并使用缓存的槽位掩码
-        // (Use match to reduce branches, and use cached slot mask)
+        // Use match to reduce branches, and use cached slot mask
+        // 使用 match 减少分支，并使用缓存的槽掩码
         let (current_tick, slot_mask, slots) = match new_level {
             0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
             _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
@@ -749,13 +822,13 @@ impl Wheel {
         let total_ticks = current_tick + ticks;
         let new_slot_index = (total_ticks as usize) & slot_mask;
         
+        // Update task's timing wheel parameters
         // 更新任务的时间轮参数
-        // (Update task's timing wheel parameters)
         task.deadline_tick = total_ticks;
         task.rounds = new_rounds;
         
-        // 步骤4: 重新插入任务到新层级/槽位
-        // (Step 4: Re-insert task to new layer/slot)
+        // Step 4: Re-insert task to new layer/slot
+        // 步骤 4: 将任务重新插入到新层级/槽位
         let new_vec_index = slots[new_slot_index].len();
         let new_location = TaskLocation::new(new_level, new_slot_index, new_vec_index);
         
@@ -765,26 +838,35 @@ impl Wheel {
         true
     }
 
-    /// 批量推迟定时器任务
-    /// (Batch postpone timer tasks)
+    /// Batch postpone timer tasks
     ///
-    /// # 参数 (Parameters)
-    /// - `updates`: (任务ID, 新延迟) 的元组列表
-    ///      (List of tuples of (task ID, new delay))
+    /// # Parameters
+    /// - `updates`: List of tuples of (task ID, new delay)
     ///
-    /// # 返回 (Returns)
-    /// 成功推迟的任务数量
-    ///      (Number of successfully postponed tasks)
+    /// # Returns
+    /// Number of successfully postponed tasks
     ///
-    /// # 性能优势 (Performance Advantages)
-    /// - 批量处理减少函数调用开销
-    ///      (Batch processing reduces function call overhead)
-    /// - 所有延迟时间都从调用时的 current_tick 重新计算
-    ///      (All delays are recalculated from current_tick at call time)
+    /// # Performance Advantages
+    /// - Batch processing reduces function call overhead
+    /// - All delays are recalculated from current_tick at call time
     ///
-    /// # 注意 (Notes)
-    /// - 如果某个任务 ID 不存在，该任务会被跳过，不影响其他任务的推迟
-    ///      (If a task ID does not exist, that task will be skipped without affecting other tasks' postponement)
+    /// # Notes
+    /// - If a task ID does not exist, that task will be skipped without affecting other tasks' postponement
+    /// 
+    /// 批量延期定时器任务
+    ///
+    /// # 参数
+    /// - `updates`: (任务 ID, 新延迟) 元组列表
+    ///
+    /// # 返回值
+    /// 成功延期的任务数量
+    ///
+    /// # 性能优势
+    /// - 批处理减少函数调用开销
+    /// - 所有延迟在调用时从 current_tick 重新计算
+    ///
+    /// # 注意
+    /// - 如果任务 ID 不存在，该任务将被跳过，不影响其他任务的延期
     #[inline]
     pub fn postpone_batch(
         &mut self,
@@ -801,16 +883,21 @@ impl Wheel {
         postponed_count
     }
 
-    /// 批量推迟定时器任务（替换回调）
-    /// (Batch postpone timer tasks (replace callbacks))
+    /// Batch postpone timer tasks (replace callbacks)
     ///
-    /// # 参数 (Parameters)
-    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
-    ///      (List of tuples of (task ID, new delay, new callback))
+    /// # Parameters
+    /// - `updates`: List of tuples of (task ID, new delay, new callback)
     ///
-    /// # 返回 (Returns)
-    /// 成功推迟的任务数量
-    ///      (Number of successfully postponed tasks)
+    /// # Returns
+    /// Number of successfully postponed tasks
+    /// 
+    /// 批量延期定时器任务（替换回调）
+    ///
+    /// # 参数
+    /// - `updates`: (任务 ID, 新延迟, 新回调) 元组列表
+    ///
+    /// # 返回值
+    /// 成功延期的任务数量
     pub fn postpone_batch_with_callbacks(
         &mut self,
         updates: Vec<(TaskId, Duration, Option<crate::task::CallbackWrapper>)>,
@@ -845,31 +932,31 @@ mod tests {
         let config = WheelConfig::default();
         
         let wheel = Wheel::new(config, BatchConfig::default());
-        assert_eq!(wheel.slot_count(), 512); // L0 槽位数
+        assert_eq!(wheel.slot_count(), 512); // L0 slot count (L0 层槽数量)
         assert_eq!(wheel.current_tick(), 0);
         assert!(wheel.is_empty());
-        // L1 层始终存在于分层模式中
+        // L1 layer always exists in hierarchical mode (L1 层在分层模式下始终存在)
         assert_eq!(wheel.l1.slot_count, 64);
-        assert_eq!(wheel.l1_tick_ratio, 100); // 1000ms / 10ms = 100
+        assert_eq!(wheel.l1_tick_ratio, 100); // 1000ms / 10ms = 100 ticks (1000毫秒 / 10毫秒 = 100个tick)
     }
 
     #[test]
     fn test_hierarchical_config_validation() {
-        // L1 tick 必须是 L0 tick 的整数倍
+        // L1 tick must be an integer multiple of L0 tick (L1 tick 必须是 L0 tick 的整数倍)
         let result = WheelConfig::builder()
             .l0_tick_duration(Duration::from_millis(10))
             .l0_slot_count(512)
-            .l1_tick_duration(Duration::from_millis(15)) // 不是整数倍
+            .l1_tick_duration(Duration::from_millis(15)) // Not an integer multiple (不是整数倍)
             .l1_slot_count(64)
             .build();
         
         assert!(result.is_err());
         
-        // 正确的配置
+        // Correct configuration (正确的配置)
         let result = WheelConfig::builder()
             .l0_tick_duration(Duration::from_millis(10))
             .l0_slot_count(512)
-            .l1_tick_duration(Duration::from_secs(1)) // 1000ms / 10ms = 100
+            .l1_tick_duration(Duration::from_secs(1)) // 1000ms / 10ms = 100 ticks (1000毫秒 / 10毫秒 = 100个tick)
             .l1_slot_count(64)
             .build();
         
@@ -882,20 +969,20 @@ mod tests {
         
         let wheel = Wheel::new(config, BatchConfig::default());
         
-        // 短延迟应该进入 L0 层
+        // Short delay should enter L0 layer (短延迟应该进入 L0 层)
         // L0: 512 slots * 10ms = 5120ms
         let (level, _, rounds) = wheel.determine_layer(Duration::from_millis(100));
         assert_eq!(level, 0);
         assert_eq!(rounds, 0);
         
-        // 长延迟应该进入 L1 层
-        // 超过 L0 范围（>5120ms）
+        // Long delay should enter L1 layer
+        // 超过 L0 范围（>5120ms） (超过 L0 范围 (>5120毫秒))
         let (level, _, rounds) = wheel.determine_layer(Duration::from_secs(10));
         assert_eq!(level, 1);
         assert_eq!(rounds, 0);
         
-        // 超长延迟应该进入 L1 层并有 rounds
-        // L1: 64 slots * 1000ms = 64000ms
+        // Long delay should enter L1 layer and have rounds
+        // L1: 64 slots * 1000ms = 64000ms (L1: 64个槽 * 1000毫秒 = 64000毫秒)
         let (level, _, rounds) = wheel.determine_layer(Duration::from_secs(120));
         assert_eq!(level, 1);
         assert!(rounds > 0);
@@ -909,17 +996,17 @@ mod tests {
         
         let mut wheel = Wheel::new(config, BatchConfig::default());
         
-        // 插入短延迟任务到 L0
+        // Insert short delay task into L0 (插入短延迟任务到 L0)
         let callback = CallbackWrapper::new(|| async {});
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
         let task_id = wheel.insert(task, CompletionNotifier(tx));
         
-        // 验证任务在 L0 层
+        // Verify task is in L0 layer (验证任务在 L0 层)
         let location = wheel.task_index.get(&task_id).unwrap();
         assert_eq!(location.level, 0);
         
-        // 推进 10 ticks（100ms）
+        // Advance 10 ticks (100ms) (前进 10 个 tick (100毫秒))
         for _ in 0..10 {
             let expired = wheel.advance();
             if !expired.is_empty() {
@@ -938,41 +1025,41 @@ mod tests {
         let config = WheelConfig::builder()
             .l0_tick_duration(Duration::from_millis(10))
             .l0_slot_count(512)
-            .l1_tick_duration(Duration::from_millis(100)) // L1 tick = 100ms
+            .l1_tick_duration(Duration::from_millis(100)) // L1 tick = 100ms (L1 tick = 100毫秒)
             .l1_slot_count(64)
             .build()
             .unwrap();
         
         let mut wheel = Wheel::new(config, BatchConfig::default());
         let l1_tick_ratio = wheel.l1_tick_ratio;
-        assert_eq!(l1_tick_ratio, 10); // 100ms / 10ms = 10
+        assert_eq!(l1_tick_ratio, 10); // 100ms / 10ms = 10 (100毫秒 / 10毫秒 = 10)
         
-        // 插入任务，延迟 6000ms（超过 L0 范围 5120ms）
+        // Insert task, delay 6000ms (exceeds L0 range 5120ms) (插入任务，延迟 6000毫秒 (超过 L0 范围 5120毫秒))
         let callback = CallbackWrapper::new(|| async {});
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let task = TimerTask::new(Duration::from_millis(6000), Some(callback));
         let task_id = wheel.insert(task, CompletionNotifier(tx));
         
-        // 验证任务在 L1 层
+        // Verify task is in L1 layer (验证任务在 L1 层)
         let location = wheel.task_index.get(&task_id).unwrap();
         assert_eq!(location.level, 1);
         
-        // 推进到 L1 槽位到期（6000ms / 100ms = 60 L1 ticks）
-        // 60 L1 ticks = 600 L0 ticks
+        // Advance to L1 slot expiration (6000ms / 100ms = 60 L1 ticks) (前进到 L1 槽过期 (6000毫秒 / 100毫秒 = 60个L1 tick))
+        // 60 L1 ticks = 600 L0 ticks (60个L1 tick = 600个L0 tick)
         let mut demoted = false;
         for i in 0..610 {
             wheel.advance();
             
-            // 检查任务是否被降级到 L0
+            // Check if task is demoted to L0 (检查任务是否降级到 L0)
             if let Some(location) = wheel.task_index.get(&task_id) {
                 if location.level == 0 && !demoted {
                     demoted = true;
-                    println!("Task demoted to L0 at L0 tick {}", i);
+                    println!("Task demoted to L0 at L0 tick {}", i); // 任务降级到 L0 在 L0 tick {i}
                 }
             }
         }
         
-        assert!(demoted, "Task should have been demoted from L1 to L0");
+        assert!(demoted, "Task should have been demoted from L1 to L0"); // 任务应该从 L1 降级到 L0
     }
 
     #[test]
@@ -983,31 +1070,31 @@ mod tests {
         
         let mut wheel = Wheel::new(config, BatchConfig::default());
         
-        // 插入 L0 任务
+        // Insert L0 task (插入 L0 任务)
         let callback1 = CallbackWrapper::new(|| async {});
         let (tx1, _rx1) = tokio::sync::oneshot::channel();
         let task1 = TimerTask::new(Duration::from_millis(100), Some(callback1));
         let task_id1 = wheel.insert(task1, CompletionNotifier(tx1));
         
-        // 插入 L1 任务
+        // Insert L1 task (插入 L1 任务)
         let callback2 = CallbackWrapper::new(|| async {});
         let (tx2, _rx2) = tokio::sync::oneshot::channel();
         let task2 = TimerTask::new(Duration::from_secs(10), Some(callback2));
         let task_id2 = wheel.insert(task2, CompletionNotifier(tx2));
         
-        // 验证层级
+        // Verify levels (验证层级)
         assert_eq!(wheel.task_index.get(&task_id1).unwrap().level, 0);
         assert_eq!(wheel.task_index.get(&task_id2).unwrap().level, 1);
         
-        // 取消 L0 任务
+        // Cancel L0 task (取消 L0 任务)
         assert!(wheel.cancel(task_id1));
         assert!(wheel.task_index.get(&task_id1).is_none());
         
-        // 取消 L1 任务
+        // Cancel L1 task (取消 L1 任务)
         assert!(wheel.cancel(task_id2));
         assert!(wheel.task_index.get(&task_id2).is_none());
         
-        assert!(wheel.is_empty());
+        assert!(wheel.is_empty()); // 时间轮应该为空
     }
 
     #[test]
@@ -1018,25 +1105,25 @@ mod tests {
         
         let mut wheel = Wheel::new(config, BatchConfig::default());
         
-        // 插入 L0 任务（100ms）
+        // Insert L0 task (100ms) (插入 L0 任务 (100毫秒))
         let callback = CallbackWrapper::new(|| async {});
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
         let task_id = wheel.insert(task, CompletionNotifier(tx));
         
-        // 验证在 L0 层
+        // Verify in L0 layer (验证在 L0 层)
         assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
         
-        // 推迟到 10 秒（应该迁移到 L1）
+        // Postpone to 10 seconds (should migrate to L1) (延期到 10 秒 (应该迁移到 L1))
         assert!(wheel.postpone(task_id, Duration::from_secs(10), None));
         
-        // 验证已迁移到 L1 层
+        // Verify migrated to L1 layer (验证迁移到 L1 层)
         assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 1);
         
-        // 再推迟回 200ms（应该迁移回 L0）
+        // Postpone back to 200ms (should migrate back to L0) (延期回 200毫秒 (应该迁移回 L0))
         assert!(wheel.postpone(task_id, Duration::from_millis(200), None));
         
-        // 验证已迁移回 L0 层
+        // Verify migrated back to L0 layer (验证迁移回 L0 层)
         assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
     }
 
@@ -1045,7 +1132,7 @@ mod tests {
         let wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(100)), 10);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(50)), 5);
-        assert_eq!(wheel.delay_to_ticks(Duration::from_millis(1)), 1); // 最小 1 tick
+        assert_eq!(wheel.delay_to_ticks(Duration::from_millis(1)), 1); // Minimum 1 tick (最小 1 个 tick)
     }
 
     #[test]
@@ -1056,9 +1143,9 @@ mod tests {
         assert!(result.is_err());
         if let Err(crate::error::TimerError::InvalidSlotCount { slot_count, reason }) = result {
             assert_eq!(slot_count, 100);
-            assert_eq!(reason, "L0 层槽位数量必须是 2 的幂次方");
+            assert_eq!(reason, "L0 layer slot count must be a power of 2"); // L0 层槽数量必须是 2 的幂
         } else {
-            panic!("Expected InvalidSlotCount error");
+            panic!("Expected InvalidSlotCount error"); // 期望 InvalidSlotCount 错误
         }
     }
 
@@ -1068,7 +1155,7 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 创建批量任务
+        // Create batch tasks (创建批量任务)
         let tasks: Vec<(TimerTask, CompletionNotifier)> = (0..10)
             .map(|i| {
                 let callback = CallbackWrapper::new(|| async {});
@@ -1091,7 +1178,7 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入多个任务
+        // Insert multiple tasks
         let mut task_ids = Vec::new();
         for i in 0..10 {
             let callback = CallbackWrapper::new(|| async {});
@@ -1104,17 +1191,17 @@ mod tests {
         
         assert_eq!(task_ids.len(), 10);
         
-        // 批量取消前 5 个任务
+        // Batch cancel first 5 tasks
         let to_cancel = &task_ids[0..5];
         let cancelled_count = wheel.cancel_batch(to_cancel);
         
         assert_eq!(cancelled_count, 5);
         
-        // 尝试再次取消相同的任务，应该返回 0
+        // Try to cancel the same tasks again, should return 0
         let cancelled_again = wheel.cancel_batch(to_cancel);
         assert_eq!(cancelled_again, 0);
         
-        // 取消剩余的任务
+        // Cancel remaining tasks
         let remaining = &task_ids[5..10];
         let cancelled_remaining = wheel.cancel_batch(remaining);
         assert_eq!(cancelled_remaining, 5);
@@ -1128,7 +1215,7 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入多个相同延迟的任务（会进入同一个槽位）
+        // Insert multiple tasks with the same delay (will enter the same slot) (插入多个任务，延迟相同，将进入同一个槽)
         let mut task_ids = Vec::new();
         for _ in 0..20 {
             let callback = CallbackWrapper::new(|| async {});
@@ -1139,7 +1226,7 @@ mod tests {
             task_ids.push(task_id);
         }
         
-        // 批量取消所有任务
+        // Batch cancel all tasks (批量取消所有任务)
         let cancelled_count = wheel.cancel_batch(&task_ids);
         assert_eq!(cancelled_count, 20);
         assert!(wheel.is_empty());
@@ -1151,27 +1238,27 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入任务，延迟 100ms
+        // Insert task, delay 100ms (插入任务，延迟 100毫秒)
         let callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
         let task_id = wheel.insert(task, notifier);
         
-        // 推迟任务到 200ms（保持原回调）
+        // Postpone task to 200ms (keep original callback) (延期任务到 200毫秒 (保留原始回调))
         let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
         assert!(postponed);
         
-        // 验证任务仍在时间轮中
+        // Verify task is still in the timing wheel (验证任务仍在时间轮中)
         assert!(!wheel.is_empty());
         
-        // 推进 100ms（10 ticks），任务不应该触发
+        // Advance 100ms (10 ticks), task should not trigger (前进 100毫秒 (10个tick)，任务不应该触发)
         for _ in 0..10 {
             let expired = wheel.advance();
             assert!(expired.is_empty());
         }
         
-        // 再推进 100ms（10 ticks），任务应该触发
+        // Advance 100ms (10 ticks), task should trigger (前进 100毫秒 (10个tick)，任务应该触发)
         let mut triggered = false;
         for _ in 0..10 {
             let expired = wheel.advance();
@@ -1191,38 +1278,38 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入任务，带原始回调
+        // Insert task, with original callback (插入任务，原始回调)
         let old_callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(old_callback.clone()));
         let task_id = wheel.insert(task, notifier);
         
-        // 推迟任务并替换回调
+        // Postpone task and replace callback (延期任务并替换回调)
         let new_callback = CallbackWrapper::new(|| async {});
         let postponed = wheel.postpone(task_id, Duration::from_millis(50), Some(new_callback));
         assert!(postponed);
         
-        // 推进 50ms（5 ticks），任务应该触发
+        // Advance 50ms (5 ticks), task should trigger (前进 50毫秒 (5个tick)，任务应该触发)
         // 注意：任务在第 5 个 tick 触发（current_tick 从 0 推进到 5）
         let mut triggered = false;
         for i in 0..5 {
             let expired = wheel.advance();
             if !expired.is_empty() {
-                assert_eq!(expired.len(), 1, "第 {} 次推进时应该有 1 个任务触发", i + 1);
+                assert_eq!(expired.len(), 1, "On the {}th advance, there should be 1 task triggered", i + 1);
                 assert_eq!(expired[0].id, task_id);
                 triggered = true;
                 break;
             }
         }
-        assert!(triggered, "任务应该在 5 个 tick 内触发");
+        assert!(triggered, "Task should be triggered within 5 ticks"); // 任务应该在 5 个 tick 内触发
     }
 
     #[test]
     fn test_postpone_nonexistent_task() {
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 尝试推迟不存在的任务
+        // Try to postpone nonexistent task (尝试延期不存在任务)
         let fake_task_id = TaskId::new();
         let postponed = wheel.postpone(fake_task_id, Duration::from_millis(100), None);
         assert!(!postponed);
@@ -1234,7 +1321,7 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入 5 个任务，延迟 50ms（5 ticks）
+        // Insert 5 tasks, delay 50ms (5 ticks) (插入 5 个任务，延迟 50毫秒 (5个tick))
         let mut task_ids = Vec::new();
         for _ in 0..5 {
             let callback = CallbackWrapper::new(|| async {});
@@ -1245,7 +1332,7 @@ mod tests {
             task_ids.push(task_id);
         }
         
-        // 批量推迟所有任务到 150ms（15 ticks）
+        // Batch postpone all tasks to 150ms (15 ticks) (批量延期所有任务到 150毫秒 (15个tick))
         let updates: Vec<_> = task_ids
             .iter()
             .map(|&id| (id, Duration::from_millis(150)))
@@ -1253,19 +1340,19 @@ mod tests {
         let postponed_count = wheel.postpone_batch(updates);
         assert_eq!(postponed_count, 5);
         
-        // 推进 5 ticks（50ms），任务不应该触发
+        // Advance 5 ticks (50ms), task should not trigger (前进 50毫秒 (5个tick)，任务不应该触发)
         for _ in 0..5 {
             let expired = wheel.advance();
-            assert!(expired.is_empty(), "前 5 个 tick 不应该有任务触发");
+            assert!(expired.is_empty(), "The first 5 ticks should not have tasks triggered");
         }
         
-        // 继续推进 10 ticks（从 tick 5 到 tick 15），所有任务应该在第 15 个 tick 触发
+        // Continue advancing 10 ticks (from tick 5 to tick 15), all tasks should trigger on the 15th tick (继续前进 10个tick (从tick 5到tick 15)，所有任务应该在第 15 个 tick 触发)
         let mut total_triggered = 0;
         for _ in 0..10 {
             let expired = wheel.advance();
             total_triggered += expired.len();
         }
-        assert_eq!(total_triggered, 5, "应该有 5 个任务在推进到 tick 15 时触发");
+        assert_eq!(total_triggered, 5, "There should be 5 tasks triggered on the 15th tick"); // 第 15 个 tick 应该有 5 个任务触发
     }
 
     #[test]
@@ -1274,7 +1361,7 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入 10 个任务，延迟 50ms（5 ticks）
+        // Insert 10 tasks, delay 50ms (5 ticks) (插入 10 个任务，延迟 50毫秒 (5个tick))
         let mut task_ids = Vec::new();
         for _ in 0..10 {
             let callback = CallbackWrapper::new(|| async {});
@@ -1285,7 +1372,7 @@ mod tests {
             task_ids.push(task_id);
         }
         
-        // 只推迟前 5 个任务到 150ms，包含一个不存在的任务
+        // Only postpone the first 5 tasks to 150ms, including a nonexistent task (只延期前 5 个任务到 150毫秒，包括一个不存在任务)
         let fake_task_id = TaskId::new();
         let mut updates: Vec<_> = task_ids[0..5]
             .iter()
@@ -1294,23 +1381,23 @@ mod tests {
         updates.push((fake_task_id, Duration::from_millis(150)));
         
         let postponed_count = wheel.postpone_batch(updates);
-        assert_eq!(postponed_count, 5, "应该有 5 个任务成功推迟（fake_task_id 失败）");
+        assert_eq!(postponed_count, 5, "There should be 5 tasks successfully postponed (fake_task_id failed)"); // 应该有 5 个任务成功延期 (fake_task_id 失败)
         
-        // 推进 5 ticks（50ms），后 5 个未推迟的任务应该触发
+        // Advance 5 ticks (50ms), the last 5 tasks that were not postponed should trigger (前进 50毫秒 (5个tick)，最后一个没有延期的任务应该触发)
         let mut triggered_at_50ms = 0;
         for _ in 0..5 {
             let expired = wheel.advance();
             triggered_at_50ms += expired.len();
         }
-        assert_eq!(triggered_at_50ms, 5, "应该有 5 个未推迟的任务在 tick 5 触发");
+        assert_eq!(triggered_at_50ms, 5, "There should be 5 tasks that were not postponed triggered on the 5th tick"); // 第 5 个 tick 应该有 5 个任务没有延期触发
         
-        // 继续推进 10 ticks（从 tick 5 到 tick 15），前 5 个推迟的任务应该触发
+        // Continue advancing 10 ticks (from tick 5 to tick 15), the first 5 tasks that were postponed should trigger (继续前进 10个tick (从tick 5到tick 15)，第一个 5 个任务应该触发)
         let mut triggered_at_150ms = 0;
         for _ in 0..10 {
             let expired = wheel.advance();
             triggered_at_150ms += expired.len();
         }
-        assert_eq!(triggered_at_150ms, 5, "应该有 5 个推迟的任务在 tick 15 触发");
+        assert_eq!(triggered_at_150ms, 5, "There should be 5 tasks that were postponed triggered on the 15th tick"); // 第 15 个 tick 应该有 5 个任务延期触发
     }
 
     #[test]
@@ -1319,37 +1406,37 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 分层模式下测试 L1 层的多轮任务
+        // Test multi-round tasks in L1 layer in hierarchical mode (在分层模式下测试 L1 层的多轮任务)
         // L1: 64 slots * 1000ms = 64000ms
-        // 插入一个超过 L1 一圈的任务，延迟 120000ms (120 秒)
+        // Insert a task that exceeds one L1 circle, delay 120000ms (120 seconds) (插入一个超过一个 L1 圈的任务，延迟 120000毫秒 (120秒))
         let callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_secs(120), Some(callback));
         let task_id = wheel.insert(task, notifier);
         
-        // 120000ms / 1000ms = 120 L1 ticks
-        // 120 ticks / 64 slots = 1 轮 + 56 ticks
-        // 任务应该在 L1 层，slot 56，rounds = 1
+        // 120000ms / 1000ms = 120 L1 ticks (120000毫秒 / 1000毫秒 = 120个L1 tick)
+        // 120 ticks / 64 slots = 1 round + 56 ticks (120个tick / 64个槽 = 1轮 + 56个tick)
+        // Task should be in L1 layer, slot 56, rounds = 1 (任务应该在 L1 层，槽 56，轮数 = 1)
         
-        // 验证任务在 L1 层
+        // Verify task is in L1 layer (验证任务在 L1 层)
         let location = wheel.task_index.get(&task_id).unwrap();
         assert_eq!(location.level, 1);
         
-        // L1 tick 每 100 个 L0 tick 推进一次
-        // 推进 64 * 100 = 6400 个 L0 ticks（完成 L1 的第一轮）
+        // L1 tick advances every 100 L0 ticks (L1 tick 每 100 个 L0 tick 前进一次)
+        // Advance 64 * 100 = 6400 L0 ticks (complete the first round of L1) (前进 64 * 100 = 6400 L0 tick (完成 L1 的第一轮))
         for _ in 0..6400 {
             let _expired = wheel.advance();
-            // L1 第一轮期间，任务不应该降级或触发
+            // During the first round of L1, the task should not be demoted or triggered (在 L1 的第一轮中，任务不应该被降级或触发)
         }
         
-        // 任务应该还在 L1 层，但 rounds 减少了
+        // Task should still be in L1 layer, but rounds has decreased (任务应该仍在 L1 层，但轮数已经减少)
         let location = wheel.task_index.get(&task_id);
         if let Some(loc) = location {
             assert_eq!(loc.level, 1);
         }
         
-        // 继续推进直到任务触发（大约还需要 56 * 100 = 5600 个 L0 ticks）
+        // Continue advancing until the task is triggered (approximately another 56 * 100 = 5600 L0 ticks) (继续前进，直到任务被触发 (大约另一个 56 * 100 = 5600 L0 tick))
         let mut triggered = false;
         for _ in 0..6000 {
             let expired = wheel.advance();
@@ -1358,7 +1445,7 @@ mod tests {
                 break;
             }
         }
-        assert!(triggered, "任务应该在 L1 第二轮触发");
+        assert!(triggered, "Task should be triggered in the second round of L1"); // 任务应该在 L1 的第二轮中触发
     }
 
     #[test]
@@ -1367,16 +1454,16 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 测试最小延迟（小于 1 tick 的延迟应该向上取整为 1 tick）
+        // Test minimum delay (delays less than 1 tick should be rounded up to 1 tick) (测试最小延迟 (延迟小于 1 个 tick 应该向上舍入到 1 个 tick))
         let callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(1), Some(callback));
         let task_id: TaskId = wheel.insert(task, notifier);
         
-        // 推进 1 tick，任务应该触发
+        // Advance 1 tick, task should trigger (前进 1 个 tick，任务应该触发)
         let expired = wheel.advance();
-        assert_eq!(expired.len(), 1, "最小延迟任务应该在 1 tick 后触发");
+        assert_eq!(expired.len(), 1, "Minimum delay task should be triggered after 1 tick"); // 最小延迟任务应该在 1 个 tick 后触发
         assert_eq!(expired[0].id, task_id);
     }
 
@@ -1384,15 +1471,15 @@ mod tests {
     fn test_empty_batch_operations() {
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 测试空批量插入
+        // Test empty batch insert (测试空批量插入)
         let task_ids = wheel.insert_batch(vec![]);
         assert_eq!(task_ids.len(), 0);
         
-        // 测试空批量取消
+        // Test empty batch cancel (测试空批量取消)
         let cancelled = wheel.cancel_batch(&[]);
         assert_eq!(cancelled, 0);
         
-        // 测试空批量推迟
+        // Test empty batch postpone (测试空批量延期)
         let postponed = wheel.postpone_batch(vec![]);
         assert_eq!(postponed, 0);
     }
@@ -1403,26 +1490,26 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入任务
+        // Insert task (插入任务)
         let callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
         let task_id = wheel.insert(task, notifier);
         
-        // 第一次推迟
+        // First postpone (第一次延期)
         let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
-        assert!(postponed, "第一次推迟应该成功");
+        assert!(postponed, "First postpone should succeed");
         
-        // 第二次推迟
+        // Second postpone (第二次延期)
         let postponed = wheel.postpone(task_id, Duration::from_millis(300), None);
-        assert!(postponed, "第二次推迟应该成功");
+        assert!(postponed, "Second postpone should succeed");
         
-        // 第三次推迟
+        // Third postpone (第三次延期)  
         let postponed = wheel.postpone(task_id, Duration::from_millis(50), None);
-        assert!(postponed, "第三次推迟应该成功");
+        assert!(postponed, "Third postpone should succeed");
         
-        // 验证任务在最后一次推迟的时间触发（50ms = 5 ticks）
+        // Verify task is triggered at the last postpone time (50ms = 5 ticks) (验证任务在最后一次延期时触发 (50毫秒 = 5个tick))
         let mut triggered = false;
         for _ in 0..5 {
             let expired = wheel.advance();
@@ -1433,20 +1520,20 @@ mod tests {
                 break;
             }
         }
-        assert!(triggered, "任务应该在最后一次推迟的时间触发");
+        assert!(triggered, "Task should be triggered at the last postpone time"); // 任务应该在最后一次延期时触发
     }
 
     #[test]
     fn test_advance_empty_slots() {
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 不插入任何任务，推进多个 tick
+        // Do not insert any tasks, advance multiple ticks (不插入任何任务，前进多个tick)
         for _ in 0..100 {
             let expired = wheel.advance();
-            assert!(expired.is_empty(), "空槽位不应该返回任何任务");
+            assert!(expired.is_empty(), "Empty slots should not return any tasks");
         }
         
-        assert_eq!(wheel.current_tick(), 100, "current_tick 应该正确递增");
+        assert_eq!(wheel.current_tick(), 100, "current_tick should correctly increment"); // current_tick 应该正确递增
     }
 
     #[test]
@@ -1455,28 +1542,28 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入任务
+        // Insert task (插入任务)
         let callback = CallbackWrapper::new(|| async {});
         let (completion_tx, _completion_rx) = tokio::sync::oneshot::channel();
         let notifier = CompletionNotifier(completion_tx);
         let task = TimerTask::new(Duration::from_millis(100), Some(callback));
         let task_id = wheel.insert(task, notifier);
         
-        // 推迟任务
+        // Postpone task (延期任务)
         let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
-        assert!(postponed, "推迟应该成功");
+        assert!(postponed, "Postpone should succeed");
         
-        // 取消推迟后的任务
+        // Cancel postponed task (取消延期的任务)
         let cancelled = wheel.cancel(task_id);
-        assert!(cancelled, "取消应该成功");
+        assert!(cancelled, "Cancel should succeed");
         
-        // 推进到原定时间，任务不应该触发
+        // Advance to original time, task should not trigger (前进到原始时间，任务不应该触发)
         for _ in 0..20 {
             let expired = wheel.advance();
-            assert!(expired.is_empty(), "已取消的任务不应该触发");
+            assert!(expired.is_empty(), "Cancelled task should not trigger"); // 取消的任务不应该触发
         }
         
-        assert!(wheel.is_empty(), "时间轮应该为空");
+        assert!(wheel.is_empty(), "Wheel should be empty"); // 时间轮应该为空
     }
 
     #[test]
@@ -1485,51 +1572,51 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 测试槽位边界和环绕
+        // Test slot boundary and wraparound (测试槽边界和环绕)
         // 第一个任务：延迟 10ms（1 tick），应该在 slot 1 触发
         let callback1 = CallbackWrapper::new(|| async {});
         let (tx1, _rx1) = tokio::sync::oneshot::channel();
         let task1 = TimerTask::new(Duration::from_millis(10), Some(callback1));
         let task_id_1 = wheel.insert(task1, CompletionNotifier(tx1));
         
-        // 第二个任务：延迟 5110ms（511 ticks），应该在 slot 511 触发
+        // Second task: delay 5110ms (511 ticks), should trigger on slot 511 (第二个任务：延迟 5110毫秒 (511个tick)，应该在槽 511 触发) 
         let callback2 = CallbackWrapper::new(|| async {});
         let (tx2, _rx2) = tokio::sync::oneshot::channel();
         let task2 = TimerTask::new(Duration::from_millis(5110), Some(callback2));
         let task_id_2 = wheel.insert(task2, CompletionNotifier(tx2));
         
-        // 推进 1 tick，第一个任务应该触发
+        // Advance 1 tick, first task should trigger (前进 1 个 tick，第一个任务应该触发)
         let expired = wheel.advance();
-        assert_eq!(expired.len(), 1, "第一个任务应该在 tick 1 触发");
+        assert_eq!(expired.len(), 1, "First task should trigger on tick 1"); // 第一个任务应该在第 1 个 tick 触发
         assert_eq!(expired[0].id, task_id_1);
         
-        // 继续推进到 511 ticks（从 tick 1 到 tick 511），第二个任务应该触发
+        // Continue advancing to 511 ticks (from tick 1 to tick 511), second task should trigger (继续前进 511个tick (从tick 1到tick 511)，第二个任务应该触发)
         let mut triggered = false;
         for i in 0..510 {
             let expired = wheel.advance();
             if !expired.is_empty() {
-                assert_eq!(expired.len(), 1, "第 {} 次推进应该触发第二个任务", i + 2);
+                assert_eq!(expired.len(), 1, "The {}th advance should trigger the second task", i + 2); // 第 {i + 2} 次前进应该触发第二个任务
                 assert_eq!(expired[0].id, task_id_2);
                 triggered = true;
                 break;
             }
         }
-        assert!(triggered, "第二个任务应该在 tick 511 触发");
+        assert!(triggered, "Second task should trigger on tick 511"); // 第二个任务应该在第 511 个 tick 触发
         
-        assert!(wheel.is_empty(), "所有任务都应该已经触发");
+        assert!(wheel.is_empty(), "All tasks should have been triggered"); // 所有任务都应该被触发
     }
 
     #[test]
     fn test_batch_cancel_small_threshold() {
         use crate::task::{TimerTask, CompletionNotifier};
         
-        // 测试小批量阈值优化
+        // Test small batch threshold optimization (测试小批量阈值优化)
         let batch_config = BatchConfig {
             small_batch_threshold: 5,
         };
         let mut wheel = Wheel::new(WheelConfig::default(), batch_config);
         
-        // 插入 10 个任务
+        // Insert 10 tasks (插入 10 个任务)
         let mut task_ids = Vec::new();
         for _ in 0..10 {
             let callback = CallbackWrapper::new(|| async {});
@@ -1539,15 +1626,15 @@ mod tests {
             task_ids.push(task_id);
         }
         
-        // 小批量取消（应该使用直接取消路径）
+        // Small batch cancel (should use direct cancel path) (小批量取消 (应该使用直接取消路径))
         let cancelled = wheel.cancel_batch(&task_ids[0..3]);
         assert_eq!(cancelled, 3);
         
-        // 大批量取消（应该使用分组优化路径）
+        // Large batch cancel (should use grouped optimization path) (大批量取消 (应该使用分组优化路径))
         let cancelled = wheel.cancel_batch(&task_ids[3..10]);
         assert_eq!(cancelled, 7);
         
-        assert!(wheel.is_empty());
+        assert!(wheel.is_empty()); // 时间轮应该为空
     }
 
     #[test]
@@ -1556,7 +1643,7 @@ mod tests {
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
-        // 插入多个任务，验证 TaskId 唯一性
+        // Insert multiple tasks, verify TaskId uniqueness (插入多个任务，验证 TaskId 唯一性)
         let mut task_ids = std::collections::HashSet::new();
         for _ in 0..100 {
             let callback = CallbackWrapper::new(|| async {});
@@ -1564,7 +1651,7 @@ mod tests {
             let task = TimerTask::new(Duration::from_millis(100), Some(callback));
             let task_id = wheel.insert(task, CompletionNotifier(tx));
             
-            assert!(task_ids.insert(task_id), "TaskId 应该是唯一的");
+            assert!(task_ids.insert(task_id), "TaskId should be unique"); // TaskId 应该唯一
         }
         
         assert_eq!(task_ids.len(), 100);

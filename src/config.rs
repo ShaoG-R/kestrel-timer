@@ -1,27 +1,28 @@
-//! 定时器配置模块 (Timer Configuration Module)
+//! Timer Configuration Module
 //!
-//! 提供分层的配置结构和 Builder 模式，用于配置时间轮、服务和批处理行为。
-//! (Provides hierarchical configuration structure and Builder pattern for configuring timing wheel, service, and batch processing behavior)
-
+//! Provides hierarchical configuration structure and Builder pattern for configuring timing wheel, service, and batch processing behavior.
+//!
+//! 定时器配置模块，提供分层的配置结构和 Builder 模式，用于配置时间轮、服务和批处理行为。
 use crate::error::TimerError;
 use std::time::Duration;
 
-/// 时间轮配置 (Timing Wheel Configuration)
+/// Timing Wheel Configuration
 ///
-/// 用于配置分层时间轮的参数。系统仅支持分层模式。
-/// (Configuration parameters for hierarchical timing wheel. The system only supports hierarchical mode)
+/// Used to configure parameters for hierarchical timing wheel. The system only supports hierarchical mode.
 ///
-/// # 示例 (Examples)
+/// # 时间轮配置
+/// 
+/// 用于配置分层时间轮的参数。系统只支持分层模式。
+/// 
+/// # Examples (示例)
 /// ```no_run
 /// use kestrel_timer::WheelConfig;
 /// use std::time::Duration;
 ///
-/// // 使用默认配置（分层模式）
-/// //    (Use default configuration, hierarchical mode)
+/// // Use default configuration (使用默认配置，分层模式)
 /// let config = WheelConfig::default();
 ///
-/// // 使用 Builder 自定义配置
-/// //    (Use Builder to customize configuration)
+/// // Use Builder to customize configuration (使用 Builder 自定义配置)
 /// let config = WheelConfig::builder()
 ///     .l0_tick_duration(Duration::from_millis(20))
 ///     .l0_slot_count(1024)
@@ -32,18 +33,24 @@ use std::time::Duration;
 /// ```
 #[derive(Debug, Clone)]
 pub struct WheelConfig {
-    /// L0 层（底层）每个 tick 的时间长度
-    /// (Duration of each tick in L0 layer, bottom layer)
+    /// Duration of each tick in L0 layer, bottom layer
+    /// 
+    /// L0 层每个 tick 的持续时间
     pub l0_tick_duration: Duration,
-    /// L0 层槽位数量（必须是 2 的幂次方）
-    /// (Number of slots in L0 layer, must be power of 2)
+    
+    /// Number of slots in L0 layer, must be power of 2
+    /// 
+    /// L0 层槽位数，必须是 2 的幂
     pub l0_slot_count: usize,
     
-    /// L1 层（高层）每个 tick 的时间长度
-    /// (Duration of each tick in L1 layer, upper layer)
+    /// Duration of each tick in L1 layer, upper layer
+    /// 
+    /// L1 层每个 tick 的持续时间
     pub l1_tick_duration: Duration,
-    /// L1 层槽位数量（必须是 2 的幂次方）
-    /// (Number of slots in L1 layer, must be power of 2)
+
+    /// Number of slots in L1 layer, must be power of 2
+    /// 
+    /// L1 层槽位数，必须是 2 的幂
     pub l1_slot_count: usize,
 }
 
@@ -59,13 +66,13 @@ impl Default for WheelConfig {
 }
 
 impl WheelConfig {
-    /// 创建配置构建器 (Create configuration builder)
+    /// Create configuration builder (创建配置构建器)
     pub fn builder() -> WheelConfigBuilder {
         WheelConfigBuilder::default()
     }
 }
 
-/// 时间轮配置构建器 (Timing Wheel Configuration Builder)
+/// Timing Wheel Configuration Builder
 #[derive(Debug, Clone)]
 pub struct WheelConfigBuilder {
     l0_tick_duration: Duration,
@@ -86,103 +93,95 @@ impl Default for WheelConfigBuilder {
 }
 
 impl WheelConfigBuilder {
-    /// 设置 L0 层 tick 时长 (Set L0 layer tick duration)
+    /// Set L0 layer tick duration
     pub fn l0_tick_duration(mut self, duration: Duration) -> Self {
         self.l0_tick_duration = duration;
         self
     }
 
-    /// 设置 L0 层槽位数量 (Set L0 layer slot count)
+    /// Set L0 layer slot count
     pub fn l0_slot_count(mut self, count: usize) -> Self {
         self.l0_slot_count = count;
         self
     }
 
-    /// 设置 L1 层 tick 时长 (Set L1 layer tick duration)
+    /// Set L1 layer tick duration
     pub fn l1_tick_duration(mut self, duration: Duration) -> Self {
         self.l1_tick_duration = duration;
         self
     }
 
-    /// 设置 L1 层槽位数量 (Set L1 layer slot count)
+    /// Set L1 layer slot count
     pub fn l1_slot_count(mut self, count: usize) -> Self {
         self.l1_slot_count = count;
         self
     }
 
-    /// 构建配置并进行验证
-    ///      (Build and validate configuration)
+    /// Build and validate configuration
     ///
-    /// # 返回 (Returns)
-    /// - `Ok(WheelConfig)`: 配置有效
-    ///      (Configuration is valid)
-    /// - `Err(TimerError)`: 配置验证失败
-    ///      (Configuration validation failed)
+    /// # Returns
+    /// - `Ok(WheelConfig)`: Configuration is valid
+    /// - `Err(TimerError)`: Configuration validation failed
     ///
-    /// # 验证规则 (Validation Rules)
-    /// - L0 tick 时长必须大于 0 
-    ///      (L0 tick duration must be greater than 0)
-    /// - L1 tick 时长必须大于 0 
-    ///      (L1 tick duration must be greater than 0)
-    /// - L0 槽位数量必须大于 0 且是 2 的幂次方
-    ///      (L0 slot count must be greater than 0 and power of 2)
-    /// - L1 槽位数量必须大于 0 且是 2 的幂次方
-    ///      (L1 slot count must be greater than 0 and power of 2)
-    /// - L1 tick 必须是 L0 tick 的整数倍
-    ///      (L1 tick must be an integer multiple of L0 tick)
+    /// # Validation Rules
+    /// - L0 tick duration must be greater than 0
+    /// - L1 tick duration must be greater than 0
+    /// - L0 slot count must be greater than 0 and power of 2
+    /// - L1 slot count must be greater than 0 and power of 2
+    /// - L1 tick must be an integer multiple of L0 tick
     pub fn build(self) -> Result<WheelConfig, TimerError> {
-        // 验证 L0 层配置
+        // Validate L0 layer configuration
         if self.l0_tick_duration.is_zero() {
             return Err(TimerError::InvalidConfiguration {
                 field: "l0_tick_duration".to_string(),
-                reason: "L0 层 tick 时长必须大于 0".to_string(),
+                reason: "L0 layer tick duration must be greater than 0".to_string(),
             });
         }
 
         if self.l0_slot_count == 0 {
             return Err(TimerError::InvalidSlotCount {
                 slot_count: self.l0_slot_count,
-                reason: "L0 层槽位数量必须大于 0",
+                reason: "L0 layer slot count must be greater than 0",
             });
         }
 
         if !self.l0_slot_count.is_power_of_two() {
             return Err(TimerError::InvalidSlotCount {
                 slot_count: self.l0_slot_count,
-                reason: "L0 层槽位数量必须是 2 的幂次方",
+                reason: "L0 layer slot count must be power of 2",
             });
         }
 
-        // 验证 L1 层配置
+        // Validate L1 layer configuration
         if self.l1_tick_duration.is_zero() {
             return Err(TimerError::InvalidConfiguration {
                 field: "l1_tick_duration".to_string(),
-                reason: "L1 层 tick 时长必须大于 0".to_string(),
+                reason: "L1 layer tick duration must be greater than 0".to_string(),
             });
         }
 
         if self.l1_slot_count == 0 {
             return Err(TimerError::InvalidSlotCount {
                 slot_count: self.l1_slot_count,
-                reason: "L1 层槽位数量必须大于 0",
+                reason: "L1 layer slot count must be greater than 0",
             });
         }
 
         if !self.l1_slot_count.is_power_of_two() {
             return Err(TimerError::InvalidSlotCount {
                 slot_count: self.l1_slot_count,
-                reason: "L1 层槽位数量必须是 2 的幂次方",
+                reason: "L1 layer slot count must be power of 2",
             });
         }
 
-        // 验证 L1 tick 是 L0 tick 的整数倍
+        // Validate L1 tick is an integer multiple of L0 tick
         let l0_ms = self.l0_tick_duration.as_millis() as u64;
         let l1_ms = self.l1_tick_duration.as_millis() as u64;
         if l1_ms % l0_ms != 0 {
             return Err(TimerError::InvalidConfiguration {
                 field: "l1_tick_duration".to_string(),
                 reason: format!(
-                    "L1 tick 时长 ({} ms) 必须是 L0 tick 时长 ({} ms) 的整数倍",
+                    "L1 tick duration ({} ms) must be an integer multiple of L0 tick duration ({} ms)",
                     l1_ms, l0_ms
                 ),
             });
@@ -197,19 +196,22 @@ impl WheelConfigBuilder {
     }
 }
 
-/// 服务配置 (Service Configuration)
+/// Service Configuration
 ///
+/// Used to configure channel capacities for TimerService.
+///
+/// # 服务配置
+/// 
 /// 用于配置 TimerService 的通道容量。
-/// (Configuration for TimerService channel capacities)
-///
-/// # 示例 (Examples)
+/// 
+/// # Examples (示例)
 /// ```no_run
 /// use kestrel_timer::ServiceConfig;
 ///
-/// // 使用默认配置 (Use default configuration)
+/// // Use default configuration (使用默认配置)
 /// let config = ServiceConfig::default();
 ///
-/// // 使用 Builder 自定义配置 (Use Builder to customize configuration)
+/// // Use Builder to customize configuration (使用 Builder 自定义配置)
 /// let config = ServiceConfig::builder()
 ///     .command_channel_capacity(1024)
 ///     .timeout_channel_capacity(2000)
@@ -218,9 +220,14 @@ impl WheelConfigBuilder {
 /// ```
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
-    /// 命令通道容量 (Command channel capacity)
+    /// Command channel capacity 
+    /// 
+    /// 命令通道容量
     pub command_channel_capacity: usize,
-    /// 超时通道容量 (Timeout channel capacity)
+
+    /// Timeout channel capacity
+    /// 
+    /// 超时通道容量
     pub timeout_channel_capacity: usize,
 }
 
@@ -234,17 +241,26 @@ impl Default for ServiceConfig {
 }
 
 impl ServiceConfig {
-    /// 创建配置构建器 (Create configuration builder)
+    /// Create configuration builder (创建配置构建器)
     pub fn builder() -> ServiceConfigBuilder {
         ServiceConfigBuilder::default()
     }
 }
 
-/// 服务配置构建器 (Service Configuration Builder)
+/// Service Configuration Builder 
+/// 
+/// 用于构建 ServiceConfig 的构建器。
 #[derive(Debug, Clone)]
 pub struct ServiceConfigBuilder {
-    command_channel_capacity: usize,
-    timeout_channel_capacity: usize,
+    /// Command channel capacity
+    /// 
+    /// 命令通道容量
+    pub command_channel_capacity: usize,
+    
+    /// Timeout channel capacity
+    /// 
+    /// 超时通道容量
+    pub timeout_channel_capacity: usize,
 }
 
 impl Default for ServiceConfigBuilder {
@@ -258,42 +274,48 @@ impl Default for ServiceConfigBuilder {
 }
 
 impl ServiceConfigBuilder {
-    /// 设置命令通道容量 (Set command channel capacity)
+    /// Set command channel capacity (设置命令通道容量)
     pub fn command_channel_capacity(mut self, capacity: usize) -> Self {
         self.command_channel_capacity = capacity;
         self
     }
 
-    /// 设置超时通道容量 (Set timeout channel capacity)
+    /// Set timeout channel capacity (设置超时通道容量)
     pub fn timeout_channel_capacity(mut self, capacity: usize) -> Self {
         self.timeout_channel_capacity = capacity;
         self
     }
 
-    /// 构建配置并进行验证
-    ///      (Build and validate configuration)
+    /// Build and validate configuration
     ///
-    /// # 返回 (Returns)
+    /// # Returns
+    /// - `Ok(ServiceConfig)`: Configuration is valid
+    /// - `Err(TimerError)`: Configuration validation failed
+    ///
+    /// # Validation Rules
+    /// - All channel capacities must be greater than 0
+    /// 
+    /// 构建并验证配置
+    /// 
+    /// # 返回值
     /// - `Ok(ServiceConfig)`: 配置有效
-    ///      (Configuration is valid)
     /// - `Err(TimerError)`: 配置验证失败
-    ///      (Configuration validation failed)
-    ///
-    /// # 验证规则 (Validation Rules)
+    /// 
+    /// # 验证规则
     /// - 所有通道容量必须大于 0
-    ///      (All channel capacities must be greater than 0)
+    /// 
     pub fn build(self) -> Result<ServiceConfig, TimerError> {
         if self.command_channel_capacity == 0 {
             return Err(TimerError::InvalidConfiguration {
                 field: "command_channel_capacity".to_string(),
-                reason: "命令通道容量必须大于 0".to_string(),
+                reason: "Command channel capacity must be greater than 0 (命令通道容量必须大于 0)".to_string(),
             });
         }
 
         if self.timeout_channel_capacity == 0 {
             return Err(TimerError::InvalidConfiguration {
                 field: "timeout_channel_capacity".to_string(),
-                reason: "超时通道容量必须大于 0".to_string(),
+                reason: "Timeout channel capacity must be greater than 0 (超时通道容量必须大于 0)".to_string(),
             });
         }
 
@@ -304,30 +326,36 @@ impl ServiceConfigBuilder {
     }
 }
 
-/// 批处理配置 (Batch Processing Configuration)
+/// Batch Processing Configuration
 ///
-/// 用于配置批量操作的优化参数。
-/// (Configuration parameters for batch operation optimization)
+/// Used to configure optimization parameters for batch operations.
+/// 
+/// 用于配置批处理操作的优化参数。
+/// 
+/// # 批处理配置
+/// 
+/// 用于配置批处理操作的优化参数。
 ///
-/// # 示例 (Examples)
+/// # Examples (示例)
 /// ```no_run
 /// use kestrel_timer::BatchConfig;
 ///
-/// // 使用默认配置 (Use default configuration)
+/// // Use default configuration (使用默认配置)
 /// let config = BatchConfig::default();
 ///
-/// // 自定义配置 (Custom configuration)
+/// // Custom configuration (使用自定义配置)
 /// let config = BatchConfig {
 ///     small_batch_threshold: 20,
 /// };
 /// ```
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
-    /// 小批量阈值，用于批量取消优化
-    /// (Small batch threshold for batch cancellation optimization)
+    /// Small batch threshold, used for batch cancellation optimization
+    /// When the number of tasks to be cancelled is less than or equal to this value, cancel individually without grouping and sorting
     /// 
-    /// 当批量取消的任务数量小于等于此值时，直接逐个取消而不进行分组排序
-    /// (When batch cancellation count is less than or equal to this value, cancel individually without grouping and sorting)
+    /// 小批量阈值，用于批量取消操作的优化
+    /// 
+    /// 当需要取消的任务数量小于或等于此值时，取消操作将单独进行，无需分组和排序
     pub small_batch_threshold: usize,
 }
 
@@ -339,19 +367,23 @@ impl Default for BatchConfig {
     }
 }
 
-/// 顶层定时器配置 (Top-level Timer Configuration)
+/// Top-level Timer Configuration
 ///
-/// 组合所有子配置，提供完整的定时器系统配置。
-/// (Combines all sub-configurations to provide complete timer system configuration)
+/// Combines all sub-configurations to provide complete timer system configuration.
 ///
-/// # 示例 (Examples)
+/// # 定时器配置
+/// 
+/// 用于组合所有子配置，提供完整的定时器系统配置。
+/// 
+/// # Examples (示例)
 /// ```no_run
 /// use kestrel_timer::TimerConfig;
 ///
-/// // 使用默认配置 (Use default configuration)
+/// // Use default configuration (使用默认配置)
 /// let config = TimerConfig::default();
 ///
-/// // 使用 Builder 自定义配置（仅配置服务参数）(Use Builder to customize configuration, service parameters only)
+/// // Use Builder to customize configuration, service parameters only
+/// // (使用 Builder 自定义配置，仅配置服务参数)
 /// let config = TimerConfig::builder()
 ///     .command_channel_capacity(1024)
 ///     .timeout_channel_capacity(2000)
@@ -360,11 +392,11 @@ impl Default for BatchConfig {
 /// ```
 #[derive(Debug, Clone)]
 pub struct TimerConfig {
-    /// 时间轮配置 (Timing wheel configuration)
+    /// Timing wheel configuration
     pub wheel: WheelConfig,
-    /// 服务配置 (Service configuration)
+    /// Service configuration
     pub service: ServiceConfig,
-    /// 批处理配置 (Batch processing configuration)
+    /// Batch processing configuration
     pub batch: BatchConfig,
 }
 
@@ -379,13 +411,15 @@ impl Default for TimerConfig {
 }
 
 impl TimerConfig {
-    /// 创建配置构建器 (Create configuration builder)
+    /// Create configuration builder (创建配置构建器)
     pub fn builder() -> TimerConfigBuilder {
         TimerConfigBuilder::default()
     }
 }
 
-/// 顶层定时器配置构建器 (Top-level Timer Configuration Builder)
+/// Top-level Timer Configuration Builder (顶级定时器配置构建器)
+/// 
+/// 用于构建 TimerConfig 的构建器。
 #[derive(Debug)]
 pub struct TimerConfigBuilder {
     wheel_builder: WheelConfigBuilder,
@@ -404,32 +438,36 @@ impl Default for TimerConfigBuilder {
 }
 
 impl TimerConfigBuilder {
-    /// 设置命令通道容量 (Set command channel capacity)
+    /// Set command channel capacity (设置命令通道容量)
     pub fn command_channel_capacity(mut self, capacity: usize) -> Self {
         self.service_builder = self.service_builder.command_channel_capacity(capacity);
         self
     }
 
-    /// 设置超时通道容量 (Set timeout channel capacity)
+    /// Set timeout channel capacity (设置超时通道容量)
     pub fn timeout_channel_capacity(mut self, capacity: usize) -> Self {
         self.service_builder = self.service_builder.timeout_channel_capacity(capacity);
         self
     }
 
-    /// 设置小批量阈值 (Set small batch threshold)
+    /// Set small batch threshold (设置小批量阈值)
     pub fn small_batch_threshold(mut self, threshold: usize) -> Self {
         self.batch_config.small_batch_threshold = threshold;
         self
     }
 
-    /// 构建配置并进行验证
-    ///      (Build and validate configuration)
+    /// Build and validate configuration
     ///
-    /// # 返回 (Returns)
+    /// # Returns
+    /// - `Ok(TimerConfig)`: Configuration is valid
+    /// - `Err(TimerError)`: Configuration validation failed
+    /// 
+    /// # 构建并验证配置
+    /// 
+    /// # 返回值
     /// - `Ok(TimerConfig)`: 配置有效
-    ///      (Configuration is valid)
     /// - `Err(TimerError)`: 配置验证失败
-    ///      (Configuration validation failed)
+    /// 
     pub fn build(self) -> Result<TimerConfig, TimerError> {
         Ok(TimerConfig {
             wheel: self.wheel_builder.build()?,

@@ -10,40 +10,42 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// TimerService 命令类型
+/// Service command type
 /// 
-/// (Service command type)
+/// 服务命令类型
 enum ServiceCommand {
-    /// 添加批量定时器句柄（仅包含必要数据：task_ids 和 completion_rxs）
-    /// (Add batch timer handle, only contains necessary data: task_ids and completion_rxs)
+    /// Add batch timer handle, only contains necessary data: task_ids and completion_rxs
+    /// 
+    /// 添加批量定时器句柄，仅包含必要数据: task_ids 和 completion_rxs
     AddBatchHandle {
         task_ids: Vec<TaskId>,
         completion_rxs: Vec<tokio::sync::oneshot::Receiver<TaskCompletionReason>>,
     },
-    /// 添加单个定时器句柄（仅包含必要数据：task_id 和 completion_rx）
-    /// (Add single timer handle, only contains necessary data: task_id and completion_rx)
+    /// Add single timer handle, only contains necessary data: task_id and completion_rx
+    /// 
+    /// 添加单个定时器句柄，仅包含必要数据: task_id 和 completion_rx
     AddTimerHandle {
         task_id: TaskId,
         completion_rx: tokio::sync::oneshot::Receiver<TaskCompletionReason>,
     },
 }
 
-/// TimerService - 基于 Actor 模式的定时器服务
-/// (TimerService - timer service based on Actor pattern)
-/// 
-/// 管理多个定时器句柄，监听所有超时事件，并将 TaskId 聚合转发给用户。
-/// (Manages multiple timer handles, listens to all timeout events, and aggregates TaskId to be forwarded to the user.)
-/// # 特性 (Features)
-/// - 自动监听所有添加的定时器句柄的超时事件
-///      (Automatically listens to all added timer handles' timeout events)
-/// - 超时后自动从内部管理中移除该任务
-///      (Automatically removes the task from internal management after timeout)
-/// - 将超时的 TaskId 转发到统一的通道供用户接收
-///      (Aggregates TaskId to be forwarded to the user's unified channel)
-/// - 支持动态添加 BatchHandle 和 TimerHandle
-///      (Supports dynamic addition of BatchHandle and TimerHandle)
+/// TimerService - timer service based on Actor pattern
+/// Manages multiple timer handles, listens to all timeout events, and aggregates TaskId to be forwarded to the user.
+/// # Features
+/// - Automatically listens to all added timer handles' timeout events
+/// - Automatically removes the task from internal management after timeout
+/// - Aggregates TaskId to be forwarded to the user's unified channel
+/// - Supports dynamic addition of BatchHandle and TimerHandle
 ///
-/// # 示例 (Examples)
+/// 
+/// # 定时器服务，基于 Actor 模式管理多个定时器句柄，监听所有超时事件，并将 TaskId 聚合转发给用户。
+/// - 自动监听所有添加的定时器句柄的超时事件
+/// - 自动在超时后从内部管理中移除任务
+/// - 将 TaskId 聚合转发给用户
+/// - 支持动态添加 BatchHandle 和 TimerHandle
+/// 
+/// # Examples (示例)
 /// ```no_run
 /// use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
 /// use std::time::Duration;
@@ -53,8 +55,8 @@ enum ServiceCommand {
 ///     let timer = TimerWheel::with_defaults();
 ///     let mut service = timer.create_service(ServiceConfig::default());
 ///     
-///     // 使用两步式 API 通过 service 批量调度定时器
-///     // (Use two-step API to batch schedule timers through service)
+///     // Use two-step API to batch schedule timers through service
+///     // (使用两步 API 通过服务批量调度定时器)
 ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
 ///         .map(|i| {
 ///             let callback = Some(CallbackWrapper::new(move || async move {
@@ -63,47 +65,58 @@ enum ServiceCommand {
 ///             (Duration::from_millis(100), callback)
 ///         })
 ///         .collect();
-///     // (Create batch of tasks with callbacks)
 ///     let tasks = TimerService::create_batch_with_callbacks(callbacks);
 ///     service.register_batch(tasks).unwrap();
-///     // (Register batch of tasks)
 ///     
-///     // 接收超时通知
-///     // (Receive timeout notifications)
+///     // Receive timeout notifications (接收超时通知)
 ///     let mut rx = service.take_receiver().unwrap();
-///     // (Take receiver and receive timeout notifications)
 ///     while let Some(task_id) = rx.recv().await {
-///         // (Receive timeout notification)
+///         // Receive timeout notification (接收超时通知)
 ///         println!("Task {:?} completed", task_id);
 ///     }
 /// }
 /// ```
 pub struct TimerService {
-    /// 命令发送端
+    /// Command sender
+    /// 
+    /// 命令发送器
     command_tx: mpsc::Sender<ServiceCommand>,
-    /// 超时接收端
+    /// Timeout receiver
+    /// 
+    /// 超时接收器
     timeout_rx: Option<mpsc::Receiver<TaskId>>,
+    /// Actor task handle
+    /// 
     /// Actor 任务句柄
     actor_handle: Option<JoinHandle<()>>,
-    /// 时间轮引用（用于直接调度定时器）
+    /// Timing wheel reference (for direct scheduling of timers)
+    /// 
+    /// 时间轮引用 (用于直接调度定时器)
     wheel: Arc<Mutex<Wheel>>,
-    /// Actor 关闭信号发送端
+    /// Actor shutdown signal sender
+    /// 
+    /// Actor 关闭信号发送器
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl TimerService {
-    /// 创建新的 TimerService
     /// Create new TimerService
     ///
-    /// # 参数 (Parameters)
-    /// - `wheel`: 时间轮引用
-    ///      (Timing wheel reference)
-    /// - `config`: 服务配置
-    ///      (Service configuration)
+    /// # Parameters
+    /// - `wheel`: Timing wheel reference
+    /// - `config`: Service configuration
     ///
-    /// # 注意 (Notes)
-    /// 通常不直接调用此方法，而是使用 `TimerWheel::create_service()` 来创建。
-    ///      (Typically not called directly, but used to create through `TimerWheel::create_service()`)
+    /// # Notes
+    /// Typically not called directly, but used to create through `TimerWheel::create_service()`
+    ///
+    /// 创建新的 TimerService
+    /// 
+    /// # 参数
+    /// - `wheel`: 时间轮引用
+    /// - `config`: 服务配置
+    ///
+    /// # 注意
+    /// 通常不直接调用，而是通过 `TimerWheel::create_service()` 创建
     ///
     pub(crate) fn new(wheel: Arc<Mutex<Wheel>>, config: ServiceConfig) -> Self {
         let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity);
@@ -124,18 +137,23 @@ impl TimerService {
         }
     }
 
-    /// 获取超时接收器（转移所有权）
-    ///  (Get timeout receiver, transfer ownership)
+    /// Get timeout receiver (transfer ownership)
     /// 
-    /// # 返回 (Returns)
-    /// 超时通知接收器，如果已经被取走则返回 None
-    ///  (Timeout notification receiver, if already taken, returns None)
+    /// # Returns
+    /// Timeout notification receiver, if already taken, returns None
     ///
-    /// # 注意 (Notes)
-    /// 此方法只能调用一次，因为它会转移接收器的所有权
-    ///  (This method can only be called once, because it transfers ownership of the receiver)
+    /// # Notes
+    /// This method can only be called once, because it transfers ownership of the receiver
     ///
-    /// # 示例 (Examples)s
+    /// 获取超时通知接收器 (转移所有权)
+    /// 
+    /// # 返回值
+    /// 超时通知接收器，如果已经取走，返回 None
+    /// 
+    /// # 注意
+    /// 此方法只能调用一次，因为它转移了接收器的所有权
+    /// 
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, ServiceConfig};
     /// # #[tokio::main]
@@ -153,24 +171,25 @@ impl TimerService {
         self.timeout_rx.take()
     }
 
-    /// 取消指定的任务
-    /// (Cancel specified task)
+    /// Cancel specified task
     /// 
-    /// # 参数 (Parameters)
-    /// - `task_id`: 要取消的任务 ID
-    ///      (Task ID to cancel)
+    /// # Parameters
+    /// - `task_id`: Task ID to cancel
     ///
-    /// # 返回 (Returns)
-    /// - `true`: 任务存在且成功取消
-    ///      (Task exists and cancellation is successful)
+    /// # Returns
+    /// - `true`: Task exists and cancellation is successful
+    /// - `false`: Task does not exist or cancellation fails
+    ///
+    /// 取消指定任务
+    /// 
+    /// # 参数
+    /// - `task_id`: 任务 ID
+    ///
+    /// # 返回值
+    /// - `true`: 任务存在且取消成功
     /// - `false`: 任务不存在或取消失败
-    ///      (Task does not exist or cancellation fails)
     ///
-    /// # 性能说明 (Performance Notes)
-    /// 此方法使用直接取消优化，不需要等待 Actor 处理，大幅降低延迟
-    ///      (This method uses direct cancellation optimization, does not need to wait for Actor processing, greatly reducing latency)
-    ///
-    /// # 示例 (Examples)
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -180,47 +199,48 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-    /// // 使用两步式 API 调度定时器
-    /// // (Use two-step API to schedule timers)
+    /// // Use two-step API to schedule timers
     /// let callback = Some(CallbackWrapper::new(|| async move {
-    ///     println!("Timer fired!");
+    ///     println!("Timer fired!"); // 定时器触发
     /// }));
     /// let task = TimerService::create_task(Duration::from_secs(10), callback);
     /// let task_id = task.get_id();
-    /// service.register(task).unwrap();
+    /// service.register(task).unwrap(); // 注册定时器
     /// 
-    /// // 取消任务
-    /// // (Cancel task)
+    /// // Cancel task
     /// let cancelled = service.cancel_task(task_id);
-    /// println!("Task cancelled: {}", cancelled);
+    /// println!("Task cancelled: {}", cancelled); // 任务取消
     /// # }
     /// ```
     #[inline]
     pub fn cancel_task(&self, task_id: TaskId) -> bool {
-        // 直接取消任务，无需通知 Actor
-        // FuturesUnordered 会在任务被取消时自动清理
-        //
         // Direct cancellation, no need to notify Actor
         // FuturesUnordered will automatically clean up when tasks are cancelled
+        // 直接取消，无需通知 Actor
+        // FuturesUnordered 将在任务取消时自动清理
         let mut wheel = self.wheel.lock();
         wheel.cancel(task_id)
     }
 
+    /// Batch cancel tasks
+    /// 
+    /// Use underlying batch cancellation operation to cancel multiple tasks at once, performance is better than calling cancel_task repeatedly.
+    /// 
+    /// # Parameters
+    /// - `task_ids`: List of task IDs to cancel
+    ///
+    /// # Returns
+    /// Number of successfully cancelled tasks
+    ///
     /// 批量取消任务
-    /// (Batch cancel tasks)
     /// 
-    /// 使用底层的批量取消操作一次性取消多个任务，性能优于循环调用 cancel_task。
-    /// (Use underlying batch cancellation operation to cancel multiple tasks at once, performance is better than calling cancel_task repeatedly.)
-    /// 
-    /// # 参数 (Parameters)
-    /// - `task_ids`: 要取消的任务 ID 列表
-    ///      (List of task IDs to cancel)
+    /// # 参数
+    /// - `task_ids`: 任务 ID 列表
     ///
-    /// # 返回 (Returns)
+    /// # 返回值
     /// 成功取消的任务数量
-    ///      (Number of successfully cancelled tasks)
     ///
-    /// # 示例 (Examples)
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -233,18 +253,18 @@ impl TimerService {
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..10)
     ///     .map(|i| {
     ///         let callback = Some(CallbackWrapper::new(move || async move {
-    ///             println!("Timer {} fired!", i);
+    ///             println!("Timer {} fired!", i); // 定时器触发
     ///         }));
     ///         (Duration::from_secs(10), callback)
     ///     })
     ///     .collect();
     /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-    /// service.register_batch(tasks).unwrap();
+    /// service.register_batch(tasks).unwrap(); // 注册定时器
     /// 
-    /// // 批量取消
+    /// // Batch cancel
     /// let cancelled = service.cancel_batch(&task_ids);
-    /// println!("Cancelled {} tasks", cancelled);
+    /// println!("Cancelled {} tasks", cancelled); // 任务取消
     /// # }
     /// ```
     #[inline]
@@ -253,38 +273,47 @@ impl TimerService {
             return 0;
         }
 
-        // 优化：直接使用底层的批量取消，无需通知 Actor
-        // FuturesUnordered 会在任务被取消时自动清理
+        // Direct batch cancellation, no need to notify Actor
+        // FuturesUnordered will automatically clean up when tasks are cancelled
+        // 直接批量取消，无需通知 Actor
+        // FuturesUnordered 将在任务取消时自动清理
         let mut wheel = self.wheel.lock();
         wheel.cancel_batch(task_ids)
     }
 
-    /// 推迟任务（替换回调）
-    /// (Postpone task (replace callback))
+    /// Postpone task (replace callback)
     /// 
-    /// # 参数 (Parameters)
-    /// - `task_id`: 要推迟的任务 ID
-    ///      (Task ID to postpone)
-    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）
-    ///      (New delay time (recalculated from current time point))
+    /// # Parameters
+    /// - `task_id`: Task ID to postpone
+    /// - `new_delay`: New delay time (recalculated from current time point)
+    /// - `callback`: New callback function
+    ///
+    /// # Returns
+    /// - `true`: Task exists and is successfully postponed
+    /// - `false`: Task does not exist or postponement fails
+    ///
+    /// # Notes
+    /// - Task ID remains unchanged after postponement
+    /// - Original timeout notification remains valid
+    /// - Callback function will be replaced with new callback
+    ///
+    /// 推迟任务 (替换回调)
+    /// 
+    /// # 参数
+    /// - `task_id`: 任务 ID
+    /// - `new_delay`: 新的延迟时间 (从当前时间点重新计算)
     /// - `callback`: 新的回调函数
-    ///      (New callback function)
     ///
-    /// # 返回 (Returns)
-    /// - `true`: 任务存在且成功推迟
-    ///      (Task exists and is successfully postponed)
-    /// - `false`: 任务不存在或推迟失败
-    ///      (Task does not exist or postponement fails)
+    /// # 返回值
+    /// - `true`: 任务存在且延期成功
+    /// - `false`: 任务不存在或延期失败
     ///
-    /// # 注意 (Notes)
-    /// - 推迟后任务 ID 保持不变
-    ///      (Task ID remains unchanged after postponement)
-    /// - 原有的超时通知仍然有效
-    ///      (Original timeout notification remains valid)
-    /// - 回调函数会被替换为新的回调
-    ///      (Callback function will be replaced with new callback)
+    /// # 注意
+    /// - 任务 ID 在延期后保持不变
+    /// - 原始超时通知保持有效
+    /// - 回调函数将被新的回调函数替换
     ///
-    /// # 示例 (Examples)
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -295,14 +324,13 @@ impl TimerService {
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// let callback = Some(CallbackWrapper::new(|| async {
-    ///     println!("Original callback");
+    ///     println!("Original callback"); // 原始回调
     /// }));
     /// let task = TimerService::create_task(Duration::from_secs(5), callback);
     /// let task_id = task.get_id();
-    /// service.register(task).unwrap();
+    /// service.register(task).unwrap(); // 注册定时器
     /// 
-    /// // 推迟并替换回调
-    /// // (Postpone and replace callback)
+    /// // Postpone and replace callback (延期并替换回调)
     /// let new_callback = Some(CallbackWrapper::new(|| async { println!("New callback!"); }));
     /// let success = service.postpone(
     ///     task_id,
@@ -318,18 +346,23 @@ impl TimerService {
         wheel.postpone(task_id, new_delay, callback)
     }
 
-    /// 批量推迟任务（保持原回调）
-    /// (Batch postpone tasks, keep original callbacks)
+    /// Batch postpone tasks (keep original callbacks)
     /// 
-    /// # 参数 (Parameters)
-    /// - `updates`: (任务ID, 新延迟) 的元组列表
-    ///      (List of tuples of (task ID, new delay))
+    /// # Parameters
+    /// - `updates`: List of tuples of (task ID, new delay)
     ///
-    /// # 返回 (Returns)
-    /// 成功推迟的任务数量
-    ///      (Number of successfully postponed tasks)
+    /// # Returns
+    /// Number of successfully postponed tasks
     ///
-    /// # 示例 (Examples)
+    /// 批量延期任务 (保持原始回调)
+    /// 
+    /// # 参数
+    /// - `updates`: (任务 ID, 新延迟) 元组列表
+    ///
+    /// # 返回值
+    /// 成功延期的任务数量
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -351,8 +384,8 @@ impl TimerService {
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
-    /// // 批量推迟（保持原回调）
-    /// // (Batch postpone, keep original callbacks)
+    /// // Batch postpone (keep original callbacks)
+    /// // 批量延期任务 (保持原始回调)
     /// let updates: Vec<_> = task_ids
     ///     .into_iter()
     ///     .map(|id| (id, Duration::from_secs(10)))
@@ -371,18 +404,23 @@ impl TimerService {
         wheel.postpone_batch(updates)
     }
 
-    /// 批量推迟任务（替换回调）
-    /// (Batch postpone tasks, replace callbacks)
+    /// Batch postpone tasks (replace callbacks)
     /// 
-    /// # 参数 (Parameters)
-    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
-    ///      (List of tuples of (task ID, new delay, new callback))
+    /// # Parameters
+    /// - `updates`: List of tuples of (task ID, new delay, new callback)
     ///
-    /// # 返回 (Returns)
-    /// 成功推迟的任务数量
-    ///      (Number of successfully postponed tasks)
+    /// # Returns
+    /// Number of successfully postponed tasks
     ///
-    /// # 示例 (Examples)
+    /// 批量延期任务 (替换回调)
+    /// 
+    /// # 参数
+    /// - `updates`: (任务 ID, 新延迟, 新回调) 元组列表
+    ///
+    /// # 返回值
+    /// 成功延期的任务数量
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -392,8 +430,8 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-    /// // 创建 3 个任务，初始没有回调
-    /// // (Create 3 tasks, initially no callbacks)
+    /// // Create 3 tasks, initially no callbacks
+    /// // 创建 3 个任务，最初没有回调
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|_| Duration::from_secs(5))
     ///     .collect();
@@ -401,8 +439,8 @@ impl TimerService {
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
-    /// // 批量推迟并添加新回调
-    /// // (Batch postpone and add new callbacks)
+    /// // Batch postpone and add new callbacks
+    /// // 批量延期并添加新的回调
     /// let updates: Vec<_> = task_ids
     ///     .into_iter()
     ///     .enumerate()
@@ -430,20 +468,25 @@ impl TimerService {
         wheel.postpone_batch_with_callbacks(updates)
     }
 
-    /// 创建定时器任务（静态方法，申请阶段）
-    /// (Create timer task (static method, apply stage))
+    /// Create timer task (static method, apply stage)
     /// 
-    /// # 参数 (Parameters)
+    /// # Parameters
+    /// - `delay`: Delay time
+    /// - `callback`: Callback object implementing TimerCallback trait
+    /// 
+    /// # Returns
+    /// Return TimerTask, needs to be registered through `register()`
+    /// 
+    /// 创建定时器任务 (静态方法，应用阶段)
+    /// 
+    /// # 参数
     /// - `delay`: 延迟时间
-    ///      (Delay time)
-    /// - `callback`: 实现了 TimerCallback trait 的回调对象
-    ///      (Callback object implementing TimerCallback trait)
-    /// 
-    /// # 返回 (Returns)
+    /// - `callback`: 回调对象，实现 TimerCallback 特质
+    ///
+    /// # 返回值
     /// 返回 TimerTask，需要通过 `register()` 注册
-    ///      (Return TimerTask, needs to be registered through `register()`)
-    /// 
-    /// # 示例 (Examples)
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -453,8 +496,8 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-    /// // 步骤 1: 创建任务
-    /// // (Step 1: create task)
+    /// // Step 1: create task
+    /// // 创建任务
     /// let callback = Some(CallbackWrapper::new(|| async {
     ///     println!("Timer fired!");
     /// }));
@@ -463,8 +506,8 @@ impl TimerService {
     /// let task_id = task.get_id();
     /// println!("Created task: {:?}", task_id);
     /// 
-    /// // 步骤 2: 注册任务
-    /// // (Step 2: register task)
+    /// // Step 2: register task
+    /// // 注册任务
     /// service.register(task).unwrap();
     /// # }
     /// ```
@@ -473,18 +516,22 @@ impl TimerService {
         crate::timer::TimerWheel::create_task(delay, callback)
     }
 
-    /// 批量创建定时器任务（静态方法，申请阶段，不带回调）
-    /// (Create batch of timer tasks (static method, apply stage, no callbacks))
+    /// Create batch of timer tasks (static method, apply stage, no callbacks)
     /// 
-    /// # 参数 (Parameters)
+    /// # Parameters
+    /// - `delays`: List of delay times
+    /// 
+    /// # Returns
+    /// Return TimerTask list, needs to be registered through `register_batch()`
+    /// 
+    /// 创建定时器任务 (静态方法，应用阶段，没有回调)
+    /// # 参数
     /// - `delays`: 延迟时间列表
-    ///      (List of delay times)
-    /// 
-    /// # 返回 (Returns)
+    ///
+    /// # 返回值
     /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册
-    ///      (Return TimerTask list, needs to be registered through `register_batch()`)
-    /// 
-    /// # 示例 (Examples)
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -494,8 +541,8 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-    /// // 步骤 1: 批量创建任务
-    /// // (Step 1: create batch of tasks)
+    /// // Step 1: create batch of tasks
+    /// // 创建批量任务
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|i| Duration::from_millis(100 * (i + 1)))
     ///     .collect();
@@ -503,8 +550,8 @@ impl TimerService {
     /// let tasks = TimerService::create_batch(delays);
     /// println!("Created {} tasks", tasks.len());
     /// 
-    /// // 步骤 2: 批量注册任务
-    /// // (Step 2: register batch of tasks)
+    /// // Step 2: register batch of tasks
+    /// // 注册批量任务
     /// service.register_batch(tasks).unwrap();
     /// # }
     /// ```
@@ -513,17 +560,22 @@ impl TimerService {
         crate::timer::TimerWheel::create_batch(delays)
     }
     
-    /// 批量创建定时器任务（静态方法，申请阶段，带回调）
+    /// Create batch of timer tasks (static method, apply stage, with callbacks)
     /// 
-    /// # 参数 (Parameters)
-    /// - `callbacks`: (延迟时间, 回调) 的元组列表
-    ///      (List of tuples of (delay time, callback))
+    /// # Parameters
+    /// - `callbacks`: List of tuples of (delay time, callback)
     /// 
-    /// # 返回 (Returns)
+    /// # Returns
+    /// Return TimerTask list, needs to be registered through `register_batch()`
+    /// 
+    /// 创建定时器任务 (静态方法，应用阶段，有回调)
+    /// # 参数
+    /// - `callbacks`: (延迟时间, 回调) 元组列表
+    ///
+    /// # 返回值
     /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册
-    ///      (Return TimerTask list, needs to be registered through `register_batch()`)
-    /// 
-    /// # 示例 (Examples)
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -533,8 +585,8 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-    /// // 步骤 1: 批量创建任务
-    /// // (Step 1: create batch of tasks with callbacks)
+    /// // Step 1: create batch of tasks with callbacks
+    /// // 创建批量任务，带有回调
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
     ///     .map(|i| {
     ///         let callback = Some(CallbackWrapper::new(move || async move {
@@ -547,8 +599,8 @@ impl TimerService {
     /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// println!("Created {} tasks", tasks.len());
     /// 
-    /// // 步骤 2: 批量注册任务
-    /// // (Step 2: register batch of tasks with callbacks)
+    /// // Step 2: register batch of tasks with callbacks
+    /// // 注册批量任务，带有回调
     /// service.register_batch(tasks).unwrap();
     /// # }
     /// ```
@@ -557,21 +609,24 @@ impl TimerService {
         crate::timer::TimerWheel::create_batch_with_callbacks(callbacks)
     }
     
-    /// 注册定时器任务到服务（注册阶段）
-    /// (Register timer task to service (registration phase))
+    /// Register timer task to service (registration phase)
     /// 
-    /// # 参数 (Parameters)
+    /// # Parameters
+    /// - `task`: Task created via `create_task()`
+    /// 
+    /// # Returns
+    /// - `Ok(())`: Register successfully
+    /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
+    /// 
+    /// 注册定时器任务到服务 (注册阶段)
+    /// # 参数
     /// - `task`: 通过 `create_task()` 创建的任务
-    ///      (Task created via `create_task()`)
-    /// 
-    /// # 返回 (Returns)
-    ///      (Task created via `create_task()`)
+    ///
+    /// # 返回值
     /// - `Ok(())`: 注册成功
-    ///      (Register successfully)
-    /// - `Err(TimerError::RegisterFailed)`: 注册失败（内部通道已满或已关闭）
-    ///      (Register failed (internal channel is full or closed))
-    /// 
-    /// # 示例 (Examples)
+    /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -581,12 +636,16 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
+    /// // Step 1: create task
+    /// // 创建任务
     /// let callback = Some(CallbackWrapper::new(|| async move {
     ///     println!("Timer fired!");
     /// }));
     /// let task = TimerService::create_task(Duration::from_millis(100), callback);
     /// let task_id = task.get_id();
     /// 
+    /// // Step 2: register task
+    /// // 注册任务
     /// service.register(task).unwrap();
     /// # }
     /// ```
@@ -597,15 +656,15 @@ impl TimerService {
         
         let task_id = task.id;
         
-        // 单次加锁完成所有操作
-        //   (Single lock, complete all operations)
+        // Single lock, complete all operations
+        // 单次锁定，完成所有操作
         {
             let mut wheel_guard = self.wheel.lock();
             wheel_guard.insert(task, notifier);
         }
         
+        // Add to service management (only send necessary data)
         // 添加到服务管理（只发送必要数据）
-        //   (Add to service management, only send necessary data)
         self.command_tx
             .try_send(ServiceCommand::AddTimerHandle {
                 task_id,
@@ -616,21 +675,24 @@ impl TimerService {
         Ok(())
     }
     
-    /// 批量注册定时器任务到服务（注册阶段）
-    /// (Batch register timer tasks to service (registration phase))
+    /// Batch register timer tasks to service (registration phase)
     /// 
-    /// # 参数 (Parameters)
+    /// # Parameters
+    /// - `tasks`: List of tasks created via `create_batch()`
+    /// 
+    /// # Returns
+    /// - `Ok(())`: Register successfully
+    /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
+    /// 
+    /// 批量注册定时器任务到服务 (注册阶段)
+    /// # 参数
     /// - `tasks`: 通过 `create_batch()` 创建的任务列表
-    ///      (List of tasks created via `create_batch()`)
-    /// 
-    /// # 返回 (Returns)
-    ///      (List of tasks created via `create_batch()`)
+    ///
+    /// # 返回值
     /// - `Ok(())`: 注册成功
-    ///      (Register successfully)
-    /// - `Err(TimerError::RegisterFailed)`: 注册失败（内部通道已满或已关闭）
-    ///      (Register failed (internal channel is full or closed))
-    /// 
-    /// # 示例 (Examples)
+    /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// # use std::time::Duration;
@@ -640,6 +702,8 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
+    /// // Step 1: create batch of tasks with callbacks
+    /// // 创建批量任务，带有回调
     /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
     ///     .map(|i| {
     ///         let callback = Some(CallbackWrapper::new(move || async move {
@@ -650,6 +714,8 @@ impl TimerService {
     ///     .collect();
     /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// 
+    /// // Step 2: register batch of tasks with callbacks
+    /// // 注册批量任务，带有回调
     /// service.register_batch(tasks).unwrap();
     /// # }
     /// ```
@@ -660,10 +726,8 @@ impl TimerService {
         let mut task_ids = Vec::with_capacity(task_count);
         let mut prepared_tasks = Vec::with_capacity(task_count);
         
-        // 步骤1: 准备所有 channels 和 notifiers（无锁）
-        // 优化：使用 for 循环代替 map + collect，避免闭包捕获开销
-        // (Step 1: Prepare all channels and notifiers)
-        // (Optimize: use for loop instead of map + collect, avoid closure capture overhead)
+        // Step 1: prepare all channels and notifiers (no lock)
+        // 步骤 1: 准备所有通道和通知器（无锁）
         for task in tasks {
             let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
             let notifier = crate::task::CompletionNotifier(completion_tx);
@@ -673,15 +737,15 @@ impl TimerService {
             prepared_tasks.push((task, notifier));
         }
         
-        // 步骤2: 单次加锁，批量插入
-        // (Step 2: Single lock, batch insert)
+        // Step 2: single lock, batch insert
+        // 步骤 2: 单次锁定，批量插入
         {
             let mut wheel_guard = self.wheel.lock();
             wheel_guard.insert_batch(prepared_tasks);
         }
         
+        // Add to service management (only send necessary data)
         // 添加到服务管理（只发送必要数据）
-        // (Add to service management, only send necessary data)
         self.command_tx
             .try_send(ServiceCommand::AddBatchHandle {
                 task_ids,
@@ -692,10 +756,11 @@ impl TimerService {
         Ok(())
     }
 
-    /// 优雅关闭 TimerService
-    /// (Graceful shutdown of TimerService)
+    /// Graceful shutdown of TimerService
     /// 
-    /// # 示例 (Examples)
+    /// 优雅关闭 TimerService
+    /// 
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, ServiceConfig};
     /// # #[tokio::main]
@@ -703,18 +768,15 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let mut service = timer.create_service(ServiceConfig::default());
     /// 
-    /// // 使用 service...
-    /// // (Use service...)
+    /// // Use service... (使用服务...)
     /// 
     /// service.shutdown().await;
     /// # }
     /// ```
     pub async fn shutdown(mut self) {
-        // (Take shutdown_tx and send shutdown signal)
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
         }
-        // (Take actor_handle and await completion)
         if let Some(handle) = self.actor_handle.take() {
             let _ = handle.await;
         }
@@ -730,18 +792,28 @@ impl Drop for TimerService {
     }
 }
 
+/// ServiceActor - internal Actor implementation
+/// 
 /// ServiceActor - 内部 Actor 实现
-/// (ServiceActor - internal Actor implementation)
 struct ServiceActor {
-    /// 命令接收端
+    /// Command receiver
+    /// 
+    /// 命令接收器
     command_rx: mpsc::Receiver<ServiceCommand>,
-    /// 超时发送端
+    /// Timeout sender
+    /// 
+    /// 超时发送器
     timeout_tx: mpsc::Sender<TaskId>,
-    /// Actor 关闭信号接收端
+    /// Actor shutdown signal receiver
+    /// 
+    /// Actor 关闭信号接收器
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl ServiceActor {
+    /// Create new ServiceActor
+    /// 
+    /// 创建新的 ServiceActor
     fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Self {
         Self {
             command_rx,
@@ -750,47 +822,49 @@ impl ServiceActor {
         }
     }
 
+    /// Run Actor event loop
+    /// 
+    /// 运行 Actor 事件循环
     async fn run(mut self) {
-        // 使用 FuturesUnordered 来监听所有的 completion_rxs
+        // Use FuturesUnordered to listen to all completion_rxs
+        // Each future returns (TaskId, Result)
+        // 使用 FuturesUnordered 监听所有 completion_rxs
         // 每个 future 返回 (TaskId, Result)
-        //
-        // (Use FuturesUnordered to listen to all completion_rxs)
-        // (Each future returns (TaskId, Result))
         let mut futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
 
-        // 将 shutdown_rx 移出 self，以便在 select! 中使用 &mut
-        // (Move shutdown_rx out of self, so it can be used in select! with &mut)
+        // Move shutdown_rx out of self, so it can be used in select! with &mut
+        // 将 shutdown_rx 从 self 中移出，以便在 select! 中使用 &mut
         let mut shutdown_rx = self.shutdown_rx;
 
         loop {
             tokio::select! {
-                // 监听高优先级的关闭信号
-                // (Listen to high-priority shutdown signal)
+                // Listen to high-priority shutdown signal
+                // 监听高优先级关闭信号
                 _ = &mut shutdown_rx => {
-                    // 收到关闭信号，立即退出循环
-                    // (Receive shutdown signal, exit loop immediately)
+                    // Receive shutdown signal, exit loop immediately
+                    // 接收到关闭信号，立即退出循环
                     break;
                 }
 
+                // Listen to timeout events
                 // 监听超时事件
-                // (Listen to timeout events)
                 Some((task_id, result)) = futures.next() => {
-                    // 检查完成原因，只转发超时（Expired）事件，不转发取消（Cancelled）事件
-                    // (Check completion reason, only forward expired (Expired) events, do not forward cancelled (Cancelled) events)
+                    // Check completion reason, only forward expired (Expired) events, do not forward cancelled (Cancelled) events
+                    // 检查完成原因，只转发过期 (Expired) 事件，不转发取消 (Cancelled) 事件
                     if let Ok(TaskCompletionReason::Expired) = result {
                         let _ = self.timeout_tx.send(task_id).await;
                     }
-                    // 任务会自动从 FuturesUnordered 中移除
-                    // (Task will be automatically removed from FuturesUnordered)
+                    // Task will be automatically removed from FuturesUnordered
+                    // 任务将自动从 FuturesUnordered 中移除
                 }
                 
+                // Listen to commands
                 // 监听命令
-                // (Listen to commands)
                 Some(cmd) = self.command_rx.recv() => {
                     match cmd {
                         ServiceCommand::AddBatchHandle { task_ids, completion_rxs } => {
-                            // 将所有任务添加到 futures 中
-                            // (Add all tasks to futures)
+                            // Add all tasks to futures
+                            // 将所有任务添加到 futures
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
                                 let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                     (task_id, rx.await)
@@ -799,8 +873,8 @@ impl ServiceActor {
                             }
                         }
                         ServiceCommand::AddTimerHandle { task_id, completion_rx } => {
-                            // 添加到 futures 中
-                            // (Add to futures)
+                            // Add to futures
+                            // 添加到 futures
                             let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                 (task_id, completion_rx.await)
                             });
@@ -809,8 +883,8 @@ impl ServiceActor {
                     }
                 }
                 
-                // 如果没有任何 future 且命令通道已关闭，退出循环
-                // (If no futures and command channel is closed, exit loop)
+                // If no futures and command channel is closed, exit loop
+                // 如果没有 futures 且命令通道关闭，退出循环
                 else => {
                     break;
                 }
@@ -839,14 +913,14 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let mut service = timer.create_service(ServiceConfig::default());
 
-        // 创建单个定时器
+        // Create single timer (创建单个定时器)
         let task = TimerService::create_task(Duration::from_millis(50), Some(CallbackWrapper::new(|| async {})));
         let task_id = task.get_id();
         
-        // 注册到 service
+        // Register to service (注册到服务)
         service.register(task).unwrap();
 
-        // 接收超时通知
+        // Receive timeout notification (接收超时通知)
         let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
@@ -862,13 +936,13 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let service = timer.create_service(ServiceConfig::default());
 
-        // 添加一些定时器
+        // Add some timers (添加一些定时器)
         let task1 = TimerService::create_task(Duration::from_secs(10), None);
         let task2 = TimerService::create_task(Duration::from_secs(10), None);
         service.register(task1).unwrap();
         service.register(task2).unwrap();
 
-        // 立即关闭（不等待定时器触发）
+        // Immediately shutdown (without waiting for timers to trigger) (立即关闭（不等待定时器触发）)
         service.shutdown().await;
     }
 
@@ -879,17 +953,17 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let service = timer.create_service(ServiceConfig::default());
 
-        // 添加一个长时间的定时器
+        // Add a long-term timer (添加一个长期定时器)
         let task = TimerService::create_task(Duration::from_secs(10), None);
         let task_id = task.get_id();
         
         service.register(task).unwrap();
 
-        // 取消任务
+        // Cancel task (取消任务)
         let cancelled = service.cancel_task(task_id);
         assert!(cancelled, "Task should be cancelled successfully");
 
-        // 尝试再次取消同一个任务，应该返回 false
+        // Try to cancel the same task again, should return false (再次尝试取消同一任务，应返回 false)
         let cancelled_again = service.cancel_task(task_id);
         assert!(!cancelled_again, "Task should not exist anymore");
     }
@@ -899,14 +973,15 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let service = timer.create_service(ServiceConfig::default());
 
-        // 添加一个定时器以初始化 service
+        // Add a timer to initialize service (添加定时器以初始化服务)
         let task = TimerService::create_task(Duration::from_millis(50), None);
         service.register(task).unwrap();
 
-        // 尝试取消一个不存在的任务（创建一个不会实际注册的任务ID）
+        // Try to cancel a nonexistent task (create a task ID that will not actually be registered)
+        // 尝试取消不存在的任务（创建一个实际不会注册的任务 ID）
         let fake_task = TimerService::create_task(Duration::from_millis(50), None);
         let fake_task_id = fake_task.get_id();
-        // 不注册 fake_task
+        // Do not register fake_task (不注册 fake_task)
         let cancelled = service.cancel_task(fake_task_id);
         assert!(!cancelled, "Nonexistent task should not be cancelled");
     }
@@ -917,13 +992,13 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let mut service = timer.create_service(ServiceConfig::default());
 
-        // 添加一个短时间的定时器
+        // Add a short-term timer (添加短期定时器)
         let task = TimerService::create_task(Duration::from_millis(50), None);
         let task_id = task.get_id();
         
         service.register(task).unwrap();
 
-        // 等待任务超时
+        // Wait for task timeout (等待任务超时)
         let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
@@ -932,10 +1007,10 @@ mod tests {
         
         assert_eq!(received_task_id, task_id);
 
-        // 等待一下确保内部清理完成
+        // Wait a moment to ensure internal cleanup is complete (等待片刻以确保内部清理完成)
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // 尝试取消已经超时的任务，应该返回 false
+        // Try to cancel the timed-out task, should return false (尝试取消超时任务，应返回 false)
         let cancelled = service.cancel_task(task_id);
         assert!(!cancelled, "Timed out task should not exist anymore");
     }
@@ -946,7 +1021,7 @@ mod tests {
         let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
-        // 创建一个定时器
+        // Create a timer (创建定时器)
         let counter_clone = Arc::clone(&counter);
         let task = TimerService::create_task(
             Duration::from_secs(10),
@@ -961,15 +1036,16 @@ mod tests {
         
         service.register(task).unwrap();
 
-        // 使用 cancel_task（会等待结果，但在后台协程中处理）
+        // Use cancel_task (will wait for result, but processed in background coroutine)
+        // 使用 cancel_task（将等待结果，但在后台协程中处理）
         let cancelled = service.cancel_task(task_id);
         assert!(cancelled, "Task should be cancelled successfully");
 
-        // 等待足够长时间确保回调不会被执行
+        // Wait long enough to ensure callback is not executed (等待足够长时间以确保回调未执行)
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
 
-        // 验证任务已从 active_tasks 中移除
+        // Verify task has been removed from active_tasks (验证任务已从 active_tasks 中移除)
         let cancelled_again = service.cancel_task(task_id);
         assert!(!cancelled_again, "Task should have been removed from active_tasks");
     }
@@ -980,7 +1056,8 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
-        // 直接通过 service 调度定时器
+        // Schedule timer directly through service
+        // 直接通过服务调度定时器
         let counter_clone = Arc::clone(&counter);
         let task = TimerService::create_task(
             Duration::from_millis(50),
@@ -994,6 +1071,7 @@ mod tests {
         let task_id = task.get_id();
         service.register(task).unwrap();
 
+        // Wait for timer to trigger
         // 等待定时器触发
         let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
@@ -1003,6 +1081,7 @@ mod tests {
 
         assert_eq!(received_task_id, task_id);
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -1014,7 +1093,8 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
-        // 直接通过 service 批量调度定时器
+        // Schedule timers directly through service
+        // 直接通过服务调度定时器
         let callbacks: Vec<_> = (0..3)
             .map(|_| {
                 let counter = Arc::clone(&counter);
@@ -1031,6 +1111,7 @@ mod tests {
         assert_eq!(tasks.len(), 3);
         service.register_batch(tasks).unwrap();
 
+        // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
         let mut rx = service.take_receiver().unwrap();
@@ -1047,6 +1128,7 @@ mod tests {
 
         assert_eq!(received_count, 3);
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -1057,11 +1139,13 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let mut service = timer.create_service(ServiceConfig::default());
 
-        // 直接通过 service 调度仅通知的定时器（无回调）
+        // Schedule only notification timer directly through service (no callback)
+        // 直接通过服务调度通知定时器（没有回调）
         let task = TimerService::create_task(Duration::from_millis(50), None);
         let task_id = task.get_id();
         service.register(task).unwrap();
 
+        // Receive timeout notification
         // 接收超时通知
         let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
@@ -1078,6 +1162,7 @@ mod tests {
         let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Schedule timer directly
         // 直接调度定时器
         let counter_clone = Arc::clone(&counter);
         let task = TimerService::create_task(
@@ -1092,11 +1177,13 @@ mod tests {
         let task_id = task.get_id();
         service.register(task).unwrap();
 
+        // Immediately cancel
         // 立即取消
         let cancelled = service.cancel_task(task_id);
         assert!(cancelled, "Task should be cancelled successfully");
 
-        // 等待确保回调不会执行
+        // Wait to ensure callback is not executed
+        // 等待确保回调未执行
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
     }
@@ -1107,6 +1194,7 @@ mod tests {
         let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Batch schedule timers
         // 批量调度定时器
         let callbacks: Vec<_> = (0..10)
             .map(|_| {
@@ -1125,11 +1213,13 @@ mod tests {
         assert_eq!(task_ids.len(), 10);
         service.register_batch(tasks).unwrap();
 
+        // Batch cancel all tasks
         // 批量取消所有任务
         let cancelled = service.cancel_batch(&task_ids);
         assert_eq!(cancelled, 10, "All 10 tasks should be cancelled");
 
-        // 等待确保回调不会执行
+        // Wait to ensure callback is not executed
+        // 等待确保回调未执行
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "No callbacks should have been executed");
     }
@@ -1140,6 +1230,7 @@ mod tests {
         let service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Batch schedule timers
         // 批量调度定时器
         let callbacks: Vec<_> = (0..10)
             .map(|_| {
@@ -1157,12 +1248,14 @@ mod tests {
         let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
         service.register_batch(tasks).unwrap();
 
-        // 只取消前5个任务
+        // Only cancel first 5 tasks
+        // 只取消前 5 个任务
         let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
         let cancelled = service.cancel_batch(&to_cancel);
         assert_eq!(cancelled, 5, "5 tasks should be cancelled");
 
-        // 等待确保前5个回调不会执行
+        // Wait to ensure first 5 callbacks are not executed
+        // 等待确保前 5 个回调未执行
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "Cancelled tasks should not execute");
     }
@@ -1172,6 +1265,7 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let service = timer.create_service(ServiceConfig::default());
 
+        // Cancel empty list
         // 取消空列表
         let empty: Vec<TaskId> = vec![];
         let cancelled = service.cancel_batch(&empty);
@@ -1184,6 +1278,7 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Register a task, original callback increases 1
         // 注册一个任务，原始回调增加 1
         let counter_clone1 = Arc::clone(&counter);
         let task = TimerService::create_task(
@@ -1198,7 +1293,8 @@ mod tests {
         let task_id = task.get_id();
         service.register(task).unwrap();
 
-        // 推迟任务并替换回调，新回调增加 10
+        // Postpone task and replace callback, new callback increases 10
+        // 延期任务并替换回调，新回调增加 10
         let counter_clone2 = Arc::clone(&counter);
         let postponed = service.postpone(
             task_id,
@@ -1212,7 +1308,8 @@ mod tests {
         );
         assert!(postponed, "Task should be postponed successfully");
 
-        // 接收超时通知（推迟后需要等待100ms，加上余量）
+        // Receive timeout notification (after postponing, need to wait 100ms, plus margin)
+        // 接收超时通知（延期后，需要等待 100ms，加上余量）
         let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
@@ -1221,10 +1318,12 @@ mod tests {
 
         assert_eq!(received_task_id, task_id);
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         
-        // 验证新回调被执行（增加了 10 而不是 1）
+        // Verify new callback is executed (increased 10 instead of 1)
+        // 验证新回调已执行（增加 10 而不是 1）
         assert_eq!(counter.load(Ordering::SeqCst), 10);
     }
 
@@ -1233,11 +1332,12 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let service = timer.create_service(ServiceConfig::default());
 
-        // 尝试推迟一个不存在的任务
+        // Try to postpone a nonexistent task
+        // 尝试延期一个不存在的任务
         let fake_task = TimerService::create_task(Duration::from_millis(50), None);
         let fake_task_id = fake_task.get_id();
+        // Do not register this task
         // 不注册这个任务
-        
         let postponed = service.postpone(fake_task_id, Duration::from_millis(100), None);
         assert!(!postponed, "Nonexistent task should not be postponed");
     }
@@ -1248,6 +1348,7 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Register 3 tasks
         // 注册 3 个任务
         let mut task_ids = Vec::new();
         for _ in 0..3 {
@@ -1265,14 +1366,17 @@ mod tests {
             service.register(task).unwrap();
         }
 
-        // 批量推迟
+        // Batch postpone
+        // 批量延期
         let postponed = service.postpone_batch_with_callbacks(task_ids);
         assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
-        // 等待原定时间 50ms，任务不应该触发
+        // Wait for original time 50ms, task should not trigger
+        // 等待原始时间 50ms，任务应该不触发
         tokio::time::sleep(Duration::from_millis(70)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
+        // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
         let mut rx = service.take_receiver().unwrap();
@@ -1289,6 +1393,7 @@ mod tests {
 
         assert_eq!(received_count, 3);
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -1300,6 +1405,7 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Register 3 tasks
         // 注册 3 个任务
         let mut task_ids = Vec::new();
         for _ in 0..3 {
@@ -1311,7 +1417,8 @@ mod tests {
             service.register(task).unwrap();
         }
 
-        // 批量推迟并替换回调
+        // Batch postpone and replace callback
+        // 批量延期并替换回调
         let updates: Vec<_> = task_ids
             .into_iter()
             .map(|id| {
@@ -1328,10 +1435,12 @@ mod tests {
         let postponed = service.postpone_batch_with_callbacks(updates);
         assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
-        // 等待原定时间 50ms，任务不应该触发
+        // Wait for original time 50ms, task should not trigger
+        // 等待原始时间 50ms，任务应该不触发
         tokio::time::sleep(Duration::from_millis(70)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
+        // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
         let mut rx = service.take_receiver().unwrap();
@@ -1348,6 +1457,7 @@ mod tests {
 
         assert_eq!(received_count, 3);
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -1358,7 +1468,7 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let service = timer.create_service(ServiceConfig::default());
 
-        // 推迟空列表
+        // Postpone empty list
         let empty: Vec<(TaskId, Duration, Option<CallbackWrapper>)> = vec![];
         let postponed = service.postpone_batch_with_callbacks(empty);
         assert_eq!(postponed, 0, "No tasks should be postponed");
@@ -1370,6 +1480,7 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Register a task
         // 注册一个任务
         let counter_clone = Arc::clone(&counter);
         let task = TimerService::create_task(
@@ -1384,10 +1495,12 @@ mod tests {
         let task_id = task.get_id();
         service.register(task).unwrap();
 
-        // 推迟任务
+        // Postpone task
+        // 延期任务
         service.postpone(task_id, Duration::from_millis(100), None);
 
-        // 验证超时通知仍然有效（推迟后需要等待100ms，加上余量）
+        // Verify timeout notification is still valid (after postponing, need to wait 100ms, plus margin)
+        // 验证超时通知是否仍然有效（延期后，需要等待 100ms，加上余量）
         let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
@@ -1396,6 +1509,7 @@ mod tests {
 
         assert_eq!(received_task_id, task_id, "Timeout notification should still work after postpone");
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -1406,7 +1520,8 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let mut service = timer.create_service(ServiceConfig::default());
 
-        // 注册两个任务：一个会被取消，一个会正常到期
+        // Register two tasks: one will be cancelled, one will expire normally
+        // 注册两个任务：一个将被取消，一个将正常过期
         let task1 = TimerService::create_task(Duration::from_secs(10), None);
         let task1_id = task1.get_id();
         service.register(task1).unwrap();
@@ -1415,21 +1530,23 @@ mod tests {
         let task2_id = task2.get_id();
         service.register(task2).unwrap();
 
+        // Cancel first task
         // 取消第一个任务
         let cancelled = service.cancel_task(task1_id);
         assert!(cancelled, "Task should be cancelled");
 
-        // 等待第二个任务到期
+        // Wait for second task to expire
+        // 等待第二个任务过期
         let mut rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
 
-        // 应该只收到第二个任务（到期的）的通知，不应该收到第一个任务（取消的）的通知
+        // Should only receive notification for second task (expired), not for first task (cancelled)
         assert_eq!(received_task_id, task2_id, "Should only receive expired task notification");
 
-        // 验证没有其他通知（特别是被取消的任务不应该有通知）
+        // Verify no other notifications (especially cancelled tasks should not have notifications)
         let no_more = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
         assert!(no_more.is_err(), "Should not receive any more notifications");
     }
@@ -1439,10 +1556,12 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let mut service = timer.create_service(ServiceConfig::default());
 
+        // First call should return Some
         // 第一次调用应该返回 Some
         let rx1 = service.take_receiver();
         assert!(rx1.is_some(), "First take_receiver should return Some");
 
+        // Second call should return None
         // 第二次调用应该返回 None
         let rx2 = service.take_receiver();
         assert!(rx2.is_none(), "Second take_receiver should return None");
@@ -1454,7 +1573,8 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
         let counter = Arc::new(AtomicU32::new(0));
 
-        // 注册 3 个任务，有原始回调
+        // Register 3 tasks, with original callback
+        // 注册 3 个任务，带有原始回调
         let mut task_ids = Vec::new();
         for _ in 0..3 {
             let counter_clone = Arc::clone(&counter);
@@ -1471,7 +1591,8 @@ mod tests {
             service.register(task).unwrap();
         }
 
-        // 批量推迟，不替换回调
+        // Batch postpone, without replacing callback
+        // 批量延期，不替换回调
         let updates: Vec<_> = task_ids
             .iter()
             .map(|&id| (id, Duration::from_millis(150)))
@@ -1479,10 +1600,12 @@ mod tests {
         let postponed = service.postpone_batch(updates);
         assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
-        // 等待原定时间 50ms，任务不应该触发
+        // Wait for original time 50ms, task should not trigger
+        // 等待原始时间 50ms，任务应该不触发
         tokio::time::sleep(Duration::from_millis(70)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0, "Callbacks should not fire yet");
 
+        // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
         let mut rx = service.take_receiver().unwrap();
@@ -1499,6 +1622,7 @@ mod tests {
 
         assert_eq!(received_count, 3, "Should receive 3 timeout notifications");
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 3, "All callbacks should execute");

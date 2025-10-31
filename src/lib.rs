@@ -1,20 +1,27 @@
-//! # 高性能异步定时器系统 (High-Performance Async Timer System)
+//! # High-Performance Async Timer System
 //!
-//! 基于时间轮（Timing Wheel）算法实现的高性能异步定时器，支持 tokio 运行时。
-//! (High-performance async timer based on Timing Wheel algorithm, supports tokio runtime)
+//! High-performance async timer based on Timing Wheel algorithm, supports tokio runtime
 //!
-//! ## 特性 (Features)
+//! ## Features
 //!
-//! - **高性能 (High Performance)**: 使用时间轮算法，插入和删除操作的时间复杂度为 O(1)
-//!   (Uses timing wheel algorithm, insert and delete operations are O(1))
-//! - **大规模支持 (Large-Scale Support)**: 能够高效管理 10000+ 并发定时器
-//!   (Efficiently manages 10000+ concurrent timers)
-//! - **异步支持 (Async Support)**: 基于 tokio 异步运行时
-//!   (Based on tokio async runtime)
-//! - **线程安全 (Thread-Safe)**: 使用 parking_lot 提供高性能的锁机制
-//!   (Uses parking_lot for high-performance locking mechanism)
+//! - **High Performance**: Uses timing wheel algorithm, insert and delete operations are O(1)
+//! - **Large-Scale Support**: Efficiently manages 10000+ concurrent timers
+//! - **Async Support**: Based on tokio async runtime
+//! - **Thread-Safe**: Uses parking_lot for high-performance locking mechanism
 //!
-//! ## 快速开始 (Quick Start)
+//! 
+//! # 高性能异步定时器库
+//! 
+//! 基于分层时间轮算法的高性能异步定时器库，支持 tokio 运行时
+//! 
+//! ## 特性
+//! 
+//! - **高性能**: 使用时间轮算法，插入和删除操作均为 O(1)
+//! - **大规模支持**: 高效管理 10000+ 并发定时器
+//! - **异步支持**: 基于 tokio 异步运行时
+//! - **线程安全**: 使用 parking_lot 提供高性能的锁机制
+//! 
+//! ## Quick Start (快速开始)
 //!
 //! ```no_run
 //! use kestrel_timer::{TimerWheel, CallbackWrapper};
@@ -23,25 +30,52 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // 创建定时器管理器
+//!     // Create timer manager (创建定时器管理器)
 //!     let timer = TimerWheel::with_defaults();
 //!     
-//!     // 步骤 1: 创建定时器任务（使用回调）
+//!     // Step 1: Create timer task (使用回调创建定时器任务)
 //!     let callback = Some(CallbackWrapper::new(|| async {
 //!         println!("Timer fired after 1 second!");
 //!     }));
 //!     let task = TimerWheel::create_task(Duration::from_secs(1), callback);
 //!     let task_id = task.get_id();
 //!     
-//!     // 步骤 2: 注册定时器任务并获取完成通知
+//!     // Step 2: Register timer task and get completion notification (注册定时器任务并获取完成通知)
 //!     let handle = timer.register(task);
 //!     
-//!     // 等待定时器完成
+//!     // Wait for timer completion (等待定时器完成)
 //!     handle.into_completion_receiver().0.await?;
 //!     Ok(())
 //! }
 //! ```
 //!
+//! ## English Architecture Description
+//!
+//! ### Timing Wheel Algorithm
+//!
+//! Uses hierarchical timing wheel algorithm with L0 and L1 layers:
+//!
+//! - **L0 Layer (Bottom)**: Handles short delay tasks
+//!   - Slot count: Default 512, configurable, must be power of 2
+//!   - Time precision: Default 10ms, configurable
+//!   - Maximum time span: 5.12 seconds
+//!
+//! - **L1 Layer (Upper)**: Handles long delay tasks
+//!   - Slot count: Default 64, configurable, must be power of 2
+//!   - Time precision: Default 1 second, configurable
+//!   - Maximum time span: 64 seconds
+//!
+//! - **Round Mechanism**: Tasks beyond L1 range use round counting
+//! 
+//! ### Performance Optimization
+//!
+//! - Uses `parking_lot::Mutex` instead of standard library Mutex for better performance
+//!   - Uses `FxHashMap` (rustc-hash) instead of standard HashMap to reduce hash collisions
+//!   - Slot count is power of 2, uses bitwise operations to optimize modulo
+//!   - Task execution in separate tokio tasks to avoid blocking timing wheel advancement
+//! 
+//! 
+//! 
 //! ## 中文架构说明
 //!
 //! ### 时间轮算法
@@ -67,48 +101,17 @@
 //! - 槽位数量为 2 的幂次方，使用位运算优化取模操作
 //! - 任务执行在独立的 tokio 任务中，避免阻塞时间轮推进
 //! 
-//! ## English Architecture Description
-//!
-//! ### Timing Wheel Algorithm
-//!
-//! Uses hierarchical timing wheel algorithm with L0 and L1 layers:
-//!
-//! - **L0 Layer (Bottom)**: Handles short delay tasks
-//!   - Slot count: Default 512, configurable, must be power of 2
-//!   - Time precision: Default 10ms, configurable
-//!   - Maximum time span: 5.12 seconds
-//!
-//! - **L1 Layer (Upper)**: Handles long delay tasks
-//!   - Slot count: Default 64, configurable, must be power of 2
-//!   - Time precision: Default 1 second, configurable
-//!   - Maximum time span: 64 seconds
-//!
-//! - **Round Mechanism**: Tasks beyond L1 range use round counting
-//! 
-//! ### Performance Optimization
-//!
-//! - Uses `parking_lot::Mutex` instead of standard library Mutex for better performance
-//!   - Uses `FxHashMap` (rustc-hash) instead of standard HashMap to reduce hash collisions
-//!   - Slot count is power of 2, uses bitwise operations to optimize modulo
-//!   - Task execution in separate tokio tasks to avoid blocking timing wheel advancement
 
-mod config;
-mod error;
-mod task;
-mod wheel;
-mod timer;
+pub mod config;
+pub mod error;
+pub mod task;
+pub mod wheel;
+pub mod timer;
 mod service;
 
-// 重新导出公共 API (Re-export public API)
-pub use config::{
-    BatchConfig,
-    ServiceConfig, ServiceConfigBuilder,
-    TimerConfig, TimerConfigBuilder,
-    WheelConfig, WheelConfigBuilder,
-};
-pub use error::TimerError;
-pub use task::{CallbackWrapper, CompletionNotifier, TaskCompletionReason, TaskId, TimerCallback, TimerTask};
-pub use timer::{BatchHandle, BatchHandleIter, CompletionReceiver, TimerHandle, TimerWheel};
+// Re-export public API
+pub use task::{CallbackWrapper, TaskId, TimerTask};
+pub use timer::{TimerWheel};
 pub use service::TimerService;
 
 #[cfg(test)]
@@ -117,6 +120,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+    use crate::task::TaskCompletionReason;
 
     #[tokio::test]
     async fn test_basic_timer() {
@@ -144,7 +148,7 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
 
-        // 创建 10 个定时器
+        // Create 10 timers
         for i in 0..10 {
             let counter_clone = Arc::clone(&counter);
             let task = TimerWheel::create_task(
@@ -168,7 +172,7 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
 
-        // 创建 5 个定时器
+        // Create 5 timers
         let mut handles = Vec::new();
         for _ in 0..5 {
             let counter_clone = Arc::clone(&counter);
@@ -185,14 +189,14 @@ mod tests {
             handles.push(handle);
         }
 
-        // 取消前 3 个定时器
+        // Cancel first 3 timers
         for i in 0..3 {
             let cancel_result = handles[i].cancel();
             assert!(cancel_result);
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
-        // 只有 2 个定时器应该被触发
+        // Only 2 timers should be triggered
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 
@@ -213,10 +217,10 @@ mod tests {
         );
         let handle = timer.register(task);
 
-        // 等待完成通知
+        // Wait for completion notification
         handle.into_completion_receiver().0.await.expect("Should receive completion notification");
 
-        // 验证回调已执行（等待一下以确保回调执行完成）
+        // Verify callback has been executed (wait a moment to ensure callback execution is complete)
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
@@ -228,7 +232,7 @@ mod tests {
         let task = TimerTask::new(Duration::from_millis(50), None);
         let handle = timer.register(task);
 
-        // 等待完成通知（无回调，仅通知）
+        // Wait for completion notification (no callback, only notification)
         handle.into_completion_receiver().0.await.expect("Should receive completion notification");
     }
 
@@ -237,7 +241,7 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
 
-        // 创建批量回调
+        // Create batch callbacks
         let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
             .map(|i| {
                 let counter = Arc::clone(&counter);
@@ -256,15 +260,15 @@ mod tests {
         let batch = timer.register_batch(tasks);
         let receivers = batch.into_completion_receivers();
 
-        // 等待所有完成通知
+        // Wait for all completion notifications
         for rx in receivers {
             rx.await.expect("Should receive completion notification");
         }
 
-        // 等待一下确保回调执行完成
+        // Wait a moment to ensure callback execution is complete
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // 验证所有回调都已执行
+        // Verify all callbacks have been executed
         assert_eq!(counter.load(Ordering::SeqCst), 5);
     }
 
@@ -275,7 +279,7 @@ mod tests {
         let task = TimerTask::new(Duration::from_millis(50), None);
         let handle = timer.register(task);
 
-        // 等待完成通知并验证原因是 Expired
+        // Wait for completion notification and verify reason is Expired
         let result = handle.into_completion_receiver().0.await.expect("Should receive completion notification");
         assert_eq!(result, TaskCompletionReason::Expired);
     }
@@ -287,11 +291,11 @@ mod tests {
         let task = TimerTask::new(Duration::from_secs(10), None);
         let handle = timer.register(task);
 
-        // 取消任务
+        // Cancel task
         let cancelled = handle.cancel();
         assert!(cancelled);
 
-        // 等待完成通知并验证原因是 Cancelled
+        // Wait for completion notification and verify reason is Cancelled
         let result = handle.into_completion_receiver().0.await.expect("Should receive completion notification");
         assert_eq!(result, TaskCompletionReason::Cancelled);
     }
@@ -300,7 +304,7 @@ mod tests {
     async fn test_batch_completion_reasons() {
         let timer = TimerWheel::with_defaults();
         
-        // 创建 5 个任务，延迟 10 秒
+        // Create 5 tasks, delay 10 seconds
         let tasks: Vec<_> = (0..5)
             .map(|_| TimerTask::new(Duration::from_secs(10), None))
             .collect();
@@ -309,16 +313,16 @@ mod tests {
         let task_ids: Vec<_> = batch.task_ids.clone();
         let mut receivers = batch.into_completion_receivers();
 
-        // 取消前 3 个任务
+        // Cancel first 3 tasks
         timer.cancel_batch(&task_ids[0..3]);
 
-        // 验证前 3 个任务收到 Cancelled 通知
+        // Verify first 3 tasks received Cancelled notification
         for rx in receivers.drain(0..3) {
             let result = rx.await.expect("Should receive completion notification");
             assert_eq!(result, TaskCompletionReason::Cancelled);
         }
 
-        // 取消剩余任务并验证
+        // Cancel remaining tasks and verify
         timer.cancel_batch(&task_ids[3..5]);
         for rx in receivers {
             let result = rx.await.expect("Should receive completion notification");

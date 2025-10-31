@@ -7,15 +7,18 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+/// Completion receiver for receiving timer completion notifications
+/// 
 /// 完成通知接收器，用于接收定时器完成通知
-///  (Completion receiver for receiving timer completion notifications)
 pub struct CompletionReceiver(pub oneshot::Receiver<TaskCompletionReason>);
 
-/// 定时器句柄，用于管理定时器的生命周期
-///  (Timer handle for managing timer lifecycle)
+/// Timer handle for managing timer lifecycle
 /// 
-/// 注意：此类型不实现 Clone，以防止重复取消同一个定时器。每个定时器只应有一个所有者。
 /// Note: This type does not implement Clone to prevent duplicate cancellation of the same timer. Each timer should have only one owner.
+/// 
+/// 定时器句柄，用于管理定时器生命周期
+/// 
+/// 注意：此类型未实现 Clone 以防止重复取消同一定时器。每个定时器应该只有一个所有者。
 pub struct TimerHandle {
     pub(crate) task_id: TaskId,
     pub(crate) wheel: Arc<Mutex<Wheel>>,
@@ -27,13 +30,17 @@ impl TimerHandle {
         Self { task_id, wheel, completion_rx: CompletionReceiver(completion_rx) }
     }
 
-    /// 取消定时器 (Cancel the timer)
+    /// Cancel the timer
     ///
-    /// # 返回 (Returns)
-    /// 如果任务存在且成功取消返回 true，否则返回 false
-    /// (Returns true if task exists and is successfully cancelled, otherwise false)
+    /// # Returns
+    /// Returns true if task exists and is successfully cancelled, otherwise false
+    /// 
+    /// 取消定时器
     ///
-    /// # 示例 (Examples)
+    /// # 返回值
+    /// 如果任务存在且成功取消则返回 true，否则返回 false
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
@@ -45,7 +52,7 @@ impl TimerHandle {
     /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
-    /// // 取消定时器
+    /// // Cancel the timer
     /// let success = handle.cancel();
     /// println!("Canceled successfully: {}", success);
     /// # }
@@ -55,10 +62,11 @@ impl TimerHandle {
         wheel.cancel(self.task_id)
     }
 
+    /// Get mutable reference to completion receiver
+    /// 
     /// 获取完成通知接收器的可变引用
-    ///  (Get mutable reference to completion receiver)
     ///
-    /// # 示例 (Examples)
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
@@ -72,8 +80,8 @@ impl TimerHandle {
     /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
-    /// // 等待定时器完成（使用 into_completion_receiver 消耗句柄）
-    /// // (Wait for timer completion (consume handle using into_completion_receiver))
+    /// // Wait for timer completion (consume handle using into_completion_receiver)
+    /// // 等待定时器完成（使用 into_completion_receiver 消费句柄）
     /// handle.into_completion_receiver().0.await.ok();
     /// println!("Timer completed!");
     /// # }
@@ -82,10 +90,11 @@ impl TimerHandle {
         &mut self.completion_rx
     }
 
-    /// 消耗句柄，返回完成通知接收器
-    ///  (Consume handle and return completion receiver)
+    /// Consume handle and return completion receiver
+    /// 
+    /// 消费句柄并返回完成通知接收器
     ///
-    /// # 示例 (Examples)
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
@@ -99,8 +108,7 @@ impl TimerHandle {
     /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
-    /// // 等待定时器完成
-    /// // (Wait for timer completion)
+    /// // Wait for timer completion
     /// handle.into_completion_receiver().0.await.ok();
     /// println!("Timer completed!");
     /// # }
@@ -110,14 +118,13 @@ impl TimerHandle {
     }
 }
 
-/// 批量定时器句柄，用于管理批量调度的定时器
-///  (Batch timer handle for managing batch-scheduled timers)
+/// Batch timer handle for managing batch-scheduled timers
 /// 
-/// 通过共享 Wheel 引用减少内存开销，同时提供批量操作和迭代器访问能力。
-/// (Reduces memory overhead through shared Wheel reference while providing batch operations and iterator access)
-/// 
-/// 注意：此类型不实现 Clone，以防止重复取消同一批定时器。如需访问单个定时器句柄，请使用 `into_iter()` 或 `into_handles()` 进行转换。
 /// Note: This type does not implement Clone to prevent duplicate cancellation of the same batch of timers. Use `into_iter()` or `into_handles()` to access individual timer handles.
+/// 
+/// 批量定时器句柄，用于管理批量调度的定时器
+/// 
+/// 注意：此类型未实现 Clone 以防止重复取消同一批定时器。使用 `into_iter()` 或 `into_handles()` 访问单个定时器句柄。
 pub struct BatchHandle {
     pub(crate) task_ids: Vec<TaskId>,
     pub(crate) wheel: Arc<Mutex<Wheel>>,
@@ -129,12 +136,17 @@ impl BatchHandle {
         Self { task_ids, wheel, completion_rxs }
     }
 
-    /// 批量取消所有定时器 (Cancel all timers in batch)
+    /// Cancel all timers in batch
     ///
-    /// # 返回 (Returns)
-    /// 成功取消的任务数量 (Number of successfully cancelled tasks)
+    /// # Returns
+    /// Number of successfully cancelled tasks
+    /// 
+    /// 批量取消所有定时器
     ///
-    /// # 示例 (Examples)
+    /// # 返回值
+    /// 成功取消的任务数量
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
@@ -157,12 +169,15 @@ impl BatchHandle {
         wheel.cancel_batch(&self.task_ids)
     }
 
-    /// 将批量句柄转换为单个定时器句柄的 Vec (Convert batch handle to Vec of individual timer handles)
+    /// Convert batch handle to Vec of individual timer handles
     ///
-    /// 消耗 BatchHandle，为每个任务创建独立的 TimerHandle。
-    /// (Consumes BatchHandle and creates independent TimerHandle for each task)
+    /// Consumes BatchHandle and creates independent TimerHandle for each task
+    /// 
+    /// 将批量句柄转换为单个定时器句柄的 Vec
     ///
-    /// # 示例 (Examples)
+    /// 消费 BatchHandle 并为每个任务创建独立的 TimerHandle
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
@@ -176,12 +191,12 @@ impl BatchHandle {
     /// let tasks = TimerWheel::create_batch(delays);
     /// let batch = timer.register_batch(tasks);
     /// 
-    /// // 转换为独立的句柄
-    /// // (Convert to individual handles)
+    /// // Convert to individual handles
+    /// // 转换为单个句柄
     /// let handles = batch.into_handles();
     /// for handle in handles {
+    ///     // Can operate each handle individually
     ///     // 可以单独操作每个句柄
-    ///     // (Can operate each handle individually)
     /// }
     /// # }
     /// ```
@@ -195,35 +210,51 @@ impl BatchHandle {
             .collect()
     }
 
-    /// 获取批量任务的数量 (Get the number of batch tasks)
+    /// Get the number of batch tasks
+    /// 
+    /// 获取批量任务数量
     pub fn len(&self) -> usize {
         self.task_ids.len()
     }
 
-    /// 检查批量任务是否为空 (Check if batch tasks are empty)
+    /// Check if batch tasks are empty
+    /// 
+    /// 检查批量任务是否为空
     pub fn is_empty(&self) -> bool {
         self.task_ids.is_empty()
     }
 
-    /// 获取所有任务 ID 的引用 (Get reference to all task IDs)
+    /// Get reference to all task IDs
+    /// 
+    /// 获取所有任务 ID 的引用
     pub fn task_ids(&self) -> &[TaskId] {
         &self.task_ids
     }
 
-    /// 获取所有完成通知接收器的引用 (Get reference to all completion receivers)
+    /// Get reference to all completion receivers
     ///
-    /// # 返回 (Returns)
-    /// 所有任务的完成通知接收器列表引用 (Reference to list of completion receivers for all tasks)
+    /// # Returns
+    /// Reference to list of completion receivers for all tasks
+    /// 
+    /// 获取所有完成通知接收器的引用
+    ///
+    /// # 返回值
+    /// 所有任务完成通知接收器列表的引用
     pub fn completion_receivers(&mut self) -> &mut Vec<oneshot::Receiver<TaskCompletionReason>> {
         &mut self.completion_rxs
     }
 
-    /// 消耗句柄，返回所有完成通知接收器 (Consume handle and return all completion receivers)
+    /// Consume handle and return all completion receivers
     ///
-    /// # 返回 (Returns)
-    /// 所有任务的完成通知接收器列表 (List of completion receivers for all tasks)
+    /// # Returns
+    /// List of completion receivers for all tasks
+    /// 
+    /// 消费句柄并返回所有完成通知接收器
     ///
-    /// # 示例 (Examples)
+    /// # 返回值
+    /// 所有任务的完成通知接收器列表
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
     /// # use std::time::Duration;
@@ -237,8 +268,8 @@ impl BatchHandle {
     /// let tasks = TimerWheel::create_batch(delays);
     /// let batch = timer.register_batch(tasks);
     /// 
+    /// // Get all completion receivers
     /// // 获取所有完成通知接收器
-    /// // (Get all completion receivers)
     /// let receivers = batch.into_completion_receivers();
     /// for rx in receivers {
     ///     tokio::spawn(async move {
@@ -254,10 +285,11 @@ impl BatchHandle {
     }
 }
 
-/// 实现 IntoIterator，允许直接迭代 BatchHandle
-/// (Implement IntoIterator to allow direct iteration over BatchHandle)
+/// Implement IntoIterator to allow direct iteration over BatchHandle
 /// 
-/// # 示例 (Examples)
+/// 实现 IntoIterator 以允许直接迭代 BatchHandle
+/// 
+/// # Examples (示例)
 /// ```no_run
 /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
 /// # use std::time::Duration;
@@ -271,11 +303,11 @@ impl BatchHandle {
 /// let tasks = TimerWheel::create_batch(delays);
 /// let batch = timer.register_batch(tasks);
 /// 
-/// // 直接迭代，每个元素都是独立的 TimerHandle
-/// // (Iterate directly, each element is an independent TimerHandle)
+/// // Iterate directly, each element is an independent TimerHandle
+/// // 直接迭代，每个元素是一个独立的 TimerHandle
 /// for handle in batch {
+///     // Can operate each handle individually
 ///     // 可以单独操作每个句柄
-///     // (Can operate each handle individually)
 /// }
 /// # }
 /// ```
@@ -292,7 +324,9 @@ impl IntoIterator for BatchHandle {
     }
 }
 
-/// BatchHandle 的迭代器 (Iterator for BatchHandle)
+/// Iterator for BatchHandle
+/// 
+/// BatchHandle 的迭代器
 pub struct BatchHandleIter {
     task_ids: std::vec::IntoIter<TaskId>,
     completion_rxs: std::vec::IntoIter<oneshot::Receiver<TaskCompletionReason>>,
@@ -322,26 +356,33 @@ impl ExactSizeIterator for BatchHandleIter {
     }
 }
 
-/// 时间轮定时器管理器 (Timing Wheel Timer Manager)
+/// Timing Wheel Timer Manager
+/// 
+/// 时间轮定时器管理器
 pub struct TimerWheel {
-    /// 时间轮唯一标识符 (Timing wheel unique identifier)
-    
-    /// 时间轮实例（使用 Arc<Mutex> 包装以支持多线程访问）
-    /// (Timing wheel instance, wrapped in Arc<Mutex> for multi-threaded access)
+    /// Timing wheel instance, wrapped in Arc<Mutex> for multi-threaded access
+    /// 
+    /// 时间轮实例，包装在 Arc<Mutex> 中以支持多线程访问
     wheel: Arc<Mutex<Wheel>>,
     
-    /// 后台 tick 循环任务句柄 (Background tick loop task handle)
+    /// Background tick loop task handle
+    /// 
+    /// 后台 tick 循环任务句柄
     tick_handle: Option<JoinHandle<()>>,
 }
 
 impl TimerWheel {
-    /// 创建新的定时器管理器 (Create a new timer manager)
+    /// Create a new timer manager
     ///
-    /// # 参数 (Parameters)
-    /// - `config`: 时间轮配置（已经过验证）
-    /// (Timing wheel configuration, already validated)
+    /// # Parameters
+    /// - `config`: Timing wheel configuration, already validated
+    /// 
+    /// 创建新的定时器管理器
     ///
-    /// # 示例 (Examples)
+    /// # 参数
+    /// - `config`: 时间轮配置，已验证
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, WheelConfig, TimerTask, BatchConfig};
     /// use std::time::Duration;
@@ -357,7 +398,7 @@ impl TimerWheel {
     ///         .unwrap();
     ///     let timer = TimerWheel::new(config, BatchConfig::default());
     ///     
-    ///     // 使用两步式 API
+    ///     // Use two-step API
     ///     // (Use two-step API)
     ///     let task = TimerWheel::create_task(Duration::from_secs(1), None);
     ///     let handle = timer.register(task);
@@ -369,6 +410,7 @@ impl TimerWheel {
         let wheel = Arc::new(Mutex::new(wheel));
         let wheel_clone = wheel.clone();
 
+        // Start background tick loop
         // 启动后台 tick 循环
         let tick_handle = tokio::spawn(async move {
             Self::tick_loop(wheel_clone, tick_duration).await;
@@ -380,23 +422,27 @@ impl TimerWheel {
         }
     }
 
-    /// 创建带默认配置的定时器管理器（分层模式）
-    /// - L0 层 tick 时长: 10ms, 槽位数量: 512
-    /// - L1 层 tick 时长: 1s, 槽位数量: 64
-    ///
-    /// Create a timer manager with default configuration, hierarchical mode
+    /// Create timer manager with default configuration, hierarchical mode
     /// - L0 layer tick duration: 10ms, slot count: 512
     /// - L1 layer tick duration: 1s, slot count: 64
     ///
-    /// # 参数 (Parameters)
-    /// - `config`: 时间轮配置（已经过验证）
-    /// (Timing wheel configuration, already validated)
+    /// # Parameters
+    /// - `config`: Timing wheel configuration, already validated
     ///
-    /// # 返回 (Returns)
-    /// 定时器管理器实例 (Timer manager instance)
-    /// (Timer manager instance)
+    /// # Returns
+    /// Timer manager instance
+    /// 
+    /// 使用默认配置创建定时器管理器，分层模式
+    /// - L0 层 tick 持续时间：10ms，槽数量：512
+    /// - L1 层 tick 持续时间：1s，槽数量：64
     ///
-    /// # 示例 (Examples)
+    /// # 参数
+    /// - `config`: 时间轮配置，已验证
+    ///
+    /// # 返回值
+    /// 定时器管理器实例
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::TimerWheel;
     ///
@@ -409,15 +455,23 @@ impl TimerWheel {
         Self::new(WheelConfig::default(), BatchConfig::default())
     }
 
-    /// 创建与此时间轮绑定的 TimerService（使用默认配置）(Create TimerService bound to this timing wheel with default configuration)
+    /// Create TimerService bound to this timing wheel with default configuration
     ///
-    /// # 返回 (Returns)
-    /// 绑定到此时间轮的 TimerService 实例 (TimerService instance bound to this timing wheel)
+    /// # Parameters
+    /// - `service_config`: Service configuration
     ///
-    /// # 参数 (Parameters)
-    /// - `service_config`: 服务配置 (Service configuration)
+    /// # Returns
+    /// TimerService instance bound to this timing wheel
     ///
-    /// # 示例 (Examples)
+    /// 创建绑定到此时间轮的 TimerService，使用默认配置
+    ///
+    /// # 参数
+    /// - `service_config`: 服务配置
+    ///
+    /// # 返回值
+    /// 绑定到此时间轮的 TimerService 实例
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
     /// use std::time::Duration;
@@ -428,13 +482,15 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     let mut service = timer.create_service(ServiceConfig::default());
     ///     
-    ///     // 使用两步式 API 通过 service 批量调度定时器
+    ///     // Use two-step API to batch schedule timers through service
+    ///     // 使用两步 API 通过服务批量调度定时器
     ///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
     ///         .map(|_| (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))))
     ///         .collect();
     ///     let tasks = TimerService::create_batch_with_callbacks(callbacks);
     ///     service.register_batch(tasks).unwrap();
     ///     
+    ///     // Receive timeout notifications
     ///     // 接收超时通知
     ///     let mut rx = service.take_receiver().unwrap();
     ///     while let Some(task_id) = rx.recv().await {
@@ -446,16 +502,23 @@ impl TimerWheel {
         crate::service::TimerService::new(self.wheel.clone(), service_config)
     }
     
-    /// 创建与此时间轮绑定的 TimerService（使用自定义配置）
-    ///  (Create TimerService bound to this timing wheel with custom configuration)
+    /// Create TimerService bound to this timing wheel with custom configuration
     ///
-    /// # 参数 (Parameters)
-    /// - `config`: 服务配置 (Service configuration)
+    /// # Parameters
+    /// - `config`: Service configuration
     ///
-    /// # 返回 (Returns)
-    /// 绑定到此时间轮的 TimerService 实例 (TimerService instance bound to this timing wheel)
+    /// # Returns
+    /// TimerService instance bound to this timing wheel
     ///
-    /// # 示例 (Examples)
+    /// 创建绑定到此时间轮的 TimerService，使用自定义配置
+    ///
+    /// # 参数
+    /// - `config`: 服务配置
+    ///
+    /// # 返回值
+    /// 绑定到此时间轮的 TimerService 实例
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, ServiceConfig};
     ///
@@ -474,17 +537,25 @@ impl TimerWheel {
         crate::service::TimerService::new(self.wheel.clone(), config)
     }
 
-    /// 创建定时器任务（申请阶段）(Create timer task, application phase)
+    /// Create timer task (static method, apply stage)
     /// 
-    /// # 参数 (Parameters)
-    /// - `delay`: 延迟时间 (Delay duration)
-    /// - `callback`: 实现了 TimerCallback trait 的回调对象 (Callback object implementing TimerCallback trait)
+    /// # Parameters
+    /// - `delay`: Delay duration
+    /// - `callback`: Callback object implementing TimerCallback trait
     /// 
-    /// # 返回 (Returns)
-    /// 返回 TimerTask，需要通过 `register()` 注册到时间轮
-    /// (Returns TimerTask that needs to be registered to the timing wheel via `register()`)
+    /// # Returns
+    /// Return TimerTask, needs to be registered through `register()`
     /// 
-    /// # 示例 (Examples)
+    /// 创建定时器任务 (静态方法，应用阶段)
+    /// 
+    /// # 参数
+    /// - `delay`: 延迟时间
+    /// - `callback`: 回调对象，实现 TimerCallback 特质
+    /// 
+    /// # 返回值
+    /// 返回 TimerTask，需要通过 `register()` 注册
+    /// 
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -494,19 +565,18 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     // 步骤 1: 创建任务
-    ///     // (Create task)
+    ///     // Step 1: Create task
+    ///     // 创建任务
     ///     let task = TimerWheel::create_task(Duration::from_secs(1), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
     ///     })));
     ///     
-    ///     // 获取任务 ID
-    ///     // (Get task ID)
+    ///     // Get task ID (获取任务 ID)
     ///     let task_id = task.get_id();
     ///     println!("Created task: {:?}", task_id);
     ///     
-    ///     // 步骤 2: 注册任务
-    ///     // (Register task)
+    ///     // Step 2: Register task
+    ///     // 注册任务
     ///     let handle = timer.register(task);
     /// }
     /// ```
@@ -515,17 +585,23 @@ impl TimerWheel {
         crate::task::TimerTask::new(delay, callback)
     }
     
-    /// 批量创建定时器任务（申请阶段）
-    ///  (Create batch of timer tasks, application phase)
+    /// Create batch of timer tasks (static method, apply stage, no callbacks)
     /// 
-    /// # 参数 (Parameters)
-    /// - `delays`: 延迟时间列表 (Delay duration list)
+    /// # Parameters
+    /// - `delays`: List of delay times
     /// 
-    /// # 返回 (Returns)
-    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册到时间轮
-    /// (Returns TimerTask list that needs to be registered to the timing wheel via `register_batch()`)
+    /// # Returns
+    /// Return TimerTask list, needs to be registered through `register_batch()`
     /// 
-    /// # 示例 (Examples)
+    /// 创建定时器任务 (静态方法，应用阶段，没有回调)
+    /// 
+    /// # 参数
+    /// - `delays`: 延迟时间列表
+    /// 
+    /// # 返回值
+    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册
+    /// 
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -537,19 +613,18 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     let counter = Arc::new(AtomicU32::new(0));
     ///     
-    ///     // 步骤 1: 批量创建任务
-    ///     // (Create batch of tasks)
+    ///     // Step 1: Create batch of tasks
+    ///     // 创建批量任务
     ///     let delays: Vec<Duration> = (0..3)
     ///         .map(|_| Duration::from_millis(100))
     ///         .collect();
     ///     
-    ///     // 批量创建任务
-    ///     // (Create batch of tasks)
+    ///     // Create batch of tasks
     ///     let tasks = TimerWheel::create_batch(delays);
     ///     println!("Created {} tasks", tasks.len());
     ///     
-    ///     // 步骤 2: 批量注册任务
-    ///     // (Register batch of tasks)
+    ///     // Step 2: Register batch of tasks
+    ///     // 注册批量任务
     ///     let batch = timer.register_batch(tasks);
     /// }
     /// ```
@@ -562,17 +637,23 @@ impl TimerWheel {
             .collect()
     }
 
-    /// 批量创建定时器任务（申请阶段，带回调）
-    ///  (Create batch of timer tasks, application phase, with callbacks)
+    /// Create batch of timer tasks (static method, apply stage, with callbacks)
     /// 
-    /// # 参数 (Parameters)
-    /// - `callbacks`: (延迟时间, 回调) 的元组列表 (Tuple list of (delay duration, callback))
+    /// # Parameters
+    /// - `callbacks`: List of tuples of (delay time, callback)
     /// 
-    /// # 返回 (Returns)
-    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册到时间轮
-    /// (Returns TimerTask list that needs to be registered to the timing wheel via `register_batch()`)
+    /// # Returns
+    /// Return TimerTask list, needs to be registered through `register_batch()`
     /// 
-    /// # 示例 (Examples)
+    /// 创建定时器任务 (静态方法，应用阶段，有回调)
+    /// 
+    /// # 参数
+    /// - `callbacks`: (延迟时间, 回调) 元组列表
+    /// 
+    /// # 返回值
+    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册
+    /// 
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -584,8 +665,8 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     let counter = Arc::new(AtomicU32::new(0));
     ///     
-    ///     // 步骤 1: 批量创建任务
-    ///     // (Create batch of tasks)
+    ///     // Step 1: Create batch of tasks
+    ///     // 创建批量任务
     ///     let delays: Vec<Duration> = (0..3)
     ///         .map(|_| Duration::from_millis(100))
     ///         .collect();
@@ -603,13 +684,12 @@ impl TimerWheel {
     ///         })
     ///         .collect();
     ///     
-    ///     // 批量创建任务
-    ///     // (Create batch of tasks)
+    ///     // Create batch of tasks
     ///     let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
     ///     println!("Created {} tasks", tasks.len());
     ///     
-    ///     // 步骤 2: 批量注册任务
-    ///     // (Register batch of tasks)
+    ///     // Step 2: Register batch of tasks
+    ///     // 注册批量任务
     ///     let batch = timer.register_batch(tasks);
     /// }
     /// ```
@@ -622,17 +702,23 @@ impl TimerWheel {
             .collect()
     }
     
-    /// 注册定时器任务到时间轮（注册阶段）
-    ///  (Register timer task to timing wheel, registration phase)
+    /// Register timer task to timing wheel (registration phase)
     /// 
-    /// # 参数 (Parameters)
-    /// - `task`: 通过 `create_task()` 创建的任务 (Task created via `create_task()`)
+    /// # Parameters
+    /// - `task`: Task created via `create_task()`
     /// 
-    /// # 返回 (Returns)
+    /// # Returns
+    /// Return timer handle that can be used to cancel timer and receive completion notifications
+    /// 
+    /// 注册定时器任务到时间轮 (注册阶段)
+    /// 
+    /// # 参数
+    /// - `task`: 通过 `create_task()` 创建的任务
+    /// 
+    /// # 返回值
     /// 返回定时器句柄，可用于取消定时器和接收完成通知
-    /// (Returns timer handle that can be used to cancel timer and receive completion notifications)
     /// 
-    /// # 示例 (Examples)
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// 
@@ -647,12 +733,12 @@ impl TimerWheel {
     ///     })));
     ///     let task_id = task.get_id();
     ///     
+    ///     // Register task
     ///     // 注册任务
-    ///     // (Register task)
     ///     let handle = timer.register(task);
     ///     
+    ///     // Wait for timer completion
     ///     // 等待定时器完成
-    ///     // (Wait for timer completion)
     ///     handle.into_completion_receiver().0.await.ok();
     /// }
     /// ```
@@ -672,15 +758,23 @@ impl TimerWheel {
         TimerHandle::new(task_id, self.wheel.clone(), completion_rx)
     }
     
-    /// 批量注册定时器任务到时间轮（注册阶段）(Batch register timer tasks to timing wheel, registration phase)
+    /// Batch register timer tasks to timing wheel (registration phase)
     /// 
-    /// # 参数 (Parameters)
-    /// - `tasks`: 通过 `create_batch()` 创建的任务列表 (List of tasks created via `create_batch()`)
+    /// # Parameters
+    /// - `tasks`: List of tasks created via `create_batch()`
     /// 
-    /// # 返回 (Returns)
-    /// 返回批量定时器句柄 (Returns batch timer handle)
+    /// # Returns
+    /// Return batch timer handle
     /// 
-    /// # 示例 (Examples)
+    /// 批量注册定时器任务到时间轮 (注册阶段)
+    /// 
+    /// # 参数
+    /// - `tasks`: 通过 `create_batch()` 创建的任务列表
+    /// 
+    /// # 返回值
+    /// 返回批量定时器句柄
+    /// 
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask};
     /// use std::time::Duration;
@@ -705,10 +799,7 @@ impl TimerWheel {
         let mut task_ids = Vec::with_capacity(task_count);
         let mut prepared_tasks = Vec::with_capacity(task_count);
         
-        // 步骤1: 准备所有 channels 和 notifiers（无锁）
-        // 优化：使用 for 循环代替 map + collect，避免闭包捕获开销
-        // (Step 1: Prepare all channels and notifiers)
-        // (Optimize: use for loop instead of map + collect, avoid closure capture overhead)
+        // Step 1: Prepare all channels and notifiers
         for task in tasks {
             let (completion_tx, completion_rx) = oneshot::channel();
             let notifier = crate::task::CompletionNotifier(completion_tx);
@@ -718,8 +809,7 @@ impl TimerWheel {
             prepared_tasks.push((task, notifier));
         }
         
-        // 步骤2: 单次加锁，批量插入
-        // (Step 2: Single lock, batch insert)
+        // Step 2: Single lock, batch insert
         {
             let mut wheel_guard = self.wheel.lock();
             wheel_guard.insert_batch(prepared_tasks);
@@ -728,16 +818,23 @@ impl TimerWheel {
         BatchHandle::new(task_ids, self.wheel.clone(), completion_rxs)
     }
 
-    /// 取消定时器 (Cancel timer)
+    /// Cancel timer
     ///
-    /// # 参数 (Parameters)
-    /// - `task_id`: 任务 ID (Task ID)
+    /// # Parameters
+    /// - `task_id`: Task ID
     ///
-    /// # 返回 (Returns)
-    /// 如果任务存在且成功取消返回 true，否则返回 false
-    /// (Returns true if task exists and is successfully cancelled, otherwise false)
+    /// # Returns
+    /// Returns true if task exists and is successfully cancelled, otherwise false
     /// 
-    /// # 示例 (Examples)
+    /// 取消定时器
+    ///
+    /// # 参数
+    /// - `task_id`: 任务 ID
+    ///
+    /// # 返回值
+    /// 如果任务存在且成功取消则返回 true，否则返回 false
+    /// 
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// 
@@ -753,8 +850,8 @@ impl TimerWheel {
     ///     let task_id = task.get_id();
     ///     let _handle = timer.register(task);
     ///     
-    ///     // 使用任务 ID 取消
-    ///     // (Cancel task using task ID)
+    ///     // Cancel task using task ID
+    ///     // 使用任务 ID 取消任务
     ///     let cancelled = timer.cancel(task_id);
     ///     println!("Canceled successfully: {}", cancelled);
     /// }
@@ -765,19 +862,27 @@ impl TimerWheel {
         wheel.cancel(task_id)
     }
 
-    /// 批量取消定时器 (Batch cancel timers)
+    /// Batch cancel timers
     ///
-    /// # 参数 (Parameters)
-    /// - `task_ids`: 要取消的任务 ID 列表 (List of task IDs to cancel)
+    /// # Parameters
+    /// - `task_ids`: List of task IDs to cancel
     ///
-    /// # 返回 (Returns)
-    /// 成功取消的任务数量 (Number of successfully cancelled tasks)
+    /// # Returns
+    /// Number of successfully cancelled tasks
     ///
-    /// # 性能优势 (Performance Advantages)
-    /// - 批量处理减少锁竞争 (Batch processing reduces lock contention)
-    /// - 内部优化批量取消操作 (Internally optimized batch cancellation operation)
+    /// 批量取消定时器
     ///
-    /// # 示例 (Examples)
+    /// # 参数
+    /// - `task_ids`: 要取消的任务 ID 列表
+    ///
+    /// # 返回值
+    /// 成功取消的任务数量
+    ///
+    /// # Performance Advantages
+    /// - Batch processing reduces lock contention
+    /// - Internally optimized batch cancellation operation
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask};
     /// use std::time::Duration;
@@ -786,8 +891,8 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
+    ///     // Create multiple timers
     ///     // 创建多个定时器
-    ///     // (Create multiple timers)
     ///     let task1 = TimerWheel::create_task(Duration::from_secs(10), None);
     ///     let task2 = TimerWheel::create_task(Duration::from_secs(10), None);
     ///     let task3 = TimerWheel::create_task(Duration::from_secs(10), None);
@@ -798,8 +903,8 @@ impl TimerWheel {
     ///     let _h2 = timer.register(task2);
     ///     let _h3 = timer.register(task3);
     ///     
+    ///     // Batch cancel
     ///     // 批量取消
-    ///     // (Batch cancel)
     ///     let cancelled = timer.cancel_batch(&task_ids);
     ///     println!("Canceled {} timers", cancelled);
     /// }
@@ -810,25 +915,37 @@ impl TimerWheel {
         wheel.cancel_batch(task_ids)
     }
 
-    /// 推迟定时器 (Postpone timer)
+    /// Postpone timer
     ///
-    /// # 参数 (Parameters)
-    /// - `task_id`: 要推迟的任务 ID (Task ID to postpone)
-    /// - `new_delay`: 新的延迟时间（从当前时间点重新计算）(New delay duration, recalculated from current time)
-    /// - `callback`: 新的回调函数，传入 `None` 保持原回调不变，传入 `Some` 替换为新回调
-    ///   (New callback function, pass `None` to keep original callback, pass `Some` to replace with new callback)
+    /// # Parameters
+    /// - `task_id`: Task ID to postpone
+    /// - `new_delay`: New delay duration, recalculated from current time
+    /// - `callback`: New callback function, pass `None` to keep original callback, pass `Some` to replace with new callback
     ///
-    /// # 返回 (Returns)
-    /// 如果任务存在且成功推迟返回 true，否则返回 false
-    /// (Returns true if task exists and is successfully postponed, otherwise false)
+    /// # Returns
+    /// Returns true if task exists and is successfully postponed, otherwise false
     ///
-    /// # 注意 (Note)
-    /// - 推迟后任务 ID 保持不变 (Task ID remains unchanged after postponement)
-    /// - 原有的 completion_receiver 仍然有效 (Original completion_receiver remains valid)
+    /// 推迟定时器
     ///
-    /// # 示例 (Examples)
+    /// # 参数
+    /// - `task_id`: 要推迟的任务 ID
+    /// - `new_delay`: 新的延迟时间，从当前时间重新计算
+    /// - `callback`: 新的回调函数，传递 `None` 保持原始回调，传递 `Some` 替换为新的回调
     ///
-    /// ## 保持原回调 (Keep original callback)
+    /// # 返回值
+    /// 如果任务存在且成功推迟则返回 true，否则返回 false
+    ///
+    /// # Note
+    /// - Task ID remains unchanged after postponement
+    /// - Original completion_receiver remains valid
+    ///
+    /// # 注意
+    /// - 任务 ID 在推迟后保持不变
+    /// - 原始 completion_receiver 保持有效
+    ///
+    /// # Examples (示例)
+    ///
+    /// ## Keep original callback (保持原始回调)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -844,14 +961,14 @@ impl TimerWheel {
     ///     let task_id = task.get_id();
     ///     let _handle = timer.register(task);
     ///     
-    ///     // 推迟到 10 秒后触发（保持原回调）
-    ///     // (Postpone to 10 seconds after triggering, and keep original callback)
+    ///     // Postpone to 10 seconds after triggering, and keep original callback
+    ///     // 推迟到 10 秒后触发，并保持原始回调
     ///     let success = timer.postpone(task_id, Duration::from_secs(10), None);
     ///     println!("Postponed successfully: {}", success);
     /// }
     /// ```
     ///
-    /// ## 替换为新回调 (Replace with new callback)
+    /// ## Replace with new callback (替换为新的回调)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -866,8 +983,8 @@ impl TimerWheel {
     ///     let task_id = task.get_id();
     ///     let _handle = timer.register(task);
     ///     
-    ///     // 推迟到 10 秒后触发（并替换为新回调）
-    ///     // (Postpone to 10 seconds after triggering, and replace with new callback)
+    ///     // Postpone to 10 seconds after triggering, and replace with new callback
+    ///     // 推迟到 10 秒后触发，并替换为新的回调
     ///     let success = timer.postpone(task_id, Duration::from_secs(10), Some(CallbackWrapper::new(|| async {
     ///         println!("New callback!");
     ///     })));
@@ -885,30 +1002,35 @@ impl TimerWheel {
         wheel.postpone(task_id, new_delay, callback)
     }
 
-    /// 批量推迟定时器（保持原回调）
-    /// (Batch postpone timers, keep original callbacks)
+    /// Batch postpone timers (keep original callbacks)
     ///
-    /// # 参数 (Parameters)
-    /// - `updates`: (任务ID, 新延迟) 的元组列表
-    ///  (List of tuples of (task ID, new delay))
+    /// # Parameters
+    /// - `updates`: List of tuples of (task ID, new delay)
     ///
-    /// # 返回 (Returns)
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器 (保持原始回调)
+    ///
+    /// # 参数
+    /// - `updates`: (任务 ID, 新延迟) 元组列表
+    ///
+    /// # 返回值
     /// 成功推迟的任务数量
-    ///  (Number of successfully postponed tasks)
     ///
-    /// # 注意 (Note)
-    /// - 此方法会保持所有任务的原回调不变
-    ///  (This method keeps all tasks' original callbacks unchanged)
-    /// - 如需替换回调，请使用 `postpone_batch_with_callbacks`
-    ///  (Use `postpone_batch_with_callbacks` if you need to replace callbacks)
+    /// # Note
+    /// - This method keeps all tasks' original callbacks unchanged
+    /// - Use `postpone_batch_with_callbacks` if you need to replace callbacks
     ///
-    /// # 性能优势 (Performance Advantages)
-    /// - 批量处理减少锁竞争
-    ///  (Batch processing reduces lock contention)
-    /// - 内部优化批量推迟操作
-    ///  (Internally optimized batch postponement operation)
+    /// # 注意
+    /// - 此方法保持所有任务的原始回调不变
+    /// - 如果需要替换回调，请使用 `postpone_batch_with_callbacks`
     ///
-    /// # 示例 (Examples)
+    /// # Performance Advantages
+    /// - Batch processing reduces lock contention
+    /// - Internally optimized batch postponement operation
+    ///
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -917,8 +1039,8 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
-    ///     // 创建多个带回调的定时器
-    ///     // (Create multiple tasks with callbacks)
+    ///     // Create multiple tasks with callbacks
+    ///     // 创建多个带有回调的任务
     ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
     ///         println!("Task 1 fired!");
     ///     })));
@@ -939,8 +1061,8 @@ impl TimerWheel {
     ///     timer.register(task2);
     ///     timer.register(task3);
     ///     
-    ///     // 批量推迟（保持原回调）
-    ///     // (Batch postpone, keep original callbacks)
+    ///     // Batch postpone (keep original callbacks)
+    ///     // 批量推迟 (保持原始回调)
     ///     let postponed = timer.postpone_batch(task_ids);
     ///     println!("Postponed {} timers", postponed);
     /// }
@@ -951,24 +1073,27 @@ impl TimerWheel {
         wheel.postpone_batch(updates)
     }
 
-    /// 批量推迟定时器（替换回调）
-    /// (Batch postpone timers, replace callbacks)
+    /// Batch postpone timers (replace callbacks)
     ///
-    /// # 参数 (Parameters)
-    /// - `updates`: (任务ID, 新延迟, 新回调) 的元组列表
-    ///  (List of tuples of (task ID, new delay, new callback))
+    /// # Parameters
+    /// - `updates`: List of tuples of (task ID, new delay, new callback)
     ///
-    /// # 返回 (Returns)
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器 (替换回调)
+    ///
+    /// # 参数
+    /// - `updates`: (任务 ID, 新延迟, 新回调) 元组列表
+    ///
+    /// # 返回值
     /// 成功推迟的任务数量
-    ///  (Number of successfully postponed tasks)
     ///
-    /// # 性能优势 (Performance Advantages)
-    /// - 批量处理减少锁竞争
-    ///  (Batch processing reduces lock contention)
-    /// - 内部优化批量推迟操作
-    ///  (Internally optimized batch postponement operation)
+    /// # Performance Advantages
+    /// - Batch processing reduces lock contention
+    /// - Internally optimized batch postponement operation
     ///
-    /// # 示例 (Examples)
+    /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
@@ -980,6 +1105,7 @@ impl TimerWheel {
     ///     let timer = TimerWheel::with_defaults();
     ///     let counter = Arc::new(AtomicU32::new(0));
     ///     
+    ///     // Create multiple timers
     ///     // 创建多个定时器
     ///     let task1 = TimerWheel::create_task(Duration::from_secs(5), None);
     ///     let task2 = TimerWheel::create_task(Duration::from_secs(5), None);
@@ -990,6 +1116,7 @@ impl TimerWheel {
     ///     timer.register(task1);
     ///     timer.register(task2);
     ///     
+    ///     // Batch postpone and replace callbacks
     ///     // 批量推迟并替换回调
     ///     let updates: Vec<_> = vec![id1, id2]
     ///         .into_iter()
@@ -1014,8 +1141,7 @@ impl TimerWheel {
         wheel.postpone_batch_with_callbacks(updates.to_vec())
     }
     
-    /// 核心 tick 循环
-    ///  (Core tick loop)
+    /// Core tick loop
     async fn tick_loop(wheel: Arc<Mutex<Wheel>>, tick_duration: Duration) {
         let mut interval = tokio::time::interval(tick_duration);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1023,42 +1149,33 @@ impl TimerWheel {
         loop {
             interval.tick().await;
 
-            // 推进时间轮并获取到期任务
-            // (Advance timing wheel and get expired tasks)
+            // Advance timing wheel and get expired tasks
             let expired_tasks = {
                 let mut wheel_guard = wheel.lock();
                 wheel_guard.advance()
-                // (Advance timing wheel and get expired tasks)
             };
 
-            // 执行到期任务
-            // (Execute expired tasks)
+            // Execute expired tasks
             for task in expired_tasks {
                 let callback = task.get_callback();
                 
-                // 移动task的所有权来获取completion_notifier
-                // (Move task ownership to get completion_notifier)
+                // Move task ownership to get completion_notifier
                 let notifier = task.completion_notifier;
                 
-                // 只有注册过的任务才有 notifier
-                // (Only registered tasks have notifier)
+                // Only registered tasks have notifier
                 if let Some(notifier) = notifier {
-                    // 在独立的 tokio 任务中执行回调，并在回调完成后发送通知
-                    // (Execute callback in a separate tokio task, and send notification after callback completion)
+                    // Execute callback in a separate tokio task, and send notification after callback completion
                     if let Some(callback) = callback {
                         tokio::spawn(async move {
-                            // 执行回调
-                            // (Execute callback)
+                            // Execute callback
                             let future = callback.call();
                             future.await;
                             
-                            // 回调执行完成后发送通知
-                            // (Send notification after callback completion)
+                            // Send notification after callback completion
                             let _ = notifier.0.send(TaskCompletionReason::Expired);
                         });
                     } else {
-                        // 如果没有回调，立即发送完成通知
-                        // (Send notification immediately if no callback)
+                        // Send notification immediately if no callback
                         let _ = notifier.0.send(TaskCompletionReason::Expired);
                     }
                 }
@@ -1066,12 +1183,25 @@ impl TimerWheel {
         }
     }
 
-    /// 停止定时器管理器
-    ///  (Stop timer manager)
+    /// Graceful shutdown of TimerWheel
+    /// 
+    /// 优雅关闭 TimerWheel
+    /// 
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::TimerWheel;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// 
+    /// // Use timer... (使用定时器...)
+    /// 
+    /// timer.shutdown().await;
+    /// # }
+    /// ```
     pub async fn shutdown(mut self) {
         if let Some(handle) = self.tick_handle.take() {
             handle.abort();
-            // (Abort tick loop task)
             let _ = handle.await;
         }
     }
@@ -1113,6 +1243,7 @@ mod tests {
         );
         let _handle = timer.register(task);
 
+        // Wait for timer to trigger
         // 等待定时器触发
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -1136,11 +1267,13 @@ mod tests {
         );
         let handle = timer.register(task);
 
+        // Immediately cancel
         // 立即取消
         let cancel_result = handle.cancel();
         assert!(cancel_result);
 
-        // 等待足够长时间确保定时器不会触发
+        // Wait for enough time to ensure timer does not trigger
+        // 等待足够时间确保定时器不触发
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
@@ -1163,11 +1296,13 @@ mod tests {
         );
         let handle = timer.register(task);
 
+        // Immediately cancel
         // 立即取消
         let cancel_result = handle.cancel();
         assert!(cancel_result);
 
-        // 等待足够长时间确保定时器不会触发
+        // Wait for enough time to ensure timer does not trigger
+        // 等待足够时间确保定时器不触发
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
@@ -1191,21 +1326,25 @@ mod tests {
         let task_id = task.get_id();
         let handle = timer.register(task);
 
+        // Postpone task to 150ms
         // 推迟任务到 150ms
         let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
         assert!(postponed);
 
-        // 等待原定时间 50ms，任务不应该触发
+        // Wait for original time 50ms, task should not trigger
+        // 等待原始时间 50ms，任务不应触发
         tokio::time::sleep(Duration::from_millis(70)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-        // 等待新的触发时间（从推迟开始算，还需要等待约 150ms）
+        // Wait for new trigger time (from postponed start, need to wait about 150ms)
+        // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
         let result = tokio::time::timeout(
             Duration::from_millis(200),
             handle.into_completion_receiver().0
         ).await;
         assert!(result.is_ok());
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -1219,7 +1358,7 @@ mod tests {
         let counter_clone1 = Arc::clone(&counter);
         let counter_clone2 = Arc::clone(&counter);
 
-        // 创建任务，原始回调增加 1
+        // Create task, original callback adds 1
         let task = TimerWheel::create_task(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
@@ -1232,6 +1371,7 @@ mod tests {
         let task_id = task.get_id();
         let handle = timer.register(task);
 
+        // Postpone task and replace callback, new callback adds 10
         // 推迟任务并替换回调，新回调增加 10
         let postponed = timer.postpone(
             task_id,
@@ -1245,17 +1385,20 @@ mod tests {
         );
         assert!(postponed);
 
-        // 等待任务触发（推迟后需要等待100ms，加上余量）
+        // Wait for task to trigger (after postponed, need to wait 100ms, plus margin)
+        // 等待任务触发（推迟后，需要等待 100ms，加上余量）
         let result = tokio::time::timeout(
             Duration::from_millis(200),
             handle.into_completion_receiver().0
         ).await;
         assert!(result.is_ok());
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         
-        // 验证新回调被执行（增加了 10 而不是 1）
+        // Verify new callback is executed (increased 10 instead of 1)
+        // 验证新回调已执行（增加 10 而不是 1）
         assert_eq!(counter.load(Ordering::SeqCst), 10);
     }
 
@@ -1263,11 +1406,12 @@ mod tests {
     async fn test_postpone_nonexistent_timer() {
         let timer = TimerWheel::with_defaults();
         
-        // 尝试推迟不存在的任务
+        // Try to postpone nonexistent task
+        // 尝试推迟一个不存在的任务
         let fake_task = TimerWheel::create_task(Duration::from_millis(50), None);
         let fake_task_id = fake_task.get_id();
+        // Do not register this task
         // 不注册这个任务
-        
         let postponed = timer.postpone(fake_task_id, Duration::from_millis(100), None);
         assert!(!postponed);
     }
@@ -1278,6 +1422,7 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Create 3 tasks
         // 创建 3 个任务
         let mut task_ids = Vec::new();
         for _ in 0..3 {
@@ -1295,17 +1440,21 @@ mod tests {
             timer.register(task);
         }
 
+        // Batch postpone
         // 批量推迟
         let postponed = timer.postpone_batch(task_ids);
         assert_eq!(postponed, 3);
 
-        // 等待原定时间 50ms，任务不应该触发
+        // Wait for original time 50ms, task should not trigger
+        // 等待原始时间 50ms，任务不应触发
         tokio::time::sleep(Duration::from_millis(70)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-        // 等待新的触发时间（从推迟开始算，还需要等待约 150ms）
+        // Wait for new trigger time (from postponed start, need to wait about 150ms)
+        // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
         tokio::time::sleep(Duration::from_millis(200)).await;
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -1317,6 +1466,7 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
 
+        // Create 3 tasks
         // 创建 3 个任务
         let mut task_ids = Vec::new();
         for _ in 0..3 {
@@ -1328,6 +1478,7 @@ mod tests {
             timer.register(task);
         }
 
+        // Batch postpone and replace callbacks
         // 批量推迟并替换回调
         let updates: Vec<_> = task_ids
             .into_iter()
@@ -1342,16 +1493,21 @@ mod tests {
             })
             .collect();
 
+        // Batch postpone and replace callbacks
+        // 批量推迟并替换回调
         let postponed = timer.postpone_batch_with_callbacks(updates);
         assert_eq!(postponed, 3);
 
-        // 等待原定时间 50ms，任务不应该触发
+        // Wait for original time 50ms, task should not trigger
+        // 等待原始时间 50ms，任务不应触发
         tokio::time::sleep(Duration::from_millis(70)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-        // 等待新的触发时间（从推迟开始算，还需要等待约 150ms）
+        // Wait for new trigger time (from postponed start, need to wait about 150ms)
+        // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
         tokio::time::sleep(Duration::from_millis(200)).await;
         
+        // Wait for callback to execute
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -1376,17 +1532,19 @@ mod tests {
         let task_id = task.get_id();
         let handle = timer.register(task);
 
+        // Postpone task
         // 推迟任务
         timer.postpone(task_id, Duration::from_millis(100), None);
 
-        // 验证原 completion_receiver 仍然有效（推迟后需要等待100ms，加上余量）
+        // Verify original completion_receiver is still valid (after postponed, need to wait 100ms, plus margin)
+        // 验证原始完成接收器是否仍然有效（推迟后，需要等待 100ms，加上余量）
         let result = tokio::time::timeout(
             Duration::from_millis(200),
             handle.into_completion_receiver().0
         ).await;
         assert!(result.is_ok(), "Completion receiver should still work after postpone");
         
-        // 等待回调执行
+        // Wait for callback to execute
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }

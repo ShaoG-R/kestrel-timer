@@ -4,34 +4,46 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
-/// 全局唯一的任务 ID 生成器 (Global unique task ID generator)
+/// Global unique task ID generator
+/// 
+/// 全局唯一任务 ID 生成器
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
-/// 任务完成原因 (Task Completion Reason)
+/// Task Completion Reason
 ///
-/// 表示定时器任务完成的原因，可以是正常到期或被取消。
-/// (Indicates the reason for task completion, either expired or cancelled)
+/// Indicates the reason for task completion, either expired or cancelled.
+/// 
+/// 任务完成原因，要么是过期，要么是取消。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskCompletionReason {
-    /// 任务正常到期 (Task expired normally)
+    /// Task expired normally
+    /// 
+    /// 任务正常过期
     Expired,
-    /// 任务被取消 (Task was cancelled)
+    /// Task was cancelled
+    /// 
+    /// 任务被取消
     Cancelled,
 }
 
-/// 定时器任务的唯一标识符 (Unique identifier for timer tasks)
+/// Unique identifier for timer tasks
+/// 
+/// 定时器任务唯一标识符
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TaskId(u64);
 
 impl TaskId {
-    /// 生成一个新的唯一任务 ID（内部使用）
     /// Generate a new unique task ID (internal use)
+    /// 
+    /// 生成一个新的唯一任务 ID (内部使用)
     #[inline]
     pub(crate) fn new() -> Self {
         TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// 获取任务 ID 的数值 (Get the numeric value of the task ID)
+    /// Get the numeric value of the task ID
+    /// 
+    /// 获取任务 ID 的数值
     #[inline]
     pub fn as_u64(&self) -> u64 {
         self.0
@@ -45,12 +57,13 @@ impl Default for TaskId {
     }
 }
 
-/// 定时器回调 trait (Timer Callback Trait)
+/// Timer Callback Trait
 /// 
-/// 实现此 trait 的类型可以作为定时器的回调函数使用。
-/// (Types implementing this trait can be used as timer callbacks)
+/// Types implementing this trait can be used as timer callbacks.
 /// 
-/// # 示例
+/// 可实现此特性的类型可以作为定时器回调函数。
+/// 
+/// # Examples (示例)
 /// 
 /// ```
 /// use kestrel_timer::TimerCallback;
@@ -68,13 +81,17 @@ impl Default for TaskId {
 /// }
 /// ```
 pub trait TimerCallback: Send + Sync + 'static {
-    /// 执行回调，返回一个 Future (Execute callback, returns a Future)
+    /// Execute callback, returns a Future
+    /// 
+    /// 执行回调函数，返回一个 Future
     fn call(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
-/// 为闭包实现 TimerCallback trait (Implement TimerCallback trait for closures)
-/// 支持 Fn() -> Future 类型的闭包（可以多次调用，适合周期性任务）
-/// (Supports Fn() -> Future closures, can be called multiple times, suitable for periodic tasks)
+/// Implement TimerCallback trait for closures
+/// 
+/// Supports Fn() -> Future closures, can be called multiple times, suitable for periodic tasks
+/// 
+/// 实现 TimerCallback 特性的类型，支持 Fn() -> Future 闭包，可以多次调用，适合周期性任务
 impl<F, Fut> TimerCallback for F
 where
     F: Fn() -> Fut + Send + Sync + 'static,
@@ -85,9 +102,11 @@ where
     }
 }
 
-/// 回调包装器，用于规范化创建和管理回调 (Callback wrapper for standardized callback creation and management)
+/// Callback wrapper for standardized callback creation and management
 /// 
-/// # 示例 (Examples)
+/// Callback 包装器，用于标准化回调创建和管理
+/// 
+/// # Examples (示例)
 /// 
 /// ```
 /// use kestrel_timer::CallbackWrapper;
@@ -102,19 +121,23 @@ pub struct CallbackWrapper {
 }
 
 impl CallbackWrapper {
-    /// 创建新的回调包装器 (Create a new callback wrapper)
+    /// Create a new callback wrapper
     /// 
-    /// # 参数 (Parameters)
-    /// - `callback`: 实现了 TimerCallback trait 的回调对象 
-    /// (Callback object implementing TimerCallback trait)
+    /// # Parameters
+    /// - `callback`: Callback object implementing TimerCallback trait
     /// 
-    /// # 示例 (Examples)
+    /// # 创建一个新的回调包装器
+    /// 
+    /// # 参数
+    /// - `callback`: 实现 TimerCallback 特性的回调对象
+    /// 
+    /// # Examples (示例)
     /// 
     /// ```
     /// use kestrel_timer::CallbackWrapper;
     /// 
     /// let callback = CallbackWrapper::new(|| async {
-    ///     println!("Timer fired!");
+    ///     println!("Timer fired!"); // 定时器触发
     /// });
     /// ```
     #[inline]
@@ -124,56 +147,82 @@ impl CallbackWrapper {
         }
     }
 
-    /// 调用回调函数 (Call the callback function)
+    /// Call the callback function
+    /// 
+    /// 调用回调函数
     #[inline]
     pub(crate) fn call(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         self.callback.call()
     }
 }
 
-/// 完成通知器，用于在任务完成时发送通知 (Completion notifier for sending notifications when tasks complete)
+/// Completion notifier for sending notifications when tasks complete
+/// 
+/// 完成通知器，用于发送任务完成通知
 pub struct CompletionNotifier(pub oneshot::Sender<TaskCompletionReason>);
 
-/// 定时器任务 (Timer Task)
-/// 
-/// 用户通过两步式 API 使用 :
-/// 1. 使用 `TimerTask::new()` 创建任务
-/// 2. 使用 `TimerWheel::register()` 或 `TimerService::register()` 注册任务
+/// Timer Task
 /// 
 /// Users interact via a two-step API
 /// 1. Create task using `TimerTask::new()`
 /// 2. Register task using `TimerWheel::register()` or `TimerService::register()`
+/// 
+/// 定时器任务
+/// 
+/// 用户通过两步 API 与定时器交互
+/// 1. 使用 `TimerTask::new()` 创建任务
+/// 2. 使用 `TimerWheel::register()` 或 `TimerService::register()` 注册任务
 pub struct TimerTask {
-    /// 任务唯一标识符 (Unique task identifier)
+    /// Unique task identifier
+    /// 
+    /// 唯一任务标识符
     pub(crate) id: TaskId,
     
-    /// 用户指定的延迟时间 (User-specified delay duration)
+    /// User-specified delay duration
+    /// 
+    /// 用户指定的延迟时间
     pub(crate) delay: std::time::Duration,
     
-    /// 到期时间（相对于时间轮的 tick 数）(Expiration time in ticks relative to the timing wheel)
+    /// Expiration time in ticks relative to the timing wheel
+    /// 
+    /// 相对于时间轮的过期时间（以 tick 为单位）
     pub(crate) deadline_tick: u64,
     
-    /// 轮次计数（用于超出时间轮范围的任务）(Round counter for tasks beyond the wheel's range)
+    /// Round counter for tasks beyond the wheel's range
+    /// 
+    /// 超出时间轮范围的任务轮数计数器
     pub(crate) rounds: u32,
     
-    /// 异步回调函数（可选）(Async callback function, optional)
+    /// Async callback function, optional
+    /// 
+    /// 异步回调函数，可选
     pub(crate) callback: Option<CallbackWrapper>,
     
-    /// 完成通知器（用于在任务完成时发送通知，注册时创建）
-    /// (Completion notifier for sending notifications when task completes, created during registration)
+    /// Completion notifier for sending notifications when task completes, created during registration
+    /// 
+    /// 完成通知器，用于发送任务完成通知，在注册期间创建
     pub(crate) completion_notifier: Option<CompletionNotifier>,
 }
 
 impl TimerTask {
-    /// 创建新的定时器任务（内部使用）(Create a new timer task, internal use)
+    /// Create a new timer task, internal use
     /// 
-    /// # 参数 (Parameters)
-    /// - `delay`: 延迟时间 (Delay duration)
-    /// - `callback`: 回调函数（可选）(Callback function, optional)
+    /// # Parameters
+    /// - `delay`: Delay duration
+    /// - `callback`: Callback function, optional
     /// 
-    /// # 注意 (Note)
-    /// 这是内部方法，用户应该使用 `TimerWheel::create_task()` 或 `TimerService::create_task()` 创建任务。
-    /// (This is an internal method, users should use `TimerWheel::create_task()` or `TimerService::create_task()` to create tasks)
+    /// # Note
+    /// This is an internal method, users should use `TimerWheel::create_task()` or `TimerService::create_task()` to create tasks.
+    /// 
+    /// 
+    /// 创建一个新的定时器任务，内部使用
+    /// 
+    /// # 参数
+    /// - `delay`: 延迟时间
+    /// - `callback`: 回调函数，可选
+    /// 
+    /// # 注意
+    /// 这是一个内部方法，用户应该使用 `TimerWheel::create_task()` 或 `TimerService::create_task()` 来创建任务。
     #[inline]
     pub(crate) fn new(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
         Self {
@@ -186,9 +235,12 @@ impl TimerTask {
         }
     }
 
-    /// 获取任务 ID (Get task ID)
+    /// Get task ID
     /// 
-    /// # 示例 (Examples)
+    /// 获取任务 ID
+    /// 
+    /// # Examples (示例)
+    /// 
     /// ```no_run
     /// use kestrel_timer::TimerWheel;
     /// use std::time::Duration;
@@ -201,11 +253,9 @@ impl TimerTask {
         self.id
     }
 
-    /// 内部方法：准备注册（在注册时由时间轮调用）
-    /// Internal method: Prepare for registration (called by timing wheel during registration)
+    /// Prepare for registration (called by timing wheel during registration)
     /// 
-    /// 注意：此方法已内联到 insert/insert_batch 中以提升性能，但保留此方法以供未来可能的其他用途
-    /// Note: This method has been inlined into insert/insert_batch for performance, but kept for potential future use
+    /// 准备注册（在注册期间由时间轮调用）
     #[allow(dead_code)]
     pub(crate) fn prepare_for_registration(
         &mut self,
@@ -218,34 +268,44 @@ impl TimerTask {
         self.rounds = rounds;
     }
 
-    /// 获取回调函数的克隆（如果存在）
-    /// (Get a clone of the callback function if present)
+    /// Get a clone of the callback function if present
+    /// 
+    /// 获取回调函数（如果存在）
     #[inline]
     pub(crate) fn get_callback(&self) -> Option<CallbackWrapper> {
         self.callback.clone()
     }
 }
 
-/// 任务位置信息（包含层级），用于分层时间轮
 /// Task location information (including level) for hierarchical timing wheel
 /// 
-/// 优化内存布局：将 level 字段放在最前，利用结构体对齐减少填充
 /// Memory layout optimization: level field placed first to reduce padding via struct alignment
+/// 
+/// 任务位置信息（包括层级）用于分层时间轮
+/// 
+/// 内存布局优化：将 level 字段放在第一位，通过结构体对齐来减少填充
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TaskLocation {
-    /// 槽位索引 (Slot index)
+    /// Slot index
+    /// 
+    /// 槽索引
     pub slot_index: usize,
-    /// 任务在槽位 Vec 中的索引位置（用于 O(1) 取消）
-    /// (Index position of task in slot Vec for O(1) cancellation)
+    /// Index position of task in slot Vec for O(1) cancellation
+    /// 
+    /// 槽向量中任务的索引位置，用于 O(1) 取消
     pub vec_index: usize,
-    /// 层级：0 = L0（底层），1 = L1（高层）
     /// Level: 0 = L0 (bottom layer), 1 = L1 (upper layer)
-    /// 使用 u8 而非 bool，为未来可能的多层扩展预留空间
-    /// (Using u8 instead of bool to reserve space for potential multi-layer expansion)
+    /// Using u8 instead of bool to reserve space for potential multi-layer expansion
+    /// 
+    /// 层级：0 = L0（底层），1 = L1（上层）
+    /// 使用 u8 而不是 bool 来保留空间，用于潜在的多层扩展
     pub level: u8,
 }
 
 impl TaskLocation {
+    /// Create a new task location information
+    /// 
+    /// 创建一个新的任务位置信息
     #[inline(always)]
     pub fn new(level: u8, slot_index: usize, vec_index: usize) -> Self {
         Self {

@@ -1,3 +1,4 @@
+use crate::{BatchHandle, TimerHandle};
 use crate::config::ServiceConfig;
 use crate::error::TimerError;
 use crate::task::{CallbackWrapper, TaskCompletionReason, TaskId};
@@ -615,7 +616,7 @@ impl TimerService {
     /// - `task`: Task created via `create_task()`
     /// 
     /// # Returns
-    /// - `Ok(())`: Register successfully
+    /// - `Ok(TimerHandle)`: Register successfully
     /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
     /// 
     /// 注册定时器任务到服务 (注册阶段)
@@ -623,7 +624,7 @@ impl TimerService {
     /// - `task`: 通过 `create_task()` 创建的任务
     ///
     /// # 返回值
-    /// - `Ok(())`: 注册成功
+    /// - `Ok(TimerHandle)`: 注册成功
     /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
     ///
     /// # Examples (示例)
@@ -650,7 +651,7 @@ impl TimerService {
     /// # }
     /// ```
     #[inline]
-    pub fn register(&self, task: crate::task::TimerTask) -> Result<(), TimerError> {
+    pub fn register(&self, task: crate::task::TimerTask) -> Result<TimerHandle, TimerError> {
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
         let notifier = crate::task::CompletionNotifier(completion_tx);
         
@@ -672,7 +673,7 @@ impl TimerService {
             })
             .map_err(|_| TimerError::RegisterFailed)?;
         
-        Ok(())
+        Ok(TimerHandle::new(task_id, self.wheel.clone()))
     }
     
     /// Batch register timer tasks to service (registration phase)
@@ -681,7 +682,7 @@ impl TimerService {
     /// - `tasks`: List of tasks created via `create_batch()`
     /// 
     /// # Returns
-    /// - `Ok(())`: Register successfully
+    /// - `Ok(BatchHandle)`: Register successfully
     /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
     /// 
     /// 批量注册定时器任务到服务 (注册阶段)
@@ -689,7 +690,7 @@ impl TimerService {
     /// - `tasks`: 通过 `create_batch()` 创建的任务列表
     ///
     /// # 返回值
-    /// - `Ok(())`: 注册成功
+    /// - `Ok(BatchHandle)`: 注册成功
     /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
     ///
     /// # Examples (示例)
@@ -720,7 +721,7 @@ impl TimerService {
     /// # }
     /// ```
     #[inline]
-    pub fn register_batch(&self, tasks: Vec<crate::task::TimerTask>) -> Result<(), TimerError> {
+    pub fn register_batch(&self, tasks: Vec<crate::task::TimerTask>) -> Result<BatchHandle, TimerError> {
         let task_count = tasks.len();
         let mut completion_rxs = Vec::with_capacity(task_count);
         let mut task_ids = Vec::with_capacity(task_count);
@@ -748,12 +749,12 @@ impl TimerService {
         // 添加到服务管理（只发送必要数据）
         self.command_tx
             .try_send(ServiceCommand::AddBatchHandle {
-                task_ids,
+                task_ids: task_ids.clone(),
                 completion_rxs,
             })
             .map_err(|_| TimerError::RegisterFailed)?;
         
-        Ok(())
+        Ok(BatchHandle::new(task_ids, self.wheel.clone()))
     }
 
     /// Graceful shutdown of TimerService

@@ -66,7 +66,7 @@ impl Default for TaskId {
 /// # Examples (示例)
 /// 
 /// ```
-/// use kestrel_timer::TimerCallback;
+/// use kestrel_timer::task::TimerCallback;
 /// use std::future::Future;
 /// use std::pin::Pin;
 /// 

@@ -77,7 +77,8 @@ async fn test_timer_precision() {
     // This can avoid race conditions
     // 使用完成接收器等待定时器完成，而不是固定睡眠时间
     // 这样可以避免竞争条件
-    let _ = handle.into_completion_receiver().0.await;
+    let (rx, _handle) = handle.into_parts();
+    let _ = rx.0.await;
     
     // Additional wait to ensure callback execution is complete
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -174,7 +175,8 @@ async fn test_timer_with_different_delays() {
     // 使用完成接收器等待所有定时器完成，而不是固定睡眠时间
     // 这样可以确保所有定时器都实际触发
     for handle in handles {
-        let _ = handle.into_completion_receiver().0.await;
+        let (rx, _handle) = handle.into_parts();
+        let _ = rx.0.await;
     }
     
     // Additional wait to ensure all callbacks are executed completely
@@ -395,9 +397,10 @@ async fn test_postpone_single_timer() {
 
     // Wait for new trigger time
     // 等待新触发时间
+    let (rx, _handle) = handle.into_parts();
     let result = tokio::time::timeout(
         Duration::from_millis(200),
-        handle.into_completion_receiver().0
+        rx.0
     ).await;
     assert!(result.is_ok(), "Task should trigger at postponed time");
     
@@ -443,9 +446,10 @@ async fn test_postpone_with_new_callback() {
 
     // Wait for task to trigger
     // 等待任务触发
+    let (rx, _handle) = handle.into_parts();
     let result = tokio::time::timeout(
         Duration::from_millis(200),
-        handle.into_completion_receiver().0
+        rx.0
     ).await;
     assert!(result.is_ok(), "Task should trigger");
     
@@ -590,9 +594,10 @@ async fn test_postpone_multiple_times() {
     
     // Wait for final trigger
     // 等待最终触发
+    let (rx, _handle) = handle.into_parts();
     let result = tokio::time::timeout(
         Duration::from_millis(200),
-        handle.into_completion_receiver().0
+        rx.0
     ).await;
     assert!(result.is_ok(), "Task should finally trigger");
     

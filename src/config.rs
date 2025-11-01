@@ -16,7 +16,7 @@ use std::time::Duration;
 /// 
 /// # Examples (示例)
 /// ```no_run
-/// use kestrel_timer::WheelConfig;
+/// use kestrel_timer::config::WheelConfig;
 /// use std::time::Duration;
 ///
 /// // Use default configuration (使用默认配置，分层模式)
@@ -206,7 +206,7 @@ impl WheelConfigBuilder {
 /// 
 /// # Examples (示例)
 /// ```no_run
-/// use kestrel_timer::ServiceConfig;
+/// use kestrel_timer::config::ServiceConfig;
 ///
 /// // Use default configuration (使用默认配置)
 /// let config = ServiceConfig::default();
@@ -338,7 +338,7 @@ impl ServiceConfigBuilder {
 ///
 /// # Examples (示例)
 /// ```no_run
-/// use kestrel_timer::BatchConfig;
+/// use kestrel_timer::config::BatchConfig;
 ///
 /// // Use default configuration (使用默认配置)
 /// let config = BatchConfig::default();
@@ -377,7 +377,7 @@ impl Default for BatchConfig {
 /// 
 /// # Examples (示例)
 /// ```no_run
-/// use kestrel_timer::TimerConfig;
+/// use kestrel_timer::config::TimerConfig;
 ///
 /// // Use default configuration (使用默认配置)
 /// let config = TimerConfig::default();

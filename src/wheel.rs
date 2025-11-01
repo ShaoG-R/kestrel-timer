@@ -1143,7 +1143,7 @@ mod tests {
         assert!(result.is_err());
         if let Err(crate::error::TimerError::InvalidSlotCount { slot_count, reason }) = result {
             assert_eq!(slot_count, 100);
-            assert_eq!(reason, "L0 layer slot count must be a power of 2"); // L0 层槽数量必须是 2 的幂
+            assert_eq!(reason, "L0 layer slot count must be power of 2"); // L0 层槽数量必须是 2 的幂
         } else {
             panic!("Expected InvalidSlotCount error"); // 期望 InvalidSlotCount 错误
         }

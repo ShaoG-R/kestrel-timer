@@ -44,7 +44,8 @@
 //!     let handle = timer.register(task);
 //!     
 //!     // Wait for timer completion (等待定时器完成)
-//!     handle.into_completion_receiver().0.await?;
+//!     let (rx, _handle) = handle.into_parts();
+//!     rx.0.await?;
 //!     Ok(())
 //! }
 //! ```
@@ -110,8 +111,9 @@ pub mod timer;
 mod service;
 
 // Re-export public API
-pub use task::{CallbackWrapper, TaskId, TimerTask};
-pub use timer::{TimerWheel};
+pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletionReason};
+pub use timer::handle::{TimerHandle, TimerHandleWithCompletion, BatchHandle, BatchHandleWithCompletion, CompletionReceiver};
+pub use timer::TimerWheel;
 pub use service::TimerService;
 
 #[cfg(test)]
@@ -218,7 +220,8 @@ mod tests {
         let handle = timer.register(task);
 
         // Wait for completion notification
-        handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+        let (rx, _handle) = handle.into_parts();
+        rx.0.await.expect("Should receive completion notification");
 
         // Verify callback has been executed (wait a moment to ensure callback execution is complete)
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -233,7 +236,8 @@ mod tests {
         let handle = timer.register(task);
 
         // Wait for completion notification (no callback, only notification)
-        handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+        let (rx, _handle) = handle.into_parts();
+        rx.0.await.expect("Should receive completion notification");
     }
 
     #[tokio::test]
@@ -258,7 +262,7 @@ mod tests {
 
         let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
         let batch = timer.register_batch(tasks);
-        let receivers = batch.into_completion_receivers();
+        let (receivers, _batch_handle) = batch.into_parts();
 
         // Wait for all completion notifications
         for rx in receivers {
@@ -280,7 +284,8 @@ mod tests {
         let handle = timer.register(task);
 
         // Wait for completion notification and verify reason is Expired
-        let result = handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+        let (rx, _handle) = handle.into_parts();
+        let result = rx.0.await.expect("Should receive completion notification");
         assert_eq!(result, TaskCompletionReason::Expired);
     }
 
@@ -296,7 +301,8 @@ mod tests {
         assert!(cancelled);
 
         // Wait for completion notification and verify reason is Cancelled
-        let result = handle.into_completion_receiver().0.await.expect("Should receive completion notification");
+        let (rx, _handle) = handle.into_parts();
+        let result = rx.0.await.expect("Should receive completion notification");
         assert_eq!(result, TaskCompletionReason::Cancelled);
     }
 
@@ -310,8 +316,8 @@ mod tests {
             .collect();
         
         let batch = timer.register_batch(tasks);
-        let task_ids: Vec<_> = batch.task_ids.clone();
-        let mut receivers = batch.into_completion_receivers();
+        let task_ids: Vec<_> = batch.task_ids().to_vec();
+        let (mut receivers, _batch_handle) = batch.into_parts();
 
         // Cancel first 3 tasks
         timer.cancel_batch(&task_ids[0..3]);

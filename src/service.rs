@@ -47,7 +47,7 @@ enum ServiceCommand {
 /// 
 /// # Examples (示例)
 /// ```no_run
-/// use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+/// use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
 /// use std::time::Duration;
 ///
 /// #[tokio::main]
@@ -155,7 +155,7 @@ impl TimerService {
     /// 
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, config::ServiceConfig};
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
@@ -191,7 +191,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -242,7 +242,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -315,7 +315,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -364,7 +364,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -422,7 +422,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -488,7 +488,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -533,7 +533,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -577,7 +577,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -628,7 +628,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -694,7 +694,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -762,7 +762,7 @@ impl TimerService {
     /// 
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, config::ServiceConfig};
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();

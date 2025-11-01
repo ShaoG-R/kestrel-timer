@@ -60,6 +60,52 @@ impl TimerHandle {
         let mut wheel = self.wheel.lock();
         wheel.cancel(self.task_id)
     }
+
+    /// Postpone the timer
+    ///
+    /// # Parameters
+    /// - `new_delay`: New delay duration, recalculated from current time
+    /// - `callback`: New callback function, pass `None` to keep original callback, pass `Some` to replace with new callback
+    ///
+    /// # Returns
+    /// Returns true if task exists and is successfully postponed, otherwise false
+    /// 
+    /// 推迟定时器
+    ///
+    /// # 参数
+    /// - `new_delay`: 新的延迟时间，从当前时间重新计算
+    /// - `callback`: 新的回调函数，传递 `None` 保持原始回调，传递 `Some` 替换为新的回调
+    ///
+    /// # 返回值
+    /// 如果任务存在且成功推迟则返回 true，否则返回 false
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let callback = Some(CallbackWrapper::new(|| async {}));
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
+    /// let handle_with_completion = timer.register(task);
+    /// let (rx, handle) = handle_with_completion.into_parts();
+    /// 
+    /// // Postpone to 5 seconds
+    /// let success = handle.postpone(Duration::from_secs(5), None);
+    /// println!("Postponed successfully: {}", success);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn postpone(
+        &self,
+        new_delay: std::time::Duration,
+        callback: Option<crate::task::CallbackWrapper>,
+    ) -> bool {
+        let mut wheel = self.wheel.lock();
+        wheel.postpone(self.task_id, new_delay, callback)
+    }
 }
 
 /// Timer handle with completion receiver for managing timer lifecycle
@@ -108,6 +154,49 @@ impl TimerHandleWithCompletion {
     /// ```
     pub fn cancel(&self) -> bool {
         self.handle.cancel()
+    }
+
+    /// Postpone the timer
+    ///
+    /// # Parameters
+    /// - `new_delay`: New delay duration, recalculated from current time
+    /// - `callback`: New callback function, pass `None` to keep original callback, pass `Some` to replace with new callback
+    ///
+    /// # Returns
+    /// Returns true if task exists and is successfully postponed, otherwise false
+    /// 
+    /// 推迟定时器
+    ///
+    /// # 参数
+    /// - `new_delay`: 新的延迟时间，从当前时间重新计算
+    /// - `callback`: 新的回调函数，传递 `None` 保持原始回调，传递 `Some` 替换为新的回调
+    ///
+    /// # 返回值
+    /// 如果任务存在且成功推迟则返回 true，否则返回 false
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let callback = Some(CallbackWrapper::new(|| async {}));
+    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
+    /// let handle = timer.register(task);
+    /// 
+    /// // Postpone to 5 seconds
+    /// let success = handle.postpone(Duration::from_secs(5), None);
+    /// println!("Postponed successfully: {}", success);
+    /// # }
+    /// ```
+    pub fn postpone(
+        &self,
+        new_delay: std::time::Duration,
+        callback: Option<crate::task::CallbackWrapper>,
+    ) -> bool {
+        self.handle.postpone(new_delay, callback)
     }
 
     /// Split handle into completion receiver and timer handle
@@ -260,6 +349,158 @@ impl BatchHandle {
     #[inline]
     pub fn task_ids(&self) -> &[TaskId] {
         &self.task_ids
+    }
+
+    /// Batch postpone timers (keep original callbacks)
+    ///
+    /// # Parameters
+    /// - `new_delay`: New delay duration applied to all timers
+    ///
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器 (保持原始回调)
+    ///
+    /// # 参数
+    /// - `new_delay`: 应用于所有定时器的新延迟时间
+    ///
+    /// # 返回值
+    /// 成功推迟的任务数量
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let delays: Vec<Duration> = (0..10)
+    ///     .map(|_| Duration::from_secs(1))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(delays);
+    /// let batch_with_completion = timer.register_batch(tasks);
+    /// let (rxs, batch) = batch_with_completion.into_parts();
+    /// 
+    /// // Postpone all timers to 5 seconds
+    /// let postponed = batch.postpone_all(Duration::from_secs(5));
+    /// println!("Postponed {} timers", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn postpone_all(self, new_delay: std::time::Duration) -> usize {
+        let updates: Vec<_> = self.task_ids
+            .iter()
+            .map(|&id| (id, new_delay))
+            .collect();
+        let mut wheel = self.wheel.lock();
+        wheel.postpone_batch(updates)
+    }
+
+    /// Batch postpone timers with individual delays (keep original callbacks)
+    ///
+    /// # Parameters
+    /// - `delays`: List of new delay durations for each timer (must match the number of tasks)
+    ///
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器，每个定时器使用不同延迟 (保持原始回调)
+    ///
+    /// # 参数
+    /// - `delays`: 每个定时器的新延迟时间列表（必须与任务数量匹配）
+    ///
+    /// # 返回值
+    /// 成功推迟的任务数量
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|_| Duration::from_secs(1))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(delays);
+    /// let batch_with_completion = timer.register_batch(tasks);
+    /// let (rxs, batch) = batch_with_completion.into_parts();
+    /// 
+    /// // Postpone each timer with different delays
+    /// let new_delays = vec![
+    ///     Duration::from_secs(2),
+    ///     Duration::from_secs(3),
+    ///     Duration::from_secs(4),
+    /// ];
+    /// let postponed = batch.postpone_each(new_delays);
+    /// println!("Postponed {} timers", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> usize {
+        let updates: Vec<_> = self.task_ids
+            .into_iter()
+            .zip(delays.into_iter())
+            .collect();
+        let mut wheel = self.wheel.lock();
+        wheel.postpone_batch(updates)
+    }
+
+    /// Batch postpone timers with individual delays and callbacks
+    ///
+    /// # Parameters
+    /// - `updates`: List of tuples of (new delay, new callback) for each timer
+    ///
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器，每个定时器使用不同延迟和回调
+    ///
+    /// # 参数
+    /// - `updates`: 每个定时器的 (新延迟, 新回调) 元组列表
+    ///
+    /// # 返回值
+    /// 成功推迟的任务数量
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|_| Duration::from_secs(1))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(delays);
+    /// let batch_with_completion = timer.register_batch(tasks);
+    /// let (rxs, batch) = batch_with_completion.into_parts();
+    /// 
+    /// // Postpone each timer with different delays and callbacks
+    /// let updates = vec![
+    ///     (Duration::from_secs(2), Some(CallbackWrapper::new(|| async {}))),
+    ///     (Duration::from_secs(3), None),
+    ///     (Duration::from_secs(4), Some(CallbackWrapper::new(|| async {}))),
+    /// ];
+    /// let postponed = batch.postpone_each_with_callbacks(updates);
+    /// println!("Postponed {} timers", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn postpone_each_with_callbacks(
+        self,
+        updates: Vec<(std::time::Duration, Option<crate::task::CallbackWrapper>)>,
+    ) -> usize {
+        let updates_with_ids: Vec<_> = self.task_ids
+            .into_iter()
+            .zip(updates.into_iter())
+            .map(|(id, (delay, callback))| (id, delay, callback))
+            .collect();
+        let mut wheel = self.wheel.lock();
+        wheel.postpone_batch_with_callbacks(updates_with_ids)
     }
 }
 
@@ -414,6 +655,139 @@ impl BatchHandleWithCompletion {
     pub fn into_parts(self) -> (Vec<oneshot::Receiver<TaskCompletionReason>>, BatchHandle) {
         let handle = BatchHandle::new(self.handles.task_ids.clone(), self.handles.wheel);
         (self.completion_rxs, handle)
+    }
+
+    /// Batch postpone timers (keep original callbacks)
+    ///
+    /// # Parameters
+    /// - `new_delay`: New delay duration applied to all timers
+    ///
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器 (保持原始回调)
+    ///
+    /// # 参数
+    /// - `new_delay`: 应用于所有定时器的新延迟时间
+    ///
+    /// # 返回值
+    /// 成功推迟的任务数量
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let delays: Vec<Duration> = (0..10)
+    ///     .map(|_| Duration::from_secs(1))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(delays);
+    /// let batch = timer.register_batch(tasks);
+    /// 
+    /// // Postpone all timers to 5 seconds
+    /// let postponed = batch.postpone_all(Duration::from_secs(5));
+    /// println!("Postponed {} timers", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn postpone_all(self, new_delay: std::time::Duration) -> usize {
+        self.handles.postpone_all(new_delay)
+    }
+
+    /// Batch postpone timers with individual delays (keep original callbacks)
+    ///
+    /// # Parameters
+    /// - `delays`: List of new delay durations for each timer (must match the number of tasks)
+    ///
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器，每个定时器使用不同延迟 (保持原始回调)
+    ///
+    /// # 参数
+    /// - `delays`: 每个定时器的新延迟时间列表（必须与任务数量匹配）
+    ///
+    /// # 返回值
+    /// 成功推迟的任务数量
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|_| Duration::from_secs(1))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(delays);
+    /// let batch = timer.register_batch(tasks);
+    /// 
+    /// // Postpone each timer with different delays
+    /// let new_delays = vec![
+    ///     Duration::from_secs(2),
+    ///     Duration::from_secs(3),
+    ///     Duration::from_secs(4),
+    /// ];
+    /// let postponed = batch.postpone_each(new_delays);
+    /// println!("Postponed {} timers", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> usize {
+        self.handles.postpone_each(delays)
+    }
+
+    /// Batch postpone timers with individual delays and callbacks
+    ///
+    /// # Parameters
+    /// - `updates`: List of tuples of (new delay, new callback) for each timer
+    ///
+    /// # Returns
+    /// Number of successfully postponed tasks
+    ///
+    /// 批量推迟定时器，每个定时器使用不同延迟和回调
+    ///
+    /// # 参数
+    /// - `updates`: 每个定时器的 (新延迟, 新回调) 元组列表
+    ///
+    /// # 返回值
+    /// 成功推迟的任务数量
+    ///
+    /// # Examples (示例)
+    /// ```no_run
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use std::time::Duration;
+    /// # 
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let timer = TimerWheel::with_defaults();
+    /// let delays: Vec<Duration> = (0..3)
+    ///     .map(|_| Duration::from_secs(1))
+    ///     .collect();
+    /// let tasks = TimerWheel::create_batch(delays);
+    /// let batch = timer.register_batch(tasks);
+    /// 
+    /// // Postpone each timer with different delays and callbacks
+    /// let updates = vec![
+    ///     (Duration::from_secs(2), Some(CallbackWrapper::new(|| async {}))),
+    ///     (Duration::from_secs(3), None),
+    ///     (Duration::from_secs(4), Some(CallbackWrapper::new(|| async {}))),
+    /// ];
+    /// let postponed = batch.postpone_each_with_callbacks(updates);
+    /// println!("Postponed {} timers", postponed);
+    /// # }
+    /// ```
+    #[inline]
+    pub fn postpone_each_with_callbacks(
+        self,
+        updates: Vec<(std::time::Duration, Option<crate::task::CallbackWrapper>)>,
+    ) -> usize {
+        self.handles.postpone_each_with_callbacks(updates)
     }
 }
 

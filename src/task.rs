@@ -65,15 +65,6 @@ impl TaskId {
     pub fn as_u64(&self) -> u64 {
         self.0
     }
-
-    /// Clone the task ID
-    /// 
-    /// 克隆任务 ID
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn clone(&self) -> Self {
-        TaskId(self.0)
-    }
 }
 
 impl Default for TaskId {

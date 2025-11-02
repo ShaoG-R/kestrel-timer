@@ -9,17 +9,34 @@ use tokio::sync::oneshot;
 /// 全局唯一任务 ID 生成器
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Task Completion Reason
+/// Task Completion Reason for One-Shot Tasks
 ///
-/// Indicates the reason for task completion, either expired or cancelled.
+/// Indicates the reason for task completion, expired or cancelled.
 /// 
-/// 任务完成原因，要么是过期，要么是取消。
+/// 任务完成原因，过期或取消。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskCompletionReason {
+pub enum TaskCompletionReasonOneShot {
     /// Task expired normally
     /// 
     /// 任务正常过期
     Expired,
+    /// Task was cancelled
+    /// 
+    /// 任务被取消
+    Cancelled,
+}
+
+/// Task Completion Reason for Periodic Tasks
+///
+/// Indicates the reason for task completion, called or cancelled.
+/// 
+/// 任务完成原因，调用或取消。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskCompletionReasonPeriodic {
+    /// Task was called
+    /// 
+    /// 任务被调用
+    Called,
     /// Task was cancelled
     /// 
     /// 任务被取消
@@ -47,6 +64,15 @@ impl TaskId {
     #[inline]
     pub fn as_u64(&self) -> u64 {
         self.0
+    }
+
+    /// Clone the task ID
+    /// 
+    /// 克隆任务 ID
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn clone(&self) -> Self {
+        TaskId(self.0)
     }
 }
 
@@ -156,21 +182,114 @@ impl CallbackWrapper {
     }
 }
 
-/// Completion notifier for sending notifications when tasks complete
+/// Task type enum to distinguish between one-shot and periodic timers
 /// 
-/// 完成通知器，用于发送任务完成通知
-pub struct CompletionNotifier(pub oneshot::Sender<TaskCompletionReason>);
+/// 任务类型枚举，用于区分一次性和周期性定时器
+pub enum TaskType {
+    /// One-shot timer: executes once and completes
+    /// 
+    /// 一次性定时器：执行一次后完成
+    OneShot,
+    
+    /// Periodic timer: repeats at fixed intervals
+    /// 
+    /// 周期性定时器：按固定间隔重复执行
+    Periodic {
+        /// Period interval for periodic tasks
+        /// 
+        /// 周期任务的间隔时间
+        interval: std::time::Duration,
+    },
+}
+
+/// Task type enum to distinguish between one-shot and periodic timers
+/// 
+/// 任务类型枚举，用于区分一次性和周期性定时器
+pub enum TaskTypeWithCompletionNotifier {
+    /// One-shot timer: executes once and completes
+    /// 
+    /// 一次性定时器：执行一次后完成
+    OneShot {
+        completion_notifier: OneShotCompletionNotifier,
+    },
+    
+    /// Periodic timer: repeats at fixed intervals
+    /// 
+    /// 周期性定时器：按固定间隔重复执行
+    Periodic {
+        /// Period interval for periodic tasks
+        /// 
+        /// 周期任务的间隔时间
+        interval: std::time::Duration,
+        completion_notifier: PeriodicCompletionNotifier,
+    },
+}
+
+/// Completion notifier for one-shot tasks
+/// 
+/// 一次性任务完成通知器
+pub struct OneShotCompletionNotifier(pub oneshot::Sender<TaskCompletionReasonOneShot>);
+
+/// Completion receiver for one-shot tasks
+/// 
+/// 一次性任务完成通知接收器
+pub struct OneShotCompletionReceiver(pub oneshot::Receiver<TaskCompletionReasonOneShot>);
+
+/// Completion notifier for periodic tasks
+/// 
+/// 周期任务完成通知器
+pub struct PeriodicCompletionNotifier(pub tokio::sync::mpsc::Sender<TaskCompletionReasonPeriodic>);
+
+/// Completion receiver for periodic tasks
+/// 
+/// 周期任务完成通知接收器
+pub struct PeriodicCompletionReceiver(pub tokio::sync::mpsc::Receiver<TaskCompletionReasonPeriodic>);
+
+impl PeriodicCompletionReceiver {
+    /// Try to receive a completion notification
+    /// 
+    /// 尝试接收完成通知
+    #[inline]
+    pub fn try_recv(&mut self) -> Result<TaskCompletionReasonPeriodic, tokio::sync::mpsc::error::TryRecvError> {
+        self.0.try_recv()
+    }
+    
+    /// Receive a completion notification
+    /// 
+    /// 接收完成通知
+    #[inline]
+    pub async fn recv(&mut self) -> Option<TaskCompletionReasonPeriodic> {
+        self.0.recv().await
+    }
+}
+
+
+/// Completion notifier for one-shot tasks
+/// 
+/// 一次性任务完成通知器
+pub enum CompletionNotifier {
+    OneShot(OneShotCompletionNotifier),
+    Periodic(PeriodicCompletionNotifier),
+}
+
+/// Completion receiver for one-shot and periodic tasks
+/// 
+/// 一次性和周期任务完成通知接收器
+pub enum CompletionReceiver {
+    OneShot(OneShotCompletionReceiver),
+    Periodic(PeriodicCompletionReceiver),
+}
 
 /// Timer Task
 /// 
 /// Users interact via a two-step API
-/// 1. Create task using `TimerTask::new()`
+/// 1. Create task using `TimerTask::new_oneshot()` or `TimerTask::new_periodic()`
 /// 2. Register task using `TimerWheel::register()` or `TimerService::register()`
 /// 
 /// 定时器任务
 /// 
 /// 用户通过两步 API 与定时器交互
-/// 1. 使用 `TimerTask::new()` 创建任务
+/// 1. 使用 `TimerTask::new_oneshot()` 或 `TimerTask::new_periodic()` 创建任务
 /// 2. 使用 `TimerWheel::register()` 或 `TimerService::register()` 注册任务
 pub struct TimerTask {
     /// Unique task identifier
@@ -178,9 +297,14 @@ pub struct TimerTask {
     /// 唯一任务标识符
     pub(crate) id: TaskId,
     
-    /// User-specified delay duration
+    /// Task type (one-shot or periodic)
     /// 
-    /// 用户指定的延迟时间
+    /// 任务类型（一次性或周期性）
+    pub(crate) task_type: TaskType,
+    
+    /// User-specified delay duration (initial delay for periodic tasks)
+    /// 
+    /// 用户指定的延迟时间（周期任务的初始延迟）
     pub(crate) delay: std::time::Duration,
     
     /// Expiration time in ticks relative to the timing wheel
@@ -197,41 +321,66 @@ pub struct TimerTask {
     /// 
     /// 异步回调函数，可选
     pub(crate) callback: Option<CallbackWrapper>,
-    
-    /// Completion notifier for sending notifications when task completes, created during registration
-    /// 
-    /// 完成通知器，用于发送任务完成通知，在注册期间创建
-    pub(crate) completion_notifier: Option<CompletionNotifier>,
 }
 
 impl TimerTask {
-    /// Create a new timer task, internal use
+    /// Create a new one-shot timer task
     /// 
     /// # Parameters
-    /// - `delay`: Delay duration
+    /// - `delay`: Delay duration before task execution
     /// - `callback`: Callback function, optional
     /// 
     /// # Note
     /// This is an internal method, users should use `TimerWheel::create_task()` or `TimerService::create_task()` to create tasks.
     /// 
-    /// 
-    /// 创建一个新的定时器任务，内部使用
+    /// 创建一个新的一次性定时器任务
     /// 
     /// # 参数
-    /// - `delay`: 延迟时间
+    /// - `delay`: 任务执行前的延迟时间
     /// - `callback`: 回调函数，可选
     /// 
-    /// # 注意
-    /// 这是一个内部方法，用户应该使用 `TimerWheel::create_task()` 或 `TimerService::create_task()` 来创建任务。
     #[inline]
-    pub(crate) fn new(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
+    pub fn new_oneshot(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
         Self {
             id: TaskId::new(),
+            task_type: TaskType::OneShot,
             delay,
             deadline_tick: 0,
             rounds: 0,
             callback,
-            completion_notifier: None,
+        }
+    }
+    
+    /// Create a new periodic timer task
+    /// 
+    /// # Parameters
+    /// - `initial_delay`: Initial delay before first execution
+    /// - `interval`: Interval between subsequent executions
+    /// - `callback`: Callback function, optional
+    /// 
+    /// # Note
+    /// This is an internal method, users should use `TimerWheel::create_periodic_task()` or `TimerService::create_periodic_task()` to create tasks.
+    /// 
+    /// 创建一个新的周期性定时器任务
+    /// 
+    /// # 参数
+    /// - `initial_delay`: 首次执行前的初始延迟
+    /// - `interval`: 后续执行之间的间隔
+    /// - `callback`: 回调函数，可选
+    /// 
+    #[inline]
+    pub fn new_periodic(
+        initial_delay: std::time::Duration,
+        interval: std::time::Duration,
+        callback: Option<CallbackWrapper>,
+    ) -> Self {
+        Self {
+            id: TaskId::new(),
+            task_type: TaskType::Periodic { interval },
+            delay: initial_delay,
+            deadline_tick: 0,
+            rounds: 0,
+            callback,
         }
     }
 
@@ -242,15 +391,39 @@ impl TimerTask {
     /// # Examples (示例)
     /// 
     /// ```no_run
-    /// use kestrel_timer::TimerWheel;
+    /// use kestrel_timer::TimerTask;
     /// use std::time::Duration;
     /// 
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), None);
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), None);
     /// let task_id = task.get_id();
     /// println!("Task ID: {:?}", task_id);
     /// ```
+    #[inline]
     pub fn get_id(&self) -> TaskId {
         self.id
+    }
+    
+    /// Get task type
+    /// 
+    /// 获取任务类型
+    #[inline]
+    pub fn get_task_type(&self) -> &TaskType {
+        &self.task_type
+    }
+
+    /// Get the interval for periodic tasks
+    /// 
+    /// Returns `None` for one-shot tasks
+    /// 
+    /// 获取周期任务的间隔时间
+    /// 
+    /// 对于一次性任务返回 `None`
+    #[inline]
+    pub fn get_interval(&self) -> Option<std::time::Duration> {
+        match self.task_type {
+            TaskType::Periodic { interval, .. } => Some(interval),
+            TaskType::OneShot { .. } => None,
+        }
     }
 
     /// Prepare for registration (called by timing wheel during registration)
@@ -259,21 +432,186 @@ impl TimerTask {
     #[allow(dead_code)]
     pub(crate) fn prepare_for_registration(
         &mut self,
-        completion_notifier: CompletionNotifier,
         deadline_tick: u64,
         rounds: u32,
     ) {
-        self.completion_notifier = Some(completion_notifier);
         self.deadline_tick = deadline_tick;
         self.rounds = rounds;
     }
 
-    /// Get a clone of the callback function if present
+}
+
+/// Timer Task
+/// 
+/// Users interact via a two-step API
+/// 1. Create task using `TimerTask::new_oneshot()` or `TimerTask::new_periodic()`
+/// 2. Register task using `TimerWheel::register()` or `TimerService::register()`
+/// 
+/// 定时器任务
+/// 
+/// 用户通过两步 API 与定时器交互
+/// 1. 使用 `TimerTask::new_oneshot()` 或 `TimerTask::new_periodic()` 创建任务
+/// 2. 使用 `TimerWheel::register()` 或 `TimerService::register()` 注册任务
+pub struct TimerTaskWithCompletionNotifier {
+    /// Unique task identifier
     /// 
-    /// 获取回调函数（如果存在）
+    /// 唯一任务标识符
+    pub(crate) id: TaskId,
+    
+    /// Task type (one-shot or periodic)
+    /// 
+    /// 任务类型（一次性或周期性）
+    pub(crate) task_type: TaskTypeWithCompletionNotifier,
+    
+    /// User-specified delay duration (initial delay for periodic tasks)
+    /// 
+    /// 用户指定的延迟时间（周期任务的初始延迟）
+    pub(crate) delay: std::time::Duration,
+    
+    /// Expiration time in ticks relative to the timing wheel
+    /// 
+    /// 相对于时间轮的过期时间（以 tick 为单位）
+    pub(crate) deadline_tick: u64,
+    
+    /// Round counter for tasks beyond the wheel's range
+    /// 
+    /// 超出时间轮范围的任务轮数计数器
+    pub(crate) rounds: u32,
+    
+    /// Async callback function, optional
+    /// 
+    /// 异步回调函数，可选
+    pub(crate) callback: Option<CallbackWrapper>,
+}
+
+impl TimerTaskWithCompletionNotifier {
+
+    /// Create a new timer task with completion notifier from a timer task
+    /// 
+    /// 从定时器任务创建一个新的定时器任务完成通知器
+    /// 
+    /// # Parameters
+    /// - `task`: The timer task to create from
+    /// - `buffer_size`: The buffer size for the periodic task completion notifier
+    /// 
+    /// # Returns
+    /// A tuple containing the new timer task with completion notifier and the completion receiver
+    /// 
+    /// 返回一个包含新的定时器任务完成通知器和完成通知接收器的元组
+    /// 
+    pub fn from_timer_task(task: TimerTask, buffer_size: usize) -> (Self, CompletionReceiver) {
+        match task.task_type {
+            TaskType::OneShot { .. } => {
+                let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+                let notifier = crate::task::OneShotCompletionNotifier(completion_tx);
+                (Self {
+                    id: task.id,
+                    task_type: TaskTypeWithCompletionNotifier::OneShot { completion_notifier: notifier },
+                    delay: task.delay,
+                    deadline_tick: task.deadline_tick,
+                    rounds: task.rounds,
+                    callback: task.callback,
+                }, CompletionReceiver::OneShot(OneShotCompletionReceiver(completion_rx)))
+            },
+            TaskType::Periodic { interval, .. } => {
+                let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(buffer_size);
+                let notifier = crate::task::PeriodicCompletionNotifier(completion_tx);
+                (Self {
+                    id: task.id,
+                    task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier: notifier },
+                    delay: task.delay,
+                    deadline_tick: task.deadline_tick,
+                    rounds: task.rounds,
+                    callback: task.callback,
+                }, CompletionReceiver::Periodic(PeriodicCompletionReceiver(completion_rx)))
+            },
+        }
+    }
+
+
+    /// Split the timer task into a timer task and a completion notifier
+    /// 
+    /// 将定时器任务拆分为一个定时器任务和一个完成通知器
+    /// 
+    /// # Returns
+    /// A tuple containing the timer task and the completion notifier
+    /// 
+    /// 返回一个包含定时器任务和完成通知器的元组
+    /// 
+    pub fn split(self) -> (TimerTask, CompletionNotifier) {
+        match self.task_type {
+            TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => (TimerTask {
+                id: self.id,
+                task_type: TaskType::OneShot,
+                delay: self.delay,
+                deadline_tick: self.deadline_tick,
+                rounds: self.rounds,
+                callback: self.callback,
+            }, CompletionNotifier::OneShot(completion_notifier)),
+            TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => (TimerTask {
+                id: self.id,
+                task_type: TaskType::Periodic { interval },
+                delay: self.delay,
+                deadline_tick: self.deadline_tick,
+                rounds: self.rounds,
+                callback: self.callback,
+            }, CompletionNotifier::Periodic(completion_notifier)),
+        }
+    }
+
+    /// Get task ID
+    /// 
+    /// 获取任务 ID
+    /// 
+    /// # Examples (示例)
+    /// 
+    /// ```no_run
+    /// use kestrel_timer::TimerTask;
+    /// use std::time::Duration;
+    /// 
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), None);
+    /// let task_id = task.get_id();
+    /// println!("Task ID: {:?}", task_id);
+    /// ```
     #[inline]
-    pub(crate) fn get_callback(&self) -> Option<CallbackWrapper> {
-        self.callback.clone()
+    pub fn get_id(&self) -> TaskId {
+        self.id
+    }
+    
+    /// Get task type
+    /// 
+    /// 获取任务类型
+    #[inline]
+    pub fn get_task_type(&self) -> &TaskTypeWithCompletionNotifier {
+        &self.task_type
+    }
+
+    /// Get the interval for periodic tasks
+    /// 
+    /// Returns `None` for one-shot tasks
+    /// 
+    /// 获取周期任务的间隔时间
+    /// 
+    /// 对于一次性任务返回 `None`
+    #[inline]
+    pub fn get_interval(&self) -> Option<std::time::Duration> {
+        match self.task_type {
+            TaskTypeWithCompletionNotifier::Periodic { interval, .. } => Some(interval),
+            TaskTypeWithCompletionNotifier::OneShot { .. } => None,
+        }
+    }
+
+    /// Prepare for registration (called by timing wheel during registration)
+    /// 
+    /// 准备注册（在注册期间由时间轮调用）
+    #[allow(dead_code)]
+    pub(crate) fn prepare_for_registration(
+        &mut self,
+        deadline_tick: u64,
+        rounds: u32,
+    ) {
+        self.deadline_tick = deadline_tick;
+        self.rounds = rounds;
     }
 }
 

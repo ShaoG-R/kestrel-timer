@@ -1,13 +1,7 @@
-use crate::task::{TaskId, TaskCompletionReason};
+use crate::task::{TaskId, CompletionReceiver};
 use crate::wheel::Wheel;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tokio::sync::oneshot;
-
-/// Completion receiver for receiving timer completion notifications
-/// 
-/// 完成通知接收器，用于接收定时器完成通知
-pub struct CompletionReceiver(pub oneshot::Receiver<TaskCompletionReason>);
 
 /// Timer handle for managing timer lifecycle (without completion receiver)
 /// 
@@ -39,16 +33,15 @@ impl TimerHandle {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
-    /// let handle_with_completion = timer.register(task);
-    /// let (rx, handle) = handle_with_completion.into_parts();
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
+    /// let handle = timer.register(task);
     /// 
     /// // Cancel the timer
     /// let success = handle.cancel();
@@ -81,16 +74,15 @@ impl TimerHandle {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
-    /// let handle_with_completion = timer.register(task);
-    /// let (rx, handle) = handle_with_completion.into_parts();
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
+    /// let handle = timer.register(task);
     /// 
     /// // Postpone to 5 seconds
     /// let success = handle.postpone(Duration::from_secs(5), None);
@@ -121,8 +113,8 @@ pub struct TimerHandleWithCompletion {
 }
 
 impl TimerHandleWithCompletion {
-    pub(crate) fn new(handle: TimerHandle, completion_rx: oneshot::Receiver<TaskCompletionReason>) -> Self {
-        Self { handle, completion_rx: CompletionReceiver(completion_rx) }
+    pub(crate) fn new(handle: TimerHandle, completion_rx: CompletionReceiver) -> Self {
+        Self { handle, completion_rx }
     }
 
     /// Cancel the timer
@@ -137,14 +129,14 @@ impl TimerHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
     /// // Cancel the timer
@@ -176,14 +168,14 @@ impl TimerHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
     /// // Postpone to 5 seconds
@@ -205,7 +197,7 @@ impl TimerHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -214,7 +206,7 @@ impl TimerHandleWithCompletion {
     /// let callback = Some(CallbackWrapper::new(|| async {
     ///     println!("Timer fired!");
     /// }));
-    /// let task = TimerWheel::create_task(Duration::from_secs(1), callback);
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let handle = timer.register(task);
     /// 
     /// // Split into receiver and handle
@@ -223,7 +215,13 @@ impl TimerHandleWithCompletion {
     /// 
     /// // Wait for timer completion
     /// // 等待定时器完成
-    /// rx.0.await.ok();
+    /// use kestrel_timer::CompletionReceiver;
+    /// match rx {
+    ///     CompletionReceiver::OneShot(receiver) => {
+    ///         receiver.0.await.ok();
+    ///     },
+    ///     _ => {}
+    /// }
     /// println!("Timer completed!");
     /// # }
     /// ```
@@ -262,18 +260,16 @@ impl BatchHandle {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..10)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let tasks: Vec<TimerTask> = (0..10)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
-    /// let batch_with_completion = timer.register_batch(tasks);
-    /// let (rxs, batch) = batch_with_completion.into_parts();
+    /// let batch = timer.register_batch(tasks);
     /// 
     /// let cancelled = batch.cancel_all();
     /// println!("Canceled {} timers", cancelled);
@@ -295,18 +291,16 @@ impl BatchHandle {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let tasks: Vec<TimerTask> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
-    /// let batch_with_completion = timer.register_batch(tasks);
-    /// let (rxs, batch) = batch_with_completion.into_parts();
+    /// let batch = timer.register_batch(tasks);
     /// 
     /// // Convert to individual handles
     /// // 转换为单个句柄
@@ -374,11 +368,11 @@ impl BatchHandle {
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
+    /// # use kestrel_timer::TimerTask;
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..10)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let tasks: Vec<_> = (0..10)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
     /// let batch_with_completion = timer.register_batch(tasks);
     /// let (rxs, batch) = batch_with_completion.into_parts();
     /// 
@@ -415,7 +409,7 @@ impl BatchHandle {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -424,7 +418,7 @@ impl BatchHandle {
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch_with_completion = timer.register_batch(tasks);
     /// let (rxs, batch) = batch_with_completion.into_parts();
     /// 
@@ -466,7 +460,7 @@ impl BatchHandle {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -475,7 +469,7 @@ impl BatchHandle {
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch_with_completion = timer.register_batch(tasks);
     /// let (rxs, batch) = batch_with_completion.into_parts();
     /// 
@@ -513,12 +507,12 @@ impl BatchHandle {
 /// 注意：此类型未实现 Clone 以防止重复取消同一批定时器。使用 `into_iter()` 或 `into_handles()` 访问单个定时器句柄。
 pub struct BatchHandleWithCompletion {
     handles: BatchHandle,
-    completion_rxs: Vec<oneshot::Receiver<TaskCompletionReason>>,
+    completion_rxs: Vec<CompletionReceiver>,
 }
 
 impl BatchHandleWithCompletion {
     #[inline]
-    pub(crate) fn new(handles: BatchHandle, completion_rxs: Vec<oneshot::Receiver<TaskCompletionReason>>) -> Self {
+    pub(crate) fn new(handles: BatchHandle, completion_rxs: Vec<CompletionReceiver>) -> Self {
         Self { handles, completion_rxs }
     }
 
@@ -534,7 +528,7 @@ impl BatchHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -543,7 +537,7 @@ impl BatchHandleWithCompletion {
     /// let delays: Vec<Duration> = (0..10)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch = timer.register_batch(tasks);
     /// 
     /// let cancelled = batch.cancel_all();
@@ -565,7 +559,7 @@ impl BatchHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -574,7 +568,7 @@ impl BatchHandleWithCompletion {
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // Convert to individual handles
@@ -627,7 +621,7 @@ impl BatchHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -636,23 +630,29 @@ impl BatchHandleWithCompletion {
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // Split into receivers and handle
     /// // 拆分为接收器和句柄
+    /// use kestrel_timer::CompletionReceiver;
     /// let (receivers, batch_handle) = batch.into_parts();
     /// for rx in receivers {
     ///     tokio::spawn(async move {
-    ///         if rx.await.is_ok() {
-    ///             println!("A timer completed!");
+    ///         match rx {
+    ///             CompletionReceiver::OneShot(receiver) => {
+    ///                 if receiver.0.await.is_ok() {
+    ///                     println!("A timer completed!");
+    ///                 }
+    ///             },
+    ///             _ => {}
     ///         }
     ///     });
     /// }
     /// # }
     /// ```
     #[inline]
-    pub fn into_parts(self) -> (Vec<oneshot::Receiver<TaskCompletionReason>>, BatchHandle) {
+    pub fn into_parts(self) -> (Vec<CompletionReceiver>, BatchHandle) {
         let handle = BatchHandle::new(self.handles.task_ids.clone(), self.handles.wheel);
         (self.completion_rxs, handle)
     }
@@ -675,7 +675,7 @@ impl BatchHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -684,7 +684,7 @@ impl BatchHandleWithCompletion {
     /// let delays: Vec<Duration> = (0..10)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // Postpone all timers to 5 seconds
@@ -715,7 +715,7 @@ impl BatchHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -724,7 +724,7 @@ impl BatchHandleWithCompletion {
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // Postpone each timer with different delays
@@ -760,7 +760,7 @@ impl BatchHandleWithCompletion {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+    /// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -769,7 +769,7 @@ impl BatchHandleWithCompletion {
     /// let delays: Vec<Duration> = (0..3)
     ///     .map(|_| Duration::from_secs(1))
     ///     .collect();
-    /// let tasks = TimerWheel::create_batch(delays);
+    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
     /// let batch = timer.register_batch(tasks);
     /// 
     /// // Postpone each timer with different delays and callbacks
@@ -797,7 +797,7 @@ impl BatchHandleWithCompletion {
 /// 
 /// # Examples (示例)
 /// ```no_run
-/// # use kestrel_timer::{TimerWheel, CallbackWrapper};
+/// # use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 /// # use std::time::Duration;
 /// # 
 /// # #[tokio::main]
@@ -806,7 +806,7 @@ impl BatchHandleWithCompletion {
 /// let delays: Vec<Duration> = (0..3)
 ///     .map(|_| Duration::from_secs(1))
 ///     .collect();
-/// let tasks = TimerWheel::create_batch(delays);
+/// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
 /// let batch = timer.register_batch(tasks);
 /// 
 /// // Iterate directly, each element is an independent TimerHandleWithCompletion
@@ -836,7 +836,7 @@ impl IntoIterator for BatchHandleWithCompletion {
 /// BatchHandleWithCompletion 的迭代器
 pub struct BatchHandleWithCompletionIter {
     task_ids: std::vec::IntoIter<TaskId>,
-    completion_rxs: std::vec::IntoIter<oneshot::Receiver<TaskCompletionReason>>,
+    completion_rxs: std::vec::IntoIter<CompletionReceiver>,
     wheel: Arc<Mutex<Wheel>>,
 }
 

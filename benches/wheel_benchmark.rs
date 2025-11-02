@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::hint::black_box;
 use std::time::Duration;
-use kestrel_timer::TimerWheel;
+use kestrel_timer::{TimerWheel, TimerTask};
 
 /// Benchmark: single task insertion (through TimerWheel API)
 /// 基准测试：单个任务插入（通过 TimerWheel API）
@@ -23,7 +23,7 @@ fn bench_wheel_insert(c: &mut Criterion) {
                 // 测量阶段：只测量插入操作的性能
                 let start = std::time::Instant::now();
                 
-                let task = TimerWheel::create_task(Duration::from_millis(100), None);
+                let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
                 let _handle = black_box(
                     timer.register(task)
                 );
@@ -55,15 +55,14 @@ fn bench_wheel_insert_batch(c: &mut Criterion) {
                     // 准备阶段：创建 timer 和任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|i| Duration::from_millis(100 + i as u64 * 10))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|i| TimerTask::new_oneshot(Duration::from_millis(100 + i as u64 * 10), None))
                         .collect();
                     
                     // Measurement stage: only measure the performance of the batch insertion
                     // 测量阶段：只测量批量插入操作的性能
                     let start = std::time::Instant::now();
                     
-                    let tasks = TimerWheel::create_batch(delays);
                     let _batch = black_box(
                         timer.register_batch(tasks)
                     );
@@ -94,7 +93,7 @@ fn bench_wheel_cancel(c: &mut Criterion) {
                 // Preparation stage: create timer and insert tasks (not measured)
                 // 准备阶段：创建 timer 和插入任务（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let task = TimerWheel::create_task(Duration::from_millis(100), None);
+                let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
                 let task_id = task.get_id();
                 let _handle = timer.register(task);
                 
@@ -134,12 +133,11 @@ fn bench_wheel_cancel_batch(c: &mut Criterion) {
                     // 准备阶段：创建 timer 和插入任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|i| Duration::from_millis(100 + i as u64 * 10))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|i| TimerTask::new_oneshot(Duration::from_millis(100 + i as u64 * 10), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Measurement stage: only measure the performance of the batch cancellation
                     // 测量阶段：只测量批量取消操作的性能
@@ -178,12 +176,11 @@ fn bench_wheel_cancel_batch_same_slot(c: &mut Criterion) {
                     // 准备阶段：创建 timer 和插入任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|_| Duration::from_millis(100))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Measurement stage: only measure the performance of the batch cancellation
                     // 测量阶段：只测量批量取消操作的性能
@@ -260,10 +257,9 @@ fn bench_wheel_advance_with_tasks(c: &mut Criterion) {
                     
                     // Insert tasks, delay set to 20ms (ensure it will expire when advancing)
                     // 插入任务，延迟设置为 20ms（确保在前进时过期）
-                    let delays: Vec<_> = (0..size)
-                        .map(|_| Duration::from_millis(20))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(20), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
                     let _batch = timer.register_batch(tasks);
                     
                     // Measurement stage: wait for tasks to expire
@@ -303,13 +299,11 @@ fn bench_wheel_advance_mixed_rounds(c: &mut Criterion) {
                 
                 // Insert tasks with different delays, produce different rounds
                 // 插入任务，延迟设置为不同的值，产生不同的轮次
-                let mut delays = Vec::new();
+                let mut tasks: Vec<TimerTask> = Vec::new();
                 for i in 0..100 {
                     // Delay from 20ms to 200ms
-                    let delay = Duration::from_millis(20 + (i % 20) * 10);
-                    delays.push(delay);
+                    tasks.push(TimerTask::new_oneshot(Duration::from_millis(20 + (i % 20) * 10), None));
                 }
-                let tasks = TimerWheel::create_batch(delays);
                 let _batch = timer.register_batch(tasks);
                 
                 // Measurement stage: advance multiple ticks
@@ -353,16 +347,14 @@ fn bench_wheel_mixed_operations(c: &mut Criterion) {
                 for round in 0..10 {
                     // Insert 50 tasks
                     // 插入 50 个任务
-                    let delays: Vec<_> = (0..50)
-                        .map(|_| Duration::from_millis(50 + round * 10))
+                    let tasks: Vec<TimerTask> = (0..50)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(50 + round * 10), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
                     
                     // Cancel half of them
                     // 取消一半的任务
-                    let to_cancel: Vec<_> = task_ids.iter().step_by(2).copied().collect();
+                    let to_cancel: Vec<_> = batch.task_ids().iter().step_by(2).copied().collect();
                     let _ = timer.cancel_batch(&to_cancel);
                     
                     // Wait for one tick
@@ -397,12 +389,11 @@ fn bench_wheel_cancel_small_batch(c: &mut Criterion) {
                     // 准备阶段：创建 timer 和插入任务
                     let timer = TimerWheel::with_defaults();
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|i| Duration::from_millis(100 + i as u64 * 10))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|i| TimerTask::new_oneshot(Duration::from_millis(100 + i as u64 * 10), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Measurement stage: only measure the performance of the batch cancellation
                     // 测量阶段：只测量批量取消操作的性能
@@ -442,12 +433,11 @@ fn bench_wheel_batch_multiple_slots(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     
                     // Uniformly distributed across different slots
-                    let delays: Vec<_> = (0..size)
-                        .map(|i| Duration::from_millis(10 + i as u64))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|i| TimerTask::new_oneshot(Duration::from_millis(10 + i as u64), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Measurement stage: batch cancel
                     // 测量阶段：批量取消
@@ -484,7 +474,7 @@ fn bench_wheel_postpone(c: &mut Criterion) {
                 // Preparation stage: create timer and insert tasks (not measured)
                 // 准备阶段：创建 timer 和插入任务（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let task = TimerWheel::create_task(Duration::from_millis(100), None);
+                let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
                 let task_id = task.get_id();
                 let _handle = timer.register(task);
                 
@@ -524,12 +514,11 @@ fn bench_wheel_postpone_batch(c: &mut Criterion) {
                     // 准备阶段：创建 timer 和插入任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|i| Duration::from_millis(100 + i as u64 * 10))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|i| TimerTask::new_oneshot(Duration::from_millis(100 + i as u64 * 10), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Preparation stage: prepare postpone parameters
                     let postpone_updates: Vec<_> = task_ids
@@ -572,7 +561,7 @@ fn bench_wheel_postpone_with_callback(c: &mut Criterion) {
                 // Preparation stage: create timer and insert tasks (not measured)
                 // 准备阶段：创建 timer 和插入任务（不计入测量）
                 let timer = TimerWheel::with_defaults();
-                let task = TimerWheel::create_task(Duration::from_millis(100), None);
+                let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
                 let task_id = task.get_id();
                 let _handle = timer.register(task);
                 
@@ -616,12 +605,11 @@ fn bench_wheel_postpone_batch_with_callbacks(c: &mut Criterion) {
                     // 准备阶段：创建 timer 和插入任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|i| Duration::from_millis(100 + i as u64 * 10))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|i| TimerTask::new_oneshot(Duration::from_millis(100 + i as u64 * 10), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Preparation stage: prepare postpone parameters (include new callback)
                     let postpone_updates: Vec<_> = task_ids
@@ -666,12 +654,11 @@ fn bench_wheel_postpone_batch_same_slot(c: &mut Criterion) {
                     // 准备阶段：创建 timer 和插入任务（不计入测量）
                     let timer = TimerWheel::with_defaults();
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|_| Duration::from_millis(100))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let tasks = TimerWheel::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    let _batch = timer.register_batch(tasks);
+                    let batch = timer.register_batch(tasks);
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Preparation stage: prepare postpone parameters (same postpone to the same slot)
                     // 准备阶段：准备推迟参数（相同的推迟进入相同的槽）

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use std::hint::black_box;
-use kestrel_timer::{CallbackWrapper, TimerWheel};
+use kestrel_timer::{CallbackWrapper, TimerWheel, TimerTask};
 use kestrel_timer::config::ServiceConfig;
 
 /// Benchmark: Single timer scheduling
@@ -28,7 +28,7 @@ fn bench_schedule_single(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let task = black_box(
-                    kestrel_timer::TimerService::create_task(
+                    TimerTask::new_oneshot(
                         Duration::from_secs(10),
                         None
                     )
@@ -65,19 +65,18 @@ fn bench_schedule_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|_| Duration::from_secs(10))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
                         .collect();
                     
                     // Measurement stage: only measure create_batch + register_batch performance
                     // 测量阶段：只测量 create_batch + register_batch 的性能
                     let start = std::time::Instant::now();
                     
-                    let tasks = black_box(
-                        kestrel_timer::TimerService::create_batch(delays)
+                    let batch = black_box(
+                        service.register_batch(tasks).unwrap()
                     );
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).unwrap();
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     total_duration += start.elapsed();
                     black_box(task_ids);
@@ -108,7 +107,7 @@ fn bench_cancel_single(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service(ServiceConfig::default());
                 
-                let task = kestrel_timer::TimerService::create_task(
+                let task = TimerTask::new_oneshot(
                     Duration::from_secs(10),
                     None
                 );
@@ -152,10 +151,9 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|_| Duration::from_secs(10))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
                         .collect();
-                    let tasks = kestrel_timer::TimerService::create_batch(delays);
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
                     
@@ -207,10 +205,9 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                     for _ in 0..concurrent_ops {
                         let service_clone = Arc::clone(&service);
                         let fut = async move {
-                            let delays: Vec<_> = (0..10)
-                                .map(|_| Duration::from_secs(10))
+                            let tasks: Vec<TimerTask> = (0..10)
+                                .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
                                 .collect();
-                            let tasks = kestrel_timer::TimerService::create_batch(delays);
                             service_clone.register_batch(tasks).unwrap();
                         };
                         handles.push(fut);
@@ -249,12 +246,11 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service(ServiceConfig::default());
                 
-                let delays: Vec<_> = (0..1000)
-                    .map(|_| Duration::from_secs(10))
+                let tasks: Vec<TimerTask> = (0..1000)
+                    .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
                     .collect();
-                let tasks = kestrel_timer::TimerService::create_batch(delays);
-                let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                service.register_batch(tasks).unwrap();
+                let batch = service.register_batch(tasks).unwrap();
+                let task_ids: Vec<_> = batch.task_ids().to_vec();
                 
                 // Measurement stage: only measure cancel_batch performance
                 // 测量阶段：只测量 cancel_batch 的性能
@@ -300,12 +296,11 @@ fn bench_mixed_operations(c: &mut Criterion) {
                 // 交替执行调度和取消操作
                 for _ in 0..50 {
                     // 调度10个任务
-                    let delays: Vec<_> = (0..10)
-                        .map(|_| Duration::from_secs(10))
+                    let tasks: Vec<TimerTask> = (0..10)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
                         .collect();
-                    let tasks = kestrel_timer::TimerService::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).unwrap();
+                    let batch = service.register_batch(tasks).unwrap();
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Use batch cancel for first 5 tasks
                     // 使用批量取消前5个任务
@@ -347,7 +342,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let task = black_box(
-                    kestrel_timer::TimerService::create_task(Duration::from_secs(10), None)
+                    TimerTask::new_oneshot(Duration::from_secs(10), None)
                 );
                 let task_id = task.get_id();
                 service.register(task).unwrap();
@@ -380,7 +375,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                     let mut tasks = Vec::new();
                     let mut task_ids = Vec::new();
                     for _ in 0..size {
-                        let task = kestrel_timer::TimerService::create_task(Duration::from_secs(10), None);
+                        let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
                         task_ids.push(task.get_id());
                         tasks.push(task);
                     }
@@ -422,7 +417,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                 
                 let counter_clone = Arc::clone(&counter);
                 let task = black_box(
-                    kestrel_timer::TimerService::create_task(
+                    TimerTask::new_oneshot(
                         Duration::from_secs(10),
                         Some(CallbackWrapper::new(move || {
                             let counter = Arc::clone(&counter_clone);
@@ -464,7 +459,7 @@ fn bench_postpone_single(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service(ServiceConfig::default());
                 
-                let task = kestrel_timer::TimerService::create_task(
+                let task = TimerTask::new_oneshot(
                     Duration::from_millis(100),
                     None
                 );
@@ -508,12 +503,11 @@ fn bench_postpone_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|_| Duration::from_millis(100))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let tasks = kestrel_timer::TimerService::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).unwrap();
+                    let batch = service.register_batch(tasks).unwrap();
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Preparation stage: prepare postpone parameters
                     // 准备推迟参数
@@ -560,7 +554,7 @@ fn bench_postpone_with_callback(c: &mut Criterion) {
                 let service = timer.create_service(ServiceConfig::default());
                 let counter = Arc::new(AtomicU32::new(0));
                 
-                let task = kestrel_timer::TimerService::create_task(
+                let task = TimerTask::new_oneshot(
                     Duration::from_millis(100),
                     None
                 );
@@ -615,12 +609,11 @@ fn bench_postpone_batch_with_callbacks(c: &mut Criterion) {
                     let service = timer.create_service(ServiceConfig::default());
                     let counter = Arc::new(AtomicU32::new(0));
                     
-                    let delays: Vec<_> = (0..size)
-                        .map(|_| Duration::from_millis(100))
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let tasks = kestrel_timer::TimerService::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).unwrap();
+                    let batch = service.register_batch(tasks).unwrap();
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Preparation stage: prepare postpone parameters (include new callback)
                     // 准备推迟参数（包含新回调）
@@ -683,12 +676,11 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
                 for _ in 0..30 {
                     // Schedule 15 tasks
                     // 调度15个任务
-                    let delays: Vec<_> = (0..15)
-                        .map(|_| Duration::from_secs(10))
+                    let tasks: Vec<TimerTask> = (0..15)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
                         .collect();
-                    let tasks = kestrel_timer::TimerService::create_batch(delays);
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).unwrap();
+                    let batch = service.register_batch(tasks).unwrap();
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
                     
                     // Postpone first 5 tasks
                     // 推迟前5个任务

@@ -24,7 +24,7 @@
 //! ## Quick Start (快速开始)
 //!
 //! ```no_run
-//! use kestrel_timer::{TimerWheel, CallbackWrapper};
+//! use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 //! use std::time::Duration;
 //! use std::sync::Arc;
 //!
@@ -37,15 +37,21 @@
 //!     let callback = Some(CallbackWrapper::new(|| async {
 //!         println!("Timer fired after 1 second!");
 //!     }));
-//!     let task = TimerWheel::create_task(Duration::from_secs(1), callback);
+//!     let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
 //!     let task_id = task.get_id();
 //!     
 //!     // Step 2: Register timer task and get completion notification (注册定时器任务并获取完成通知)
 //!     let handle = timer.register(task);
 //!     
 //!     // Wait for timer completion (等待定时器完成)
+//!     use kestrel_timer::CompletionReceiver;
 //!     let (rx, _handle) = handle.into_parts();
-//!     rx.0.await?;
+//!     match rx {
+//!         CompletionReceiver::OneShot(receiver) => {
+//!             receiver.0.await?;
+//!         },
+//!         _ => {}
+//!     }
 //!     Ok(())
 //! }
 //! ```
@@ -111,10 +117,11 @@ pub mod timer;
 mod service;
 
 // Re-export public API
-pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletionReason};
-pub use timer::handle::{TimerHandle, TimerHandleWithCompletion, BatchHandle, BatchHandleWithCompletion, CompletionReceiver};
+pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletionReasonOneShot, TaskCompletionReasonPeriodic};
+pub use timer::handle::{TimerHandle, TimerHandleWithCompletion, BatchHandle, BatchHandleWithCompletion};
+pub use task::CompletionReceiver;
 pub use timer::TimerWheel;
-pub use service::TimerService;
+pub use service::{TimerService, TaskNotification};
 
 #[cfg(test)]
 mod tests {
@@ -122,7 +129,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-    use crate::task::TaskCompletionReason;
+    use crate::task::TaskCompletionReasonOneShot;
 
     #[tokio::test]
     async fn test_basic_timer() {
@@ -130,7 +137,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
-        let task = TimerWheel::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
                 let counter =  Arc::clone(&counter_clone);
@@ -153,7 +160,7 @@ mod tests {
         // Create 10 timers
         for i in 0..10 {
             let counter_clone = Arc::clone(&counter);
-            let task = TimerWheel::create_task(
+            let task = TimerTask::new_oneshot(
                 Duration::from_millis(10 * (i + 1)),
                 Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
@@ -178,7 +185,7 @@ mod tests {
         let mut handles = Vec::new();
         for _ in 0..5 {
             let counter_clone = Arc::clone(&counter);
-            let task = TimerWheel::create_task(
+            let task = TimerTask::new_oneshot(
                 Duration::from_millis(100),
                 Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
@@ -208,7 +215,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
-        let task = TimerWheel::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
@@ -221,7 +228,12 @@ mod tests {
 
         // Wait for completion notification
         let (rx, _handle) = handle.into_parts();
-        rx.0.await.expect("Should receive completion notification");
+        match rx {
+            task::CompletionReceiver::OneShot(receiver) => {
+                receiver.0.await.expect("Should receive completion notification");
+            },
+            _ => panic!("Expected OneShot completion receiver"),
+        }
 
         // Verify callback has been executed (wait a moment to ensure callback execution is complete)
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -232,12 +244,17 @@ mod tests {
     async fn test_notify_only_timer_once() {
         let timer = TimerWheel::with_defaults();
         
-        let task = TimerTask::new(Duration::from_millis(50), None);
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let handle = timer.register(task);
 
         // Wait for completion notification (no callback, only notification)
         let (rx, _handle) = handle.into_parts();
-        rx.0.await.expect("Should receive completion notification");
+        match rx {
+            task::CompletionReceiver::OneShot(receiver) => {
+                receiver.0.await.expect("Should receive completion notification");
+            },
+            _ => panic!("Expected OneShot completion receiver"),
+        }
     }
 
     #[tokio::test]
@@ -246,7 +263,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
 
         // Create batch callbacks
-        let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
+        let callbacks: Vec<TimerTask> = (0..5)
             .map(|i| {
                 let counter = Arc::clone(&counter);
                 let delay = Duration::from_millis(50 + i * 10);
@@ -256,17 +273,21 @@ mod tests {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 });
-                (delay, Some(callback))
+                TimerTask::new_oneshot(delay, Some(callback))
             })
             .collect();
 
-        let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
-        let batch = timer.register_batch(tasks);
+        let batch = timer.register_batch(callbacks);
         let (receivers, _batch_handle) = batch.into_parts();
 
         // Wait for all completion notifications
         for rx in receivers {
-            rx.await.expect("Should receive completion notification");
+            match rx {
+                task::CompletionReceiver::OneShot(receiver) => {
+                    receiver.0.await.expect("Should receive completion notification");
+                },
+                _ => panic!("Expected OneShot completion receiver"),
+            }
         }
 
         // Wait a moment to ensure callback execution is complete
@@ -280,20 +301,25 @@ mod tests {
     async fn test_completion_reason_expired() {
         let timer = TimerWheel::with_defaults();
         
-        let task = TimerTask::new(Duration::from_millis(50), None);
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let handle = timer.register(task);
 
         // Wait for completion notification and verify reason is Expired
         let (rx, _handle) = handle.into_parts();
-        let result = rx.0.await.expect("Should receive completion notification");
-        assert_eq!(result, TaskCompletionReason::Expired);
+        let result = match rx {
+            task::CompletionReceiver::OneShot(receiver) => {
+                receiver.0.await.expect("Should receive completion notification")
+            },
+            _ => panic!("Expected OneShot completion receiver"),
+        };
+        assert_eq!(result, TaskCompletionReasonOneShot::Expired);
     }
 
     #[tokio::test]
     async fn test_completion_reason_cancelled() {
         let timer = TimerWheel::with_defaults();
         
-        let task = TimerTask::new(Duration::from_secs(10), None);
+        let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
         let handle = timer.register(task);
 
         // Cancel task
@@ -302,8 +328,13 @@ mod tests {
 
         // Wait for completion notification and verify reason is Cancelled
         let (rx, _handle) = handle.into_parts();
-        let result = rx.0.await.expect("Should receive completion notification");
-        assert_eq!(result, TaskCompletionReason::Cancelled);
+        let result = match rx {
+            task::CompletionReceiver::OneShot(receiver) => {
+                receiver.0.await.expect("Should receive completion notification")
+            },
+            _ => panic!("Expected OneShot completion receiver"),
+        };
+        assert_eq!(result, TaskCompletionReasonOneShot::Cancelled);
     }
 
     #[tokio::test]
@@ -312,7 +343,7 @@ mod tests {
         
         // Create 5 tasks, delay 10 seconds
         let tasks: Vec<_> = (0..5)
-            .map(|_| TimerTask::new(Duration::from_secs(10), None))
+            .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
             .collect();
         
         let batch = timer.register_batch(tasks);
@@ -324,15 +355,25 @@ mod tests {
 
         // Verify first 3 tasks received Cancelled notification
         for rx in receivers.drain(0..3) {
-            let result = rx.await.expect("Should receive completion notification");
-            assert_eq!(result, TaskCompletionReason::Cancelled);
+            let result = match rx {
+                task::CompletionReceiver::OneShot(receiver) => {
+                    receiver.0.await.expect("Should receive completion notification")
+                },
+                _ => panic!("Expected OneShot completion receiver"),
+            };
+            assert_eq!(result, TaskCompletionReasonOneShot::Cancelled);
         }
 
         // Cancel remaining tasks and verify
         timer.cancel_batch(&task_ids[3..5]);
         for rx in receivers {
-            let result = rx.await.expect("Should receive completion notification");
-            assert_eq!(result, TaskCompletionReason::Cancelled);
+            let result = match rx {
+                task::CompletionReceiver::OneShot(receiver) => {
+                    receiver.0.await.expect("Should receive completion notification")
+                },
+                _ => panic!("Expected OneShot completion receiver"),
+            };
+            assert_eq!(result, TaskCompletionReasonOneShot::Cancelled);
         }
     }
 }

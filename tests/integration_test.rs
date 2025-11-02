@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use kestrel_timer::{TimerWheel, CallbackWrapper, TimerService};
+use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask, CompletionReceiver};
 use kestrel_timer::config::ServiceConfig;
 use futures::future;
 
@@ -24,7 +24,7 @@ async fn test_large_scale_timers() {
         let delay = Duration::from_millis(10 + (i % 100) as u64);
         
         let future = async move {
-            let task = TimerWheel::create_task(
+            let task = TimerTask::new_oneshot(
                 delay,
                 Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
@@ -62,7 +62,7 @@ async fn test_timer_precision() {
     *start_time.lock() = Some(Instant::now());
 
     let end_clone = Arc::clone(&end_time);
-    let task = TimerWheel::create_task(
+    let task = TimerTask::new_oneshot(
         Duration::from_millis(100),
         Some(CallbackWrapper::new(move || {
             let end_time = Arc::clone(&end_clone);
@@ -78,7 +78,12 @@ async fn test_timer_precision() {
     // 使用完成接收器等待定时器完成，而不是固定睡眠时间
     // 这样可以避免竞争条件
     let (rx, _handle) = handle.into_parts();
-    let _ = rx.0.await;
+    match rx {
+        CompletionReceiver::OneShot(receiver) => {
+            let _ = receiver.0.await;
+        },
+        _ => {}
+    }
     
     // Additional wait to ensure callback execution is complete
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -114,7 +119,7 @@ async fn test_concurrent_operations() {
             let counter_clone = Arc::clone(&counter);
             
             let future = async move {
-                let task = TimerWheel::create_task(
+                let task = TimerTask::new_oneshot(
                     Duration::from_millis(50),
                     Some(CallbackWrapper::new(move || {
                         let counter = Arc::clone(&counter_clone);
@@ -156,7 +161,7 @@ async fn test_timer_with_different_delays() {
     for (idx, &delay_ms) in delays.iter().enumerate() {
         let results_clone = Arc::clone(&results);
         
-        let task = TimerWheel::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(delay_ms),
             Some(CallbackWrapper::new(move || {
                 let results = Arc::clone(&results_clone);
@@ -176,7 +181,12 @@ async fn test_timer_with_different_delays() {
     // 这样可以确保所有定时器都实际触发
     for handle in handles {
         let (rx, _handle) = handle.into_parts();
-        let _ = rx.0.await;
+        match rx {
+            CompletionReceiver::OneShot(receiver) => {
+                let _ = receiver.0.await;
+            },
+            _ => {}
+        }
     }
     
     // Additional wait to ensure all callbacks are executed completely
@@ -200,7 +210,7 @@ async fn test_memory_efficiency() {
     for _ in 0..5000 {
         let timer_clone = Arc::clone(&timer);
         let future = async move {
-            let task = TimerWheel::create_task(
+            let task = TimerTask::new_oneshot(
                 Duration::from_secs(10),
                 None,
             );
@@ -233,8 +243,8 @@ async fn test_batch_schedule() {
     const BATCH_SIZE: usize = 100;
     let start = Instant::now();
     
-    // Create batch callbacks (创建批量回调)
-    let callbacks: Vec<(Duration, _)> = (0..BATCH_SIZE)
+    // Create batch tasks (创建批量任务)
+    let tasks: Vec<_> = (0..BATCH_SIZE)
         .map(|i| {
             let counter_clone = Arc::clone(&counter);
             let delay = Duration::from_millis(50 + (i % 10) as u64);
@@ -243,14 +253,13 @@ async fn test_batch_schedule() {
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-                }));
-            (delay, callback)
+            }));
+            TimerTask::new_oneshot(delay, callback)
         })
         .collect();
     
     // Batch schedule
     // 批量调度
-    let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
     let batch = timer.register_batch(tasks);
     
     println!("Batch scheduling of {} timers took: {:?}", BATCH_SIZE, start.elapsed());
@@ -273,11 +282,10 @@ async fn test_batch_cancel() {
     const TIMER_COUNT: usize = 500;
     
     // Create batch timers (创建批量定时器)
-    let delays: Vec<Duration> = (0..TIMER_COUNT)
-        .map(|_| Duration::from_secs(10))
+    let tasks: Vec<_> = (0..TIMER_COUNT)
+        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
         .collect();
     
-    let tasks = TimerWheel::create_batch(delays);
     let batch = timer.register_batch(tasks);
     assert_eq!(batch.len(), TIMER_COUNT);
     
@@ -298,11 +306,10 @@ async fn test_batch_cancel_partial() {
     let timer = TimerWheel::with_defaults();
     
     // Create 10 timers (创建 10 个定时器)
-    let delays: Vec<Duration> = (0..10)
-        .map(|_| Duration::from_millis(100))
+    let tasks: Vec<_> = (0..10)
+        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
         .collect();
     
-    let tasks = TimerWheel::create_batch(delays);
     let batch = timer.register_batch(tasks);
     
     // Convert to individual handles (转换为单个句柄)
@@ -344,11 +351,10 @@ async fn test_batch_cancel_no_wait() {
     let timer = TimerWheel::with_defaults();
     
     // Create 100 timers (创建 100 个定时器)
-    let delays: Vec<Duration> = (0..100)
-        .map(|_| Duration::from_secs(10))
+    let tasks: Vec<_> = (0..100)
+        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
         .collect();
     
-    let tasks = TimerWheel::create_batch(delays);
     let batch = timer.register_batch(tasks);
     
     // Batch cancel (using BatchHandle's cancel_all method, now synchronous)
@@ -373,7 +379,7 @@ async fn test_postpone_single_timer() {
     let counter_clone = Arc::clone(&counter);
 
     // Create task, original callback adds 1
-    let task = TimerWheel::create_task(
+    let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);
@@ -398,10 +404,15 @@ async fn test_postpone_single_timer() {
     // Wait for new trigger time
     // 等待新触发时间
     let (rx, _handle) = handle.into_parts();
-    let result = tokio::time::timeout(
-        Duration::from_millis(200),
-        rx.0
-    ).await;
+    let result = match rx {
+        CompletionReceiver::OneShot(receiver) => {
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                receiver.0
+            ).await
+        },
+        _ => panic!("Expected OneShot receiver")
+    };
     assert!(result.is_ok(), "Task should trigger at postponed time");
     
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -418,7 +429,7 @@ async fn test_postpone_with_new_callback() {
     let counter_clone2 = Arc::clone(&counter); // 新回调增加 10
 
     // Create task, original callback adds 1 (创建任务，原始回调增加 1)
-    let task = TimerWheel::create_task(
+    let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone1);
@@ -447,10 +458,15 @@ async fn test_postpone_with_new_callback() {
     // Wait for task to trigger
     // 等待任务触发
     let (rx, _handle) = handle.into_parts();
-    let result = tokio::time::timeout(
-        Duration::from_millis(200),
-        rx.0
-    ).await;
+    let result = match rx {
+        CompletionReceiver::OneShot(receiver) => {
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                receiver.0
+            ).await
+        },
+        _ => panic!("Expected OneShot receiver")
+    };
     assert!(result.is_ok(), "Task should trigger");
     
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -470,7 +486,7 @@ async fn test_batch_postpone() {
     let mut task_ids = Vec::new();
     for _ in 0..BATCH_SIZE {
         let counter_clone = Arc::clone(&counter);
-        let task = TimerWheel::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
@@ -515,7 +531,7 @@ async fn test_postpone_batch_with_callbacks() {
     // 创建批量任务（初始回调为空）
     let mut task_ids = Vec::new();
     for _ in 0..BATCH_SIZE {
-        let task = TimerWheel::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             None,
         );
@@ -564,7 +580,7 @@ async fn test_postpone_multiple_times() {
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter); // 原始回调增加 1
 
-    let task = TimerWheel::create_task(
+    let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);
@@ -595,10 +611,15 @@ async fn test_postpone_multiple_times() {
     // Wait for final trigger
     // 等待最终触发
     let (rx, _handle) = handle.into_parts();
-    let result = tokio::time::timeout(
-        Duration::from_millis(200),
-        rx.0
-    ).await;
+    let result = match rx {
+        CompletionReceiver::OneShot(receiver) => {
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                receiver.0
+            ).await
+        },
+        _ => panic!("Expected OneShot receiver")
+    };
     assert!(result.is_ok(), "Task should finally trigger");
     
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -614,7 +635,7 @@ async fn test_postpone_with_service() {
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter); // 原始回调增加 1
 
-    let task = TimerService::create_task(
+    let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);
@@ -672,7 +693,7 @@ async fn test_single_wheel_multiple_services() {
         let handle = tokio::spawn(async move {
             for i in 0..TASKS_PER_SERVICE {
                 let counter_inner = Arc::clone(&counter_clone);
-                let task = TimerService::create_task(
+                let task = TimerTask::new_oneshot(
                     Duration::from_millis(50 + (i % 20) as u64),
                     Some(CallbackWrapper::new(move || {
                         let counter = Arc::clone(&counter_inner);
@@ -744,7 +765,7 @@ async fn test_multiple_services_concurrent_operations() {
             // 注册 100 个定时器每个服务
             for _ in 0..100 {
                 let counter_inner = Arc::clone(&counter_clone);
-                let task = TimerService::create_task(
+                let task = TimerTask::new_oneshot(
                     Duration::from_millis(100),
                     Some(CallbackWrapper::new(move || {
                         let counter = Arc::clone(&counter_inner);
@@ -843,7 +864,7 @@ async fn test_service_isolation() {
     let mut task_ids_1 = Vec::new();
     for _ in 0..100 {
         let counter = Arc::clone(&counter1);
-        let task = TimerService::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(80),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter);
@@ -860,7 +881,7 @@ async fn test_service_isolation() {
     // 服务 2 注册 100 个定时器
     for _ in 0..100 {
         let counter = Arc::clone(&counter2);
-        let task = TimerService::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(80),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter);

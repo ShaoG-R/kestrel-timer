@@ -1,7 +1,7 @@
 use crate::{BatchHandle, TimerHandle};
 use crate::config::ServiceConfig;
 use crate::error::TimerError;
-use crate::task::{CallbackWrapper, TaskCompletionReason, TaskId};
+use crate::task::{CallbackWrapper,  CompletionReceiver, TaskCompletionReasonOneShot, TaskCompletionReasonPeriodic, TaskId};
 use crate::wheel::Wheel;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::BoxFuture;
@@ -10,6 +10,47 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+/// Task notification type for distinguishing between one-shot and periodic tasks
+/// 
+/// 任务通知类型，用于区分一次性任务和周期性任务
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskNotification {
+    /// One-shot task expired notification
+    /// 
+    /// 一次性任务过期通知
+    OneShot(TaskId),
+    /// Periodic task called notification
+    /// 
+    /// 周期性任务被调用通知
+    Periodic(TaskId),
+}
+
+impl TaskNotification {
+    /// Get the task ID from the notification
+    /// 
+    /// 从通知中获取任务 ID
+    pub fn task_id(&self) -> TaskId {
+        match self {
+            TaskNotification::OneShot(id) => *id,
+            TaskNotification::Periodic(id) => *id,
+        }
+    }
+    
+    /// Check if this is a one-shot task notification
+    /// 
+    /// 检查是否为一次性任务通知
+    pub fn is_oneshot(&self) -> bool {
+        matches!(self, TaskNotification::OneShot(_))
+    }
+    
+    /// Check if this is a periodic task notification
+    /// 
+    /// 检查是否为周期性任务通知
+    pub fn is_periodic(&self) -> bool {
+        matches!(self, TaskNotification::Periodic(_))
+    }
+}
 
 /// Service command type
 /// 
@@ -20,35 +61,37 @@ enum ServiceCommand {
     /// 添加批量定时器句柄，仅包含必要数据: task_ids 和 completion_rxs
     AddBatchHandle {
         task_ids: Vec<TaskId>,
-        completion_rxs: Vec<tokio::sync::oneshot::Receiver<TaskCompletionReason>>,
+        completion_rxs: Vec<CompletionReceiver>,
     },
     /// Add single timer handle, only contains necessary data: task_id and completion_rx
     /// 
     /// 添加单个定时器句柄，仅包含必要数据: task_id 和 completion_rx
     AddTimerHandle {
         task_id: TaskId,
-        completion_rx: tokio::sync::oneshot::Receiver<TaskCompletionReason>,
+        completion_rx: CompletionReceiver,
     },
 }
 
 /// TimerService - timer service based on Actor pattern
-/// Manages multiple timer handles, listens to all timeout events, and aggregates TaskId to be forwarded to the user.
+/// Manages multiple timer handles, listens to all timeout events, and aggregates notifications to be forwarded to the user.
 /// # Features
 /// - Automatically listens to all added timer handles' timeout events
-/// - Automatically removes the task from internal management after timeout
-/// - Aggregates TaskId to be forwarded to the user's unified channel
+/// - Automatically removes one-shot tasks from internal management after timeout
+/// - Continuously monitors periodic tasks and forwards each invocation
+/// - Aggregates notifications (both one-shot and periodic) to be forwarded to the user's unified channel
 /// - Supports dynamic addition of BatchHandle and TimerHandle
 ///
 /// 
-/// # 定时器服务，基于 Actor 模式管理多个定时器句柄，监听所有超时事件，并将 TaskId 聚合转发给用户。
+/// # 定时器服务，基于 Actor 模式管理多个定时器句柄，监听所有超时事件，并将通知聚合转发给用户。
 /// - 自动监听所有添加的定时器句柄的超时事件
-/// - 自动在超时后从内部管理中移除任务
-/// - 将 TaskId 聚合转发给用户
+/// - 自动在一次性任务超时后从内部管理中移除任务
+/// - 持续监听周期性任务并转发每次调用通知
+/// - 将通知（一次性和周期性）聚合转发给用户
 /// - 支持动态添加 BatchHandle 和 TimerHandle
 /// 
 /// # Examples (示例)
 /// ```no_run
-/// use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
+/// use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, TaskNotification, config::ServiceConfig};
 /// use std::time::Duration;
 ///
 /// #[tokio::main]
@@ -56,24 +99,37 @@ enum ServiceCommand {
 ///     let timer = TimerWheel::with_defaults();
 ///     let mut service = timer.create_service(ServiceConfig::default());
 ///     
-///     // Use two-step API to batch schedule timers through service
-///     // (使用两步 API 通过服务批量调度定时器)
-///     let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..5)
+///     // Register one-shot tasks (注册一次性任务)
+///     use kestrel_timer::TimerTask;
+///     let oneshot_tasks: Vec<_> = (0..3)
 ///         .map(|i| {
 ///             let callback = Some(CallbackWrapper::new(move || async move {
-///                 println!("Timer {} fired!", i);
+///                 println!("One-shot timer {} fired!", i);
 ///             }));
-///             (Duration::from_millis(100), callback)
+///             TimerTask::new_oneshot(Duration::from_millis(100), callback)
 ///         })
 ///         .collect();
-///     let tasks = TimerService::create_batch_with_callbacks(callbacks);
-///     service.register_batch(tasks).unwrap();
+///     service.register_batch(oneshot_tasks).unwrap();
 ///     
-///     // Receive timeout notifications (接收超时通知)
+///     // Register periodic tasks (注册周期性任务)
+///     let periodic_task = TimerTask::new_periodic(
+///         Duration::from_millis(100),
+///         Duration::from_millis(50),
+///         Some(CallbackWrapper::new(|| async { println!("Periodic timer fired!"); }))
+///     );
+///     service.register(periodic_task).unwrap();
+///     
+///     // Receive notifications (接收通知)
 ///     let mut rx = service.take_receiver().unwrap();
-///     while let Some(task_id) = rx.recv().await {
-///         // Receive timeout notification (接收超时通知)
-///         println!("Task {:?} completed", task_id);
+///     while let Some(notification) = rx.recv().await {
+///         match notification {
+///             TaskNotification::OneShot(task_id) => {
+///                 println!("One-shot task {:?} expired", task_id);
+///             }
+///             TaskNotification::Periodic(task_id) => {
+///                 println!("Periodic task {:?} called", task_id);
+///             }
+///         }
 ///     }
 /// }
 /// ```
@@ -82,10 +138,10 @@ pub struct TimerService {
     /// 
     /// 命令发送器
     command_tx: mpsc::Sender<ServiceCommand>,
-    /// Timeout receiver
+    /// Timeout receiver (supports both one-shot and periodic task notifications)
     /// 
-    /// 超时接收器
-    timeout_rx: Option<mpsc::Receiver<TaskId>>,
+    /// 超时接收器（支持一次性和周期性任务通知）
+    timeout_rx: Option<mpsc::Receiver<TaskNotification>>,
     /// Actor task handle
     /// 
     /// Actor 任务句柄
@@ -121,7 +177,7 @@ impl TimerService {
     ///
     pub(crate) fn new(wheel: Arc<Mutex<Wheel>>, config: ServiceConfig) -> Self {
         let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity);
-        let (timeout_tx, timeout_rx) = mpsc::channel(config.timeout_channel_capacity);
+        let (timeout_tx, timeout_rx) = mpsc::channel::<TaskNotification>(config.timeout_channel_capacity);
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let actor = ServiceActor::new(command_rx, timeout_tx, shutdown_rx);
@@ -145,6 +201,7 @@ impl TimerService {
     ///
     /// # Notes
     /// This method can only be called once, because it transfers ownership of the receiver
+    /// The receiver will receive both one-shot task expired notifications and periodic task called notifications
     ///
     /// 获取超时通知接收器 (转移所有权)
     /// 
@@ -153,22 +210,30 @@ impl TimerService {
     /// 
     /// # 注意
     /// 此方法只能调用一次，因为它转移了接收器的所有权
+    /// 接收器将接收一次性任务过期通知和周期性任务被调用通知
     /// 
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, config::ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, config::ServiceConfig, TaskNotification};
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
     /// let mut service = timer.create_service(ServiceConfig::default());
     /// 
     /// let mut rx = service.take_receiver().unwrap();
-    /// while let Some(task_id) = rx.recv().await {
-    ///     println!("Task {:?} timed out", task_id);
+    /// while let Some(notification) = rx.recv().await {
+    ///     match notification {
+    ///         TaskNotification::OneShot(task_id) => {
+    ///             println!("One-shot task {:?} expired", task_id);
+    ///         }
+    ///         TaskNotification::Periodic(task_id) => {
+    ///             println!("Periodic task {:?} called", task_id);
+    ///         }
+    ///     }
     /// }
     /// # }
     /// ```
-    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<TaskId>> {
+    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<TaskNotification>> {
         self.timeout_rx.take()
     }
 
@@ -192,7 +257,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, TimerTask, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -204,7 +269,7 @@ impl TimerService {
     /// let callback = Some(CallbackWrapper::new(|| async move {
     ///     println!("Timer fired!"); // 定时器触发
     /// }));
-    /// let task = TimerService::create_task(Duration::from_secs(10), callback);
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(10), callback);
     /// let task_id = task.get_id();
     /// service.register(task).unwrap(); // 注册定时器
     /// 
@@ -243,7 +308,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, TimerTask, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -251,15 +316,14 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..10)
+    /// let tasks: Vec<_> = (0..10)
     ///     .map(|i| {
     ///         let callback = Some(CallbackWrapper::new(move || async move {
     ///             println!("Timer {} fired!", i); // 定时器触发
     ///         }));
-    ///         (Duration::from_secs(10), callback)
+    ///         TimerTask::new_oneshot(Duration::from_secs(10), callback)
     ///     })
     ///     .collect();
-    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap(); // 注册定时器
     /// 
@@ -316,7 +380,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, TimerTask, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -327,7 +391,7 @@ impl TimerService {
     /// let callback = Some(CallbackWrapper::new(|| async {
     ///     println!("Original callback"); // 原始回调
     /// }));
-    /// let task = TimerService::create_task(Duration::from_secs(5), callback);
+    /// let task = TimerTask::new_oneshot(Duration::from_secs(5), callback);
     /// let task_id = task.get_id();
     /// service.register(task).unwrap(); // 注册定时器
     /// 
@@ -365,7 +429,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, TimerTask, config::ServiceConfig};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -373,15 +437,14 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
+    /// let tasks: Vec<_> = (0..3)
     ///     .map(|i| {
     ///         let callback = Some(CallbackWrapper::new(move || async move {
     ///             println!("Timer {} fired!", i);
     ///         }));
-    ///         (Duration::from_secs(5), callback)
+    ///         TimerTask::new_oneshot(Duration::from_secs(5), callback)
     ///     })
     ///     .collect();
-    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
@@ -428,15 +491,15 @@ impl TimerService {
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
+    /// # use kestrel_timer::TimerTask;
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// // Create 3 tasks, initially no callbacks
     /// // 创建 3 个任务，最初没有回调
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(5))
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(5), None))
     ///     .collect();
-    /// let tasks = TimerService::create_batch(delays);
     /// let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
     /// service.register_batch(tasks).unwrap();
     /// 
@@ -468,152 +531,11 @@ impl TimerService {
         let mut wheel = self.wheel.lock();
         wheel.postpone_batch_with_callbacks(updates)
     }
-
-    /// Create timer task (static method, apply stage)
-    /// 
-    /// # Parameters
-    /// - `delay`: Delay time
-    /// - `callback`: Callback object implementing TimerCallback trait
-    /// 
-    /// # Returns
-    /// Return TimerTask, needs to be registered through `register()`
-    /// 
-    /// 创建定时器任务 (静态方法，应用阶段)
-    /// 
-    /// # 参数
-    /// - `delay`: 延迟时间
-    /// - `callback`: 回调对象，实现 TimerCallback 特质
-    ///
-    /// # 返回值
-    /// 返回 TimerTask，需要通过 `register()` 注册
-    ///
-    /// # Examples (示例)
-    /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
-    /// # use std::time::Duration;
-    /// # 
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service(ServiceConfig::default());
-    /// 
-    /// // Step 1: create task
-    /// // 创建任务
-    /// let callback = Some(CallbackWrapper::new(|| async {
-    ///     println!("Timer fired!");
-    /// }));
-    /// let task = TimerService::create_task(Duration::from_millis(100), callback);
-    /// 
-    /// let task_id = task.get_id();
-    /// println!("Created task: {:?}", task_id);
-    /// 
-    /// // Step 2: register task
-    /// // 注册任务
-    /// service.register(task).unwrap();
-    /// # }
-    /// ```
-    #[inline]
-    pub fn create_task(delay: Duration, callback: Option<CallbackWrapper>) -> crate::task::TimerTask {
-        crate::timer::TimerWheel::create_task(delay, callback)
-    }
-
-    /// Create batch of timer tasks (static method, apply stage, no callbacks)
-    /// 
-    /// # Parameters
-    /// - `delays`: List of delay times
-    /// 
-    /// # Returns
-    /// Return TimerTask list, needs to be registered through `register_batch()`
-    /// 
-    /// 创建定时器任务 (静态方法，应用阶段，没有回调)
-    /// # 参数
-    /// - `delays`: 延迟时间列表
-    ///
-    /// # 返回值
-    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册
-    ///
-    /// # Examples (示例)
-    /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
-    /// # use std::time::Duration;
-    /// # 
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service(ServiceConfig::default());
-    /// 
-    /// // Step 1: create batch of tasks
-    /// // 创建批量任务
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|i| Duration::from_millis(100 * (i + 1)))
-    ///     .collect();
-    /// 
-    /// let tasks = TimerService::create_batch(delays);
-    /// println!("Created {} tasks", tasks.len());
-    /// 
-    /// // Step 2: register batch of tasks
-    /// // 注册批量任务
-    /// service.register_batch(tasks).unwrap();
-    /// # }
-    /// ```
-    #[inline]
-    pub fn create_batch(delays: Vec<Duration>) -> Vec<crate::task::TimerTask> {
-        crate::timer::TimerWheel::create_batch(delays)
-    }
-    
-    /// Create batch of timer tasks (static method, apply stage, with callbacks)
-    /// 
-    /// # Parameters
-    /// - `callbacks`: List of tuples of (delay time, callback)
-    /// 
-    /// # Returns
-    /// Return TimerTask list, needs to be registered through `register_batch()`
-    /// 
-    /// 创建定时器任务 (静态方法，应用阶段，有回调)
-    /// # 参数
-    /// - `callbacks`: (延迟时间, 回调) 元组列表
-    ///
-    /// # 返回值
-    /// 返回 TimerTask 列表，需要通过 `register_batch()` 注册
-    ///
-    /// # Examples (示例)
-    /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
-    /// # use std::time::Duration;
-    /// # 
-    /// # #[tokio::main]
-    /// # async fn main() {
-    /// let timer = TimerWheel::with_defaults();
-    /// let service = timer.create_service(ServiceConfig::default());
-    /// 
-    /// // Step 1: create batch of tasks with callbacks
-    /// // 创建批量任务，带有回调
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
-    ///     .map(|i| {
-    ///         let callback = Some(CallbackWrapper::new(move || async move {
-    ///             println!("Timer {} fired!", i);
-    ///         }));
-    ///         (Duration::from_millis(100 * (i + 1)), callback)
-    ///     })
-    ///     .collect();
-    /// 
-    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
-    /// println!("Created {} tasks", tasks.len());
-    /// 
-    /// // Step 2: register batch of tasks with callbacks
-    /// // 注册批量任务，带有回调
-    /// service.register_batch(tasks).unwrap();
-    /// # }
-    /// ```
-    #[inline]
-    pub fn create_batch_with_callbacks(callbacks: Vec<(Duration, Option<CallbackWrapper>)>) -> Vec<crate::task::TimerTask> {
-        crate::timer::TimerWheel::create_batch_with_callbacks(callbacks)
-    }
     
     /// Register timer task to service (registration phase)
     /// 
     /// # Parameters
-    /// - `task`: Task created via `create_task()`
+    /// - `task`: Task created via `TimerTask::new_oneshot()`
     /// 
     /// # Returns
     /// - `Ok(TimerHandle)`: Register successfully
@@ -621,7 +543,7 @@ impl TimerService {
     /// 
     /// 注册定时器任务到服务 (注册阶段)
     /// # 参数
-    /// - `task`: 通过 `create_task()` 创建的任务
+    /// - `task`: 通过 `TimerTask::new_oneshot()` 创建的任务
     ///
     /// # 返回值
     /// - `Ok(TimerHandle)`: 注册成功
@@ -629,7 +551,7 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
@@ -642,7 +564,7 @@ impl TimerService {
     /// let callback = Some(CallbackWrapper::new(|| async move {
     ///     println!("Timer fired!");
     /// }));
-    /// let task = TimerService::create_task(Duration::from_millis(100), callback);
+    /// let task = TimerTask::new_oneshot(Duration::from_millis(100), callback);
     /// let task_id = task.get_id();
     /// 
     /// // Step 2: register task
@@ -652,16 +574,16 @@ impl TimerService {
     /// ```
     #[inline]
     pub fn register(&self, task: crate::task::TimerTask) -> Result<TimerHandle, TimerError> {
-        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-        let notifier = crate::task::CompletionNotifier(completion_tx);
         
+        let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task, 30);
+
         let task_id = task.id;
         
         // Single lock, complete all operations
         // 单次锁定，完成所有操作
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert(task, notifier);
+            wheel_guard.insert(task);
         }
         
         // Add to service management (only send necessary data)
@@ -679,7 +601,7 @@ impl TimerService {
     /// Batch register timer tasks to service (registration phase)
     /// 
     /// # Parameters
-    /// - `tasks`: List of tasks created via `create_batch()`
+    /// - `tasks`: List of tasks created via `TimerTask::new_oneshot()`
     /// 
     /// # Returns
     /// - `Ok(BatchHandle)`: Register successfully
@@ -687,7 +609,7 @@ impl TimerService {
     /// 
     /// 批量注册定时器任务到服务 (注册阶段)
     /// # 参数
-    /// - `tasks`: 通过 `create_batch()` 创建的任务列表
+    /// - `tasks`: 通过 `TimerTask::new_oneshot()` 创建的任务列表
     ///
     /// # 返回值
     /// - `Ok(BatchHandle)`: 注册成功
@@ -695,25 +617,25 @@ impl TimerService {
     ///
     /// # Examples (示例)
     /// ```no_run
-    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
+    /// # use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig, TimerTask};
     /// # use std::time::Duration;
     /// # 
     /// # #[tokio::main]
     /// # async fn main() {
+    /// # use kestrel_timer::TimerTask;
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
     /// // Step 1: create batch of tasks with callbacks
     /// // 创建批量任务，带有回调
-    /// let callbacks: Vec<(Duration, Option<CallbackWrapper>)> = (0..3)
+    /// let tasks: Vec<TimerTask> = (0..3)
     ///     .map(|i| {
     ///         let callback = Some(CallbackWrapper::new(move || async move {
     ///             println!("Timer {} fired!", i);
     ///         }));
-    ///         (Duration::from_secs(1), callback)
+    ///         TimerTask::new_oneshot(Duration::from_secs(1), callback)
     ///     })
     ///     .collect();
-    /// let tasks = TimerService::create_batch_with_callbacks(callbacks);
     /// 
     /// // Step 2: register batch of tasks with callbacks
     /// // 注册批量任务，带有回调
@@ -730,12 +652,10 @@ impl TimerService {
         // Step 1: prepare all channels and notifiers (no lock)
         // 步骤 1: 准备所有通道和通知器（无锁）
         for task in tasks {
-            let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-            let notifier = crate::task::CompletionNotifier(completion_tx);
-            
+            let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task, 30);
             task_ids.push(task.id);
             completion_rxs.push(completion_rx);
-            prepared_tasks.push((task, notifier));
+            prepared_tasks.push(task);
         }
         
         // Step 2: single lock, batch insert
@@ -801,10 +721,10 @@ struct ServiceActor {
     /// 
     /// 命令接收器
     command_rx: mpsc::Receiver<ServiceCommand>,
-    /// Timeout sender
+    /// Timeout sender (supports both one-shot and periodic task notifications)
     /// 
-    /// 超时发送器
-    timeout_tx: mpsc::Sender<TaskId>,
+    /// 超时发送器（支持一次性和周期性任务通知）
+    timeout_tx: mpsc::Sender<TaskNotification>,
     /// Actor shutdown signal receiver
     /// 
     /// Actor 关闭信号接收器
@@ -815,7 +735,7 @@ impl ServiceActor {
     /// Create new ServiceActor
     /// 
     /// 创建新的 ServiceActor
-    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskId>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Self {
+    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskNotification>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Self {
         Self {
             command_rx,
             timeout_tx,
@@ -827,11 +747,19 @@ impl ServiceActor {
     /// 
     /// 运行 Actor 事件循环
     async fn run(mut self) {
-        // Use FuturesUnordered to listen to all completion_rxs
-        // Each future returns (TaskId, Result)
-        // 使用 FuturesUnordered 监听所有 completion_rxs
-        // 每个 future 返回 (TaskId, Result)
-        let mut futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
+        // Use separate FuturesUnordered for one-shot and periodic tasks
+        // 为一次性任务和周期性任务使用独立的 FuturesUnordered
+        
+        // One-shot futures: each future returns (TaskId, Result<TaskCompletionReasonOneShot>)
+        // 一次性任务 futures：每个 future 返回 (TaskId, Result<TaskCompletionReasonOneShot>)
+        let mut oneshot_futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<TaskCompletionReasonOneShot, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
+
+        // Periodic futures: each future returns (TaskId, Option<TaskCompletionReasonPeriodic>, mpsc::Receiver)
+        // The receiver is returned so we can continue listening for next event
+        // 周期性任务 futures：每个 future 返回 (TaskId, Option<TaskCompletionReasonPeriodic>, mpsc::Receiver)
+        // 返回接收器以便我们可以继续监听下一个事件
+        type PeriodicFutureResult = (TaskId, Option<TaskCompletionReasonPeriodic>, crate::task::PeriodicCompletionReceiver);
+        let mut periodic_futures: FuturesUnordered<BoxFuture<'static, PeriodicFutureResult>> = FuturesUnordered::new();
 
         // Move shutdown_rx out of self, so it can be used in select! with &mut
         // 将 shutdown_rx 从 self 中移出，以便在 select! 中使用 &mut
@@ -847,16 +775,36 @@ impl ServiceActor {
                     break;
                 }
 
-                // Listen to timeout events
-                // 监听超时事件
-                Some((task_id, result)) = futures.next() => {
+                // Listen to one-shot task timeout events
+                // 监听一次性任务超时事件
+                Some((task_id, result)) = oneshot_futures.next() => {
                     // Check completion reason, only forward expired (Expired) events, do not forward cancelled (Cancelled) events
                     // 检查完成原因，只转发过期 (Expired) 事件，不转发取消 (Cancelled) 事件
-                    if let Ok(TaskCompletionReason::Expired) = result {
-                        let _ = self.timeout_tx.send(task_id).await;
+                    if let Ok(TaskCompletionReasonOneShot::Expired) = result {
+                        let _ = self.timeout_tx.send(TaskNotification::OneShot(task_id)).await;
                     }
                     // Task will be automatically removed from FuturesUnordered
                     // 任务将自动从 FuturesUnordered 中移除
+                }
+                
+                // Listen to periodic task events
+                // 监听周期性任务事件
+                Some((task_id, reason, mut receiver)) = periodic_futures.next() => {
+                    // Check completion reason, only forward Called events, do not forward Cancelled events
+                    // 检查完成原因，只转发 Called 事件，不转发 Cancelled 事件
+                    if let Some(TaskCompletionReasonPeriodic::Called) = reason {
+                        let _ = self.timeout_tx.send(TaskNotification::Periodic(task_id)).await;
+                        
+                        // Re-add the receiver to continue listening for next periodic event
+                        // 重新添加接收器以继续监听下一个周期性事件
+                        let future: BoxFuture<'static, PeriodicFutureResult> = Box::pin(async move {
+                            let reason = receiver.recv().await;
+                            (task_id, reason, receiver)
+                        });
+                        periodic_futures.push(future);
+                    }
+                    // If Cancelled or None, do not re-add the future (task is done)
+                    // 如果是 Cancelled 或 None，不重新添加 future（任务结束）
                 }
                 
                 // Listen to commands
@@ -864,22 +812,44 @@ impl ServiceActor {
                 Some(cmd) = self.command_rx.recv() => {
                     match cmd {
                         ServiceCommand::AddBatchHandle { task_ids, completion_rxs } => {
-                            // Add all tasks to futures
-                            // 将所有任务添加到 futures
+                            // Add all tasks to appropriate futures
+                            // 将所有任务添加到相应的 futures
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
-                                let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
-                                    (task_id, rx.await)
-                                });
-                                futures.push(future);
+                                match rx {
+                                    crate::task::CompletionReceiver::OneShot(receiver) => {
+                                        let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReasonOneShot, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
+                                            (task_id, receiver.0.await)
+                                        });
+                                        oneshot_futures.push(future);
+                                    },
+                                    crate::task::CompletionReceiver::Periodic(mut receiver) => {
+                                        let future: BoxFuture<'static, PeriodicFutureResult> = Box::pin(async move {
+                                            let reason = receiver.recv().await;
+                                            (task_id, reason, receiver)
+                                        });
+                                        periodic_futures.push(future);
+                                    }
+                                }
                             }
                         }
                         ServiceCommand::AddTimerHandle { task_id, completion_rx } => {
-                            // Add to futures
-                            // 添加到 futures
-                            let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReason, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
-                                (task_id, completion_rx.await)
-                            });
-                            futures.push(future);
+                            // Add to appropriate futures
+                            // 添加到相应的 futures
+                            match completion_rx {
+                                crate::task::CompletionReceiver::OneShot(receiver) => {
+                                    let future: BoxFuture<'static, (TaskId, Result<TaskCompletionReasonOneShot, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
+                                        (task_id, receiver.0.await)
+                                    });
+                                    oneshot_futures.push(future);
+                                },
+                                crate::task::CompletionReceiver::Periodic(mut receiver) => {
+                                    let future: BoxFuture<'static, PeriodicFutureResult> = Box::pin(async move {
+                                        let reason = receiver.recv().await;
+                                        (task_id, reason, receiver)
+                                    });
+                                    periodic_futures.push(future);
+                                }
+                            }
                         }
                     }
                 }
@@ -897,7 +867,7 @@ impl ServiceActor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TimerWheel;
+    use crate::{TimerWheel, TimerTask};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -915,7 +885,7 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
 
         // Create single timer (创建单个定时器)
-        let task = TimerService::create_task(Duration::from_millis(50), Some(CallbackWrapper::new(|| async {})));
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), Some(CallbackWrapper::new(|| async {})));
         let task_id = task.get_id();
         
         // Register to service (注册到服务)
@@ -923,12 +893,12 @@ mod tests {
 
         // Receive timeout notification (接收超时通知)
         let mut rx = service.take_receiver().unwrap();
-        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+        let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
 
-        assert_eq!(received_task_id, task_id);
+        assert_eq!(received_notification, TaskNotification::OneShot(task_id));
     }
 
 
@@ -938,8 +908,8 @@ mod tests {
         let service = timer.create_service(ServiceConfig::default());
 
         // Add some timers (添加一些定时器)
-        let task1 = TimerService::create_task(Duration::from_secs(10), None);
-        let task2 = TimerService::create_task(Duration::from_secs(10), None);
+        let task1 = TimerTask::new_oneshot(Duration::from_secs(10), None);
+        let task2 = TimerTask::new_oneshot(Duration::from_secs(10), None);
         service.register(task1).unwrap();
         service.register(task2).unwrap();
 
@@ -955,7 +925,7 @@ mod tests {
         let service = timer.create_service(ServiceConfig::default());
 
         // Add a long-term timer (添加一个长期定时器)
-        let task = TimerService::create_task(Duration::from_secs(10), None);
+        let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
         let task_id = task.get_id();
         
         service.register(task).unwrap();
@@ -975,12 +945,12 @@ mod tests {
         let service = timer.create_service(ServiceConfig::default());
 
         // Add a timer to initialize service (添加定时器以初始化服务)
-        let task = TimerService::create_task(Duration::from_millis(50), None);
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         service.register(task).unwrap();
 
         // Try to cancel a nonexistent task (create a task ID that will not actually be registered)
         // 尝试取消不存在的任务（创建一个实际不会注册的任务 ID）
-        let fake_task = TimerService::create_task(Duration::from_millis(50), None);
+        let fake_task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let fake_task_id = fake_task.get_id();
         // Do not register fake_task (不注册 fake_task)
         let cancelled = service.cancel_task(fake_task_id);
@@ -994,19 +964,19 @@ mod tests {
         let mut service = timer.create_service(ServiceConfig::default());
 
         // Add a short-term timer (添加短期定时器)
-        let task = TimerService::create_task(Duration::from_millis(50), None);
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let task_id = task.get_id();
         
         service.register(task).unwrap();
 
         // Wait for task timeout (等待任务超时)
         let mut rx = service.take_receiver().unwrap();
-        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+        let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
         
-        assert_eq!(received_task_id, task_id);
+        assert_eq!(received_notification, TaskNotification::OneShot(task_id));
 
         // Wait a moment to ensure internal cleanup is complete (等待片刻以确保内部清理完成)
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1024,7 +994,7 @@ mod tests {
 
         // Create a timer (创建定时器)
         let counter_clone = Arc::clone(&counter);
-        let task = TimerService::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_secs(10),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
@@ -1060,7 +1030,7 @@ mod tests {
         // Schedule timer directly through service
         // 直接通过服务调度定时器
         let counter_clone = Arc::clone(&counter);
-        let task = TimerService::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
@@ -1075,12 +1045,12 @@ mod tests {
         // Wait for timer to trigger
         // 等待定时器触发
         let mut rx = service.take_receiver().unwrap();
-        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+        let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
 
-        assert_eq!(received_task_id, task_id);
+        assert_eq!(received_notification, TaskNotification::OneShot(task_id));
         
         // Wait for callback to execute
         // 等待回调执行
@@ -1096,10 +1066,10 @@ mod tests {
 
         // Schedule timers directly through service
         // 直接通过服务调度定时器
-        let callbacks: Vec<_> = (0..3)
+        let tasks: Vec<_> = (0..3)
             .map(|_| {
                 let counter = Arc::clone(&counter);
-                (Duration::from_millis(50), Some(CallbackWrapper::new(move || {
+                TimerTask::new_oneshot(Duration::from_millis(50), Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
@@ -1108,7 +1078,6 @@ mod tests {
             })
             .collect();
 
-        let tasks = TimerService::create_batch_with_callbacks(callbacks);
         assert_eq!(tasks.len(), 3);
         service.register_batch(tasks).unwrap();
 
@@ -1142,19 +1111,19 @@ mod tests {
 
         // Schedule only notification timer directly through service (no callback)
         // 直接通过服务调度通知定时器（没有回调）
-        let task = TimerService::create_task(Duration::from_millis(50), None);
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let task_id = task.get_id();
         service.register(task).unwrap();
 
         // Receive timeout notification
         // 接收超时通知
         let mut rx = service.take_receiver().unwrap();
-        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+        let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
 
-        assert_eq!(received_task_id, task_id);
+        assert_eq!(received_notification, TaskNotification::OneShot(task_id));
     }
 
     #[tokio::test]
@@ -1166,7 +1135,7 @@ mod tests {
         // Schedule timer directly
         // 直接调度定时器
         let counter_clone = Arc::clone(&counter);
-        let task = TimerService::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_secs(10),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
@@ -1197,10 +1166,10 @@ mod tests {
 
         // Batch schedule timers
         // 批量调度定时器
-        let callbacks: Vec<_> = (0..10)
+        let tasks: Vec<_> = (0..10)
             .map(|_| {
                 let counter = Arc::clone(&counter);
-                (Duration::from_secs(10), Some(CallbackWrapper::new(move || {
+                TimerTask::new_oneshot(Duration::from_secs(10), Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
@@ -1209,7 +1178,6 @@ mod tests {
             })
             .collect();
 
-        let tasks = TimerService::create_batch_with_callbacks(callbacks);
         let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
         assert_eq!(task_ids.len(), 10);
         service.register_batch(tasks).unwrap();
@@ -1233,10 +1201,10 @@ mod tests {
 
         // Batch schedule timers
         // 批量调度定时器
-        let callbacks: Vec<_> = (0..10)
+        let tasks: Vec<_> = (0..10)
             .map(|_| {
                 let counter = Arc::clone(&counter);
-                (Duration::from_secs(10), Some(CallbackWrapper::new(move || {
+                TimerTask::new_oneshot(Duration::from_secs(10), Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter);
                     async move {
                         counter.fetch_add(1, Ordering::SeqCst);
@@ -1245,7 +1213,6 @@ mod tests {
             })
             .collect();
 
-        let tasks = TimerService::create_batch_with_callbacks(callbacks);
         let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
         service.register_batch(tasks).unwrap();
 
@@ -1282,7 +1249,7 @@ mod tests {
         // Register a task, original callback increases 1
         // 注册一个任务，原始回调增加 1
         let counter_clone1 = Arc::clone(&counter);
-        let task = TimerService::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone1);
@@ -1317,7 +1284,7 @@ mod tests {
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
 
-        assert_eq!(received_task_id, task_id);
+        assert_eq!(received_task_id, TaskNotification::OneShot(task_id));
         
         // Wait for callback to execute
         // 等待回调执行
@@ -1335,7 +1302,7 @@ mod tests {
 
         // Try to postpone a nonexistent task
         // 尝试延期一个不存在的任务
-        let fake_task = TimerService::create_task(Duration::from_millis(50), None);
+        let fake_task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let fake_task_id = fake_task.get_id();
         // Do not register this task
         // 不注册这个任务
@@ -1354,7 +1321,7 @@ mod tests {
         let mut task_ids = Vec::new();
         for _ in 0..3 {
             let counter_clone = Arc::clone(&counter);
-            let task = TimerService::create_task(
+            let task = TimerTask::new_oneshot(
                 Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
@@ -1410,7 +1377,7 @@ mod tests {
         // 注册 3 个任务
         let mut task_ids = Vec::new();
         for _ in 0..3 {
-            let task = TimerService::create_task(
+            let task = TimerTask::new_oneshot(
                 Duration::from_millis(50),
                 None,
             );
@@ -1484,7 +1451,7 @@ mod tests {
         // Register a task
         // 注册一个任务
         let counter_clone = Arc::clone(&counter);
-        let task = TimerService::create_task(
+        let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter_clone);
@@ -1508,7 +1475,7 @@ mod tests {
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
 
-        assert_eq!(received_task_id, task_id, "Timeout notification should still work after postpone");
+        assert_eq!(received_task_id, TaskNotification::OneShot(task_id), "Timeout notification should still work after postpone");
         
         // Wait for callback to execute
         // 等待回调执行
@@ -1523,11 +1490,11 @@ mod tests {
 
         // Register two tasks: one will be cancelled, one will expire normally
         // 注册两个任务：一个将被取消，一个将正常过期
-        let task1 = TimerService::create_task(Duration::from_secs(10), None);
+        let task1 = TimerTask::new_oneshot(Duration::from_secs(10), None);
         let task1_id = task1.get_id();
         service.register(task1).unwrap();
 
-        let task2 = TimerService::create_task(Duration::from_millis(50), None);
+        let task2 = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let task2_id = task2.get_id();
         service.register(task2).unwrap();
 
@@ -1539,13 +1506,13 @@ mod tests {
         // Wait for second task to expire
         // 等待第二个任务过期
         let mut rx = service.take_receiver().unwrap();
-        let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+        let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
             .expect("Should receive Some value");
 
         // Should only receive notification for second task (expired), not for first task (cancelled)
-        assert_eq!(received_task_id, task2_id, "Should only receive expired task notification");
+        assert_eq!(received_notification, TaskNotification::OneShot(task2_id), "Should only receive expired task notification");
 
         // Verify no other notifications (especially cancelled tasks should not have notifications)
         let no_more = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
@@ -1579,7 +1546,7 @@ mod tests {
         let mut task_ids = Vec::new();
         for _ in 0..3 {
             let counter_clone = Arc::clone(&counter);
-            let task = TimerService::create_task(
+            let task = TimerTask::new_oneshot(
                 Duration::from_millis(50),
                 Some(CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
@@ -1627,6 +1594,206 @@ mod tests {
         // 等待回调执行
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 3, "All callbacks should execute");
+    }
+
+    #[tokio::test]
+    async fn test_periodic_task_basic() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // Register a periodic task with 50ms interval (注册一个 50ms 间隔的周期性任务)
+        let counter_clone = Arc::clone(&counter);
+        let task = TimerTask::new_periodic(
+            Duration::from_millis(30),  // initial delay (初始延迟)
+            Duration::from_millis(50),  // interval (间隔)
+            Some(CallbackWrapper::new(move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            })),
+        );
+        let task_id = task.get_id();
+        service.register(task).unwrap();
+
+        // Receive periodic notifications (接收周期性通知)
+        let mut rx = service.take_receiver().unwrap();
+        let mut notification_count = 0;
+
+        // Receive first 3 notifications (接收前 3 个通知)
+        while notification_count < 3 {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Some(notification)) => {
+                    match notification {
+                        TaskNotification::Periodic(id) => {
+                            assert_eq!(id, task_id, "Should receive notification for correct task");
+                            notification_count += 1;
+                        }
+                        _ => panic!("Expected periodic notification"),
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => panic!("Timeout waiting for periodic notification"),
+            }
+        }
+
+        assert_eq!(notification_count, 3, "Should receive 3 periodic notifications");
+        
+        // Wait for callback to execute
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 3, "Callback should execute 3 times");
+
+        // Cancel the periodic task (取消周期性任务)
+        let cancelled = service.cancel_task(task_id);
+        assert!(cancelled, "Should be able to cancel periodic task");
+    }
+
+    #[tokio::test]
+    async fn test_periodic_task_cancel_no_notification() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+
+        // Register a periodic task (注册周期性任务)
+        let task = TimerTask::new_periodic(
+            Duration::from_millis(30),
+            Duration::from_millis(50),
+            None,
+        );
+        let task_id = task.get_id();
+        service.register(task).unwrap();
+
+        // Wait for first notification (等待第一个通知)
+        let mut rx = service.take_receiver().unwrap();
+        let notification = tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .expect("Should receive first notification")
+            .expect("Should receive Some value");
+        
+        assert_eq!(notification, TaskNotification::Periodic(task_id));
+
+        // Cancel the task (取消任务)
+        let cancelled = service.cancel_task(task_id);
+        assert!(cancelled, "Should be able to cancel task");
+
+        // Should not receive cancelled notification (不应该接收到取消通知)
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Some(_)) => panic!("Should not receive cancelled notification"),
+            Ok(None) | Err(_) => {} // Expected: timeout or channel closed
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mixed_oneshot_and_periodic_tasks() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+
+        // Register one-shot tasks (注册一次性任务)
+        let oneshot_task = TimerTask::new_oneshot(Duration::from_millis(50), None);
+        let oneshot_id = oneshot_task.get_id();
+        service.register(oneshot_task).unwrap();
+
+        // Register periodic task (注册周期性任务)
+        let periodic_task = TimerTask::new_periodic(
+            Duration::from_millis(30),
+            Duration::from_millis(40),
+            None,
+        );
+        let periodic_id = periodic_task.get_id();
+        service.register(periodic_task).unwrap();
+
+        // Receive notifications (接收通知)
+        let mut rx = service.take_receiver().unwrap();
+        let mut oneshot_received = false;
+        let mut periodic_count = 0;
+
+        // Receive notifications for a while (接收一段时间的通知)
+        let start = tokio::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(200) {
+            match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+                Ok(Some(notification)) => {
+                    match notification {
+                        TaskNotification::OneShot(id) => {
+                            assert_eq!(id, oneshot_id, "Should be one-shot task");
+                            oneshot_received = true;
+                        }
+                        TaskNotification::Periodic(id) => {
+                            assert_eq!(id, periodic_id, "Should be periodic task");
+                            periodic_count += 1;
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert!(oneshot_received, "Should receive one-shot notification");
+        assert!(periodic_count >= 2, "Should receive at least 2 periodic notifications");
+
+        // Cancel periodic task (取消周期性任务)
+        service.cancel_task(periodic_id);
+    }
+
+    #[tokio::test]
+    async fn test_periodic_task_batch_register() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // Register multiple periodic tasks in batch (批量注册多个周期性任务)
+        let tasks: Vec<_> = (0..3)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                TimerTask::new_periodic(
+                    Duration::from_millis(30),
+                    Duration::from_millis(50),
+                    Some(CallbackWrapper::new(move || {
+                        let counter = Arc::clone(&counter);
+                        async move {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        }
+                    })),
+                )
+            })
+            .collect();
+        
+        let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
+        service.register_batch(tasks).unwrap();
+
+        // Receive notifications (接收通知)
+        let mut rx = service.take_receiver().unwrap();
+        let mut notification_counts = std::collections::HashMap::new();
+
+        // Receive notifications for a while (接收一段时间的通知)
+        let start = tokio::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(180) {
+            match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+                Ok(Some(TaskNotification::Periodic(id))) => {
+                    *notification_counts.entry(id).or_insert(0) += 1;
+                }
+                Ok(Some(_)) => panic!("Expected periodic notification"),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Each task should receive at least 2 notifications (每个任务应该至少收到 2 个通知)
+        for task_id in &task_ids {
+            let count = notification_counts.get(task_id).copied().unwrap_or(0);
+            assert!(count >= 2, "Task {:?} should receive at least 2 notifications, got {}", task_id, count);
+        }
+
+        // Wait for callbacks to execute
+        // 等待回调执行
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let total_callbacks = counter.load(Ordering::SeqCst);
+        assert!(total_callbacks >= 6, "Should have at least 6 callback executions (3 tasks * 2), got {}", total_callbacks);
+
+        // Cancel all periodic tasks (取消所有周期性任务)
+        let cancelled = service.cancel_batch(&task_ids);
+        assert_eq!(cancelled, 3, "Should cancel all 3 tasks");
     }
 }
 

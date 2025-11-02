@@ -1,6 +1,6 @@
 use crate::{TaskCompletionReasonPeriodic, TimerTask};
 use crate::config::{BatchConfig, WheelConfig};
-use crate::task::{CompletionNotifier, TaskCompletionReasonOneShot, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskWithCompletionNotifier};
+use crate::task::{CompletionNotifier, TaskCompletionReasonOneShot, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ struct WheelLayer {
     /// Slot array, each slot stores a group of timer tasks
     /// 
     /// 槽数组，每个槽存储一组定时器任务
-    slots: Vec<Vec<TimerTaskWithCompletionNotifier>>,
+    slots: Vec<Vec<TimerTaskForWheel>>,
     
     /// Current time pointer (tick index)
     /// 
@@ -258,7 +258,7 @@ impl Wheel {
     /// - 使用位运算优化槽索引计算
     /// - 维护任务索引以支持 O(1) 查找和取消
     #[inline]
-    pub fn insert(&mut self, mut task: TimerTaskWithCompletionNotifier) -> TaskId {
+    pub fn insert(&mut self, task: TimerTaskWithCompletionNotifier) -> TaskId {
         let (level, ticks, rounds) = self.determine_layer(task.delay);
         
         // Use match to reduce branches, and use cached slot mask
@@ -271,11 +271,9 @@ impl Wheel {
         let total_ticks = current_tick + ticks;
         let slot_index = (total_ticks as usize) & slot_mask;
 
-        // Prepare task registration (set notifier and timing wheel parameters)
-        // 准备任务注册（设置通知器和时间轮参数）
-        task.prepare_for_registration(total_ticks, rounds);
+        let task = TimerTaskForWheel::new(task, total_ticks, rounds);
 
-        let task_id = task.id;
+        let task_id = task.get_id();
         
         // Get the index position of the task in Vec (the length before insertion is the index of the new task)
         // 获取任务在 Vec 中的索引位置（插入前的长度就是新任务的索引）
@@ -326,7 +324,7 @@ impl Wheel {
         
         let mut task_ids = Vec::with_capacity(task_count);
         
-        for mut task in tasks {
+        for task in tasks {
             let (level, ticks, rounds) = self.determine_layer(task.delay);
             
             // Use match to reduce branches, and use cached slot mask
@@ -339,11 +337,9 @@ impl Wheel {
             let total_ticks = current_tick + ticks;
             let slot_index = (total_ticks as usize) & slot_mask;
 
-            // Prepare task registration (set notifier and timing wheel parameters)
-            // 准备任务注册（设置通知器和时间轮参数）
-            task.prepare_for_registration(total_ticks, rounds);
+            let task = TimerTaskForWheel::new(task, total_ticks, rounds);
 
-            let task_id = task.id;
+            let task_id = task.get_id();
             
             // Get the index position of the task in Vec
             // 获取任务在 Vec 中的索引位置
@@ -397,7 +393,7 @@ impl Wheel {
         
         // Boundary check and ID verification
         // 边界检查和 ID 验证
-        if location.vec_index >= slot.len() || slot[location.vec_index].id != task_id {
+        if location.vec_index >= slot.len() || slot[location.vec_index].get_id() != task_id {
             // Index inconsistent, re-insert location to maintain data consistency
             // 索引不一致，重新插入位置以保持数据一致性
             self.task_index.insert(task_id, location);
@@ -407,8 +403,11 @@ impl Wheel {
         // 使用 swap_remove 移除任务，记录被交换的任务 ID
         let removed_task = slot.swap_remove(location.vec_index);
         
+        // Ensure the correct task was removed
+        // 确保移除了正确的任务
+        debug_assert_eq!(removed_task.get_id(), task_id);
 
-        match removed_task.task_type {
+        match removed_task.into_task_type() {
             TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
                 let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Cancelled);
             }
@@ -420,7 +419,7 @@ impl Wheel {
         // If a swap occurred (vec_index is not the last element)
         // 如果发生了交换（vec_index 不是最后一个元素）
         if location.vec_index < slot.len() {
-            let swapped_task_id = slot[location.vec_index].id;
+            let swapped_task_id = slot[location.vec_index].get_id();
             // Update swapped element's index in one go, avoid another HashMap query
             // 一次性更新被交换元素的索引，避免再次查询 HashMap
             if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
@@ -428,9 +427,6 @@ impl Wheel {
             }
         }
         
-        // Ensure the correct task was removed
-        // 确保移除了正确的任务
-        debug_assert_eq!(removed_task.id, task_id);
         true
     }
 
@@ -512,9 +508,9 @@ impl Wheel {
             let slot = &mut self.l0.slots[slot_index];
             
             for &(task_id, vec_index) in tasks.iter() {
-                if vec_index < slot.len() && slot[vec_index].id == task_id {
+                if vec_index < slot.len() && slot[vec_index].get_id() == task_id {
                     let removed_task = slot.swap_remove(vec_index);
-                    match removed_task.task_type {
+                    match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
                             let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Cancelled);
                         }
@@ -525,7 +521,7 @@ impl Wheel {
                     
                     
                     if vec_index < slot.len() {
-                        let swapped_task_id = slot[vec_index].id;
+                        let swapped_task_id = slot[vec_index].get_id();
                         if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
                             swapped_location.vec_index = vec_index;
                         }
@@ -549,11 +545,11 @@ impl Wheel {
             let slot = &mut self.l1.slots[slot_index];
             
             for &(task_id, vec_index) in tasks.iter() {
-                if vec_index < slot.len() && slot[vec_index].id == task_id {
+                if vec_index < slot.len() && slot[vec_index].get_id() == task_id {
             
                     let removed_task = slot.swap_remove(vec_index);
                     
-                    match removed_task.task_type {
+                    match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
                             let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Cancelled);
                         }
@@ -563,7 +559,7 @@ impl Wheel {
                     }
                     
                     if vec_index < slot.len() {
-                        let swapped_task_id = slot[vec_index].id;
+                        let swapped_task_id = slot[vec_index].get_id();
                         if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
                             swapped_location.vec_index = vec_index;
                         }
@@ -608,14 +604,12 @@ impl Wheel {
         
         // Create new task with the same TaskId
         // 创建新任务，使用相同的 TaskId
-        let task = TimerTaskWithCompletionNotifier {
+        let task = TimerTaskForWheel::new(TimerTaskWithCompletionNotifier {
             id: task_id,
             task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier: notifier },
             delay: interval,
-            deadline_tick: total_ticks,
-            rounds,
             callback,
-        };
+        }, total_ticks, rounds);
         
         // Get the index position of the task in Vec
         // 获取任务在 Vec 中的索引位置
@@ -674,11 +668,11 @@ impl Wheel {
             while i < l0_slot.len() {
                 // Check if this is a one-shot or periodic task
                 // 检查这是一次性任务还是周期性任务
-                let is_periodic = matches!(l0_slot[i].task_type, TaskTypeWithCompletionNotifier::Periodic { .. });
+                let is_periodic = matches!(l0_slot[i].get_task_type(), TaskTypeWithCompletionNotifier::Periodic { .. });
                 
                 // Remove from index
                 // 从索引中移除
-                let task_id = l0_slot[i].id;
+                let task_id = l0_slot[i].get_id();
                 self.task_index.remove(&task_id);
                 
                 // Use swap_remove to remove task
@@ -688,7 +682,7 @@ impl Wheel {
                 // Update swapped element's index
                 // 更新被交换元素的索引
                 if i < l0_slot.len() {
-                    let swapped_task_id = l0_slot[i].id;
+                    let swapped_task_id = l0_slot[i].get_id();
                     if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
                         swapped_location.vec_index = i;
                     }
@@ -766,18 +760,18 @@ impl Wheel {
                     // Still has rounds, decrease rounds and keep
                     // 还有轮数，减少轮数并保留
                     task.rounds -= 1;
-                    if let Some(location) = self.task_index.get_mut(&task.id) {
+                    if let Some(location) = self.task_index.get_mut(&task.get_id()) {
                         location.vec_index = i;
                     }
                     i += 1;
                 } else {
                     // rounds = 0, need to demote to L0
                     // rounds = 0，需要降级到 L0
-                    self.task_index.remove(&task.id);
+                    self.task_index.remove(&task.get_id());
                     let task_to_demote = l1_slot.swap_remove(i);
                     
                     if i < l1_slot.len() {
-                        let swapped_task_id = l1_slot[i].id;
+                        let swapped_task_id = l1_slot[i].get_id();
                         if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
                             swapped_location.vec_index = i;
                         }
@@ -802,7 +796,7 @@ impl Wheel {
     /// 将任务从 L1 降级到 L0
     /// 
     /// 重新计算并将 L1 过期任务插入到 L0 层
-    fn demote_tasks(&mut self, tasks: Vec<TimerTaskWithCompletionNotifier>) {
+    fn demote_tasks(&mut self, tasks: Vec<TimerTaskForWheel>) {
         for task in tasks {
             // Calculate the remaining delay of the task in L0 layer
             // The task's deadline_tick is based on L1 tick, needs to be converted to L0 tick
@@ -832,7 +826,7 @@ impl Wheel {
             let target_l0_tick = l0_current_tick + remaining_l0_ticks;
             let l0_slot_index = (target_l0_tick as usize) & self.l0.slot_mask;
             
-            let task_id = task.id;
+            let task_id = task.get_id();
             let vec_index = self.l0.slots[l0_slot_index].len();
             let location = TaskLocation::new(0, l0_slot_index, vec_index);
             
@@ -909,7 +903,7 @@ impl Wheel {
         
         // Verify task is still at expected position
         // 验证任务仍在预期位置
-        if old_location.vec_index >= slot.len() || slot[old_location.vec_index].id != task_id {
+        if old_location.vec_index >= slot.len() || slot[old_location.vec_index].get_id() != task_id {
             // Index inconsistent, re-insert and return failure
             // 索引不一致，重新插入并返回失败
             self.task_index.insert(task_id, old_location);
@@ -923,7 +917,7 @@ impl Wheel {
         // Update swapped element's index (if a swap occurred)
         // 更新被交换元素的索引（如果发生了交换）
         if old_location.vec_index < slot.len() {
-            let swapped_task_id = slot[old_location.vec_index].id;
+            let swapped_task_id = slot[old_location.vec_index].get_id();
             if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
                 swapped_location.vec_index = old_location.vec_index;
             }
@@ -931,9 +925,9 @@ impl Wheel {
         
         // Step 2: Update task's delay and callback
         // 步骤 2: 更新任务的延迟和回调
-        task.delay = new_delay;
+        task.update_delay(new_delay);
         if let Some(callback) = new_callback {
-            task.callback = Some(callback);
+            task.update_callback(callback);
         }
         
         // Step 3: Recalculate layer, slot, and rounds based on new delay

@@ -307,16 +307,6 @@ pub struct TimerTask {
     /// 用户指定的延迟时间（周期任务的初始延迟）
     pub(crate) delay: std::time::Duration,
     
-    /// Expiration time in ticks relative to the timing wheel
-    /// 
-    /// 相对于时间轮的过期时间（以 tick 为单位）
-    pub(crate) deadline_tick: u64,
-    
-    /// Round counter for tasks beyond the wheel's range
-    /// 
-    /// 超出时间轮范围的任务轮数计数器
-    pub(crate) rounds: u32,
-    
     /// Async callback function, optional
     /// 
     /// 异步回调函数，可选
@@ -345,8 +335,6 @@ impl TimerTask {
             id: TaskId::new(),
             task_type: TaskType::OneShot,
             delay,
-            deadline_tick: 0,
-            rounds: 0,
             callback,
         }
     }
@@ -378,8 +366,6 @@ impl TimerTask {
             id: TaskId::new(),
             task_type: TaskType::Periodic { interval },
             delay: initial_delay,
-            deadline_tick: 0,
-            rounds: 0,
             callback,
         }
     }
@@ -426,19 +412,6 @@ impl TimerTask {
         }
     }
 
-    /// Prepare for registration (called by timing wheel during registration)
-    /// 
-    /// 准备注册（在注册期间由时间轮调用）
-    #[allow(dead_code)]
-    pub(crate) fn prepare_for_registration(
-        &mut self,
-        deadline_tick: u64,
-        rounds: u32,
-    ) {
-        self.deadline_tick = deadline_tick;
-        self.rounds = rounds;
-    }
-
 }
 
 /// Timer Task
@@ -467,16 +440,6 @@ pub struct TimerTaskWithCompletionNotifier {
     /// 
     /// 用户指定的延迟时间（周期任务的初始延迟）
     pub(crate) delay: std::time::Duration,
-    
-    /// Expiration time in ticks relative to the timing wheel
-    /// 
-    /// 相对于时间轮的过期时间（以 tick 为单位）
-    pub(crate) deadline_tick: u64,
-    
-    /// Round counter for tasks beyond the wheel's range
-    /// 
-    /// 超出时间轮范围的任务轮数计数器
-    pub(crate) rounds: u32,
     
     /// Async callback function, optional
     /// 
@@ -508,8 +471,6 @@ impl TimerTaskWithCompletionNotifier {
                     id: task.id,
                     task_type: TaskTypeWithCompletionNotifier::OneShot { completion_notifier: notifier },
                     delay: task.delay,
-                    deadline_tick: task.deadline_tick,
-                    rounds: task.rounds,
                     callback: task.callback,
                 }, CompletionReceiver::OneShot(OneShotCompletionReceiver(completion_rx)))
             },
@@ -520,8 +481,6 @@ impl TimerTaskWithCompletionNotifier {
                     id: task.id,
                     task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier: notifier },
                     delay: task.delay,
-                    deadline_tick: task.deadline_tick,
-                    rounds: task.rounds,
                     callback: task.callback,
                 }, CompletionReceiver::Periodic(PeriodicCompletionReceiver(completion_rx)))
             },
@@ -544,16 +503,12 @@ impl TimerTaskWithCompletionNotifier {
                 id: self.id,
                 task_type: TaskType::OneShot,
                 delay: self.delay,
-                deadline_tick: self.deadline_tick,
-                rounds: self.rounds,
                 callback: self.callback,
             }, CompletionNotifier::OneShot(completion_notifier)),
             TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => (TimerTask {
                 id: self.id,
                 task_type: TaskType::Periodic { interval },
                 delay: self.delay,
-                deadline_tick: self.deadline_tick,
-                rounds: self.rounds,
                 callback: self.callback,
             }, CompletionNotifier::Periodic(completion_notifier)),
         }
@@ -586,6 +541,14 @@ impl TimerTaskWithCompletionNotifier {
         &self.task_type
     }
 
+    /// Into task type
+    /// 
+    /// 将任务类型转换为完成通知器
+    #[inline]
+    pub fn into_task_type(self) -> TaskTypeWithCompletionNotifier {
+        self.task_type
+    }
+
     /// Get the interval for periodic tasks
     /// 
     /// Returns `None` for one-shot tasks
@@ -600,18 +563,94 @@ impl TimerTaskWithCompletionNotifier {
             TaskTypeWithCompletionNotifier::OneShot { .. } => None,
         }
     }
+}
 
-    /// Prepare for registration (called by timing wheel during registration)
+pub(crate) struct TimerTaskForWheel {
+    pub(crate) task: TimerTaskWithCompletionNotifier,
+    pub(crate) deadline_tick: u64,
+    pub(crate) rounds: u32,
+}
+
+impl TimerTaskForWheel {
+    /// Create a new timer task for wheel
     /// 
-    /// 准备注册（在注册期间由时间轮调用）
-    #[allow(dead_code)]
-    pub(crate) fn prepare_for_registration(
-        &mut self,
-        deadline_tick: u64,
-        rounds: u32,
-    ) {
-        self.deadline_tick = deadline_tick;
-        self.rounds = rounds;
+    /// 创建一个新的定时器任务用于时间轮
+    /// 
+    /// # Parameters
+    /// - `task`: The timer task to create from
+    /// - `deadline_tick`: The deadline tick for the task
+    /// - `rounds`: The rounds for the task
+    /// 
+    /// # Returns
+    /// A new timer task for wheel
+    /// 
+    /// 返回一个新的定时器任务用于时间轮
+    /// 
+    #[inline]
+    pub(crate) fn new(task: TimerTaskWithCompletionNotifier, deadline_tick: u64, rounds: u32) -> Self {
+        Self { task, deadline_tick, rounds }
+    }
+
+    /// Get task ID
+    /// 
+    /// 获取任务 ID
+    #[inline]
+    pub fn get_id(&self) -> TaskId {
+        self.task.get_id()
+    }
+
+    /// Get task type
+    /// 
+    /// 获取任务类型
+    #[inline]
+    pub fn get_task_type(&self) -> &TaskTypeWithCompletionNotifier {
+        self.task.get_task_type()
+    }
+
+    /// Into task type
+    /// 
+    /// 将任务类型转换为完成通知器
+    #[inline]
+    pub fn into_task_type(self) -> TaskTypeWithCompletionNotifier {
+        self.task.into_task_type()
+    }
+
+    /// Split the timer task into a timer task and a completion notifier
+    /// 
+    /// 将定时器任务拆分为一个定时器任务和一个完成通知器
+    /// 
+    /// # Returns
+    /// A tuple containing the timer task and the completion notifier
+    /// 
+    /// 返回一个包含定时器任务和完成通知器的元组
+    /// 
+    #[inline]
+    pub fn split(self) -> (TimerTask, CompletionNotifier) {
+        self.task.split()
+    }
+
+    /// Update the delay of the timer task
+    /// 
+    /// 更新定时器任务的延迟
+    /// 
+    /// # Parameters
+    /// - `delay`: The new delay for the task
+    /// 
+    #[inline]
+    pub fn update_delay(&mut self, delay: std::time::Duration) {
+        self.task.delay = delay
+    }
+
+    /// Update the callback of the timer task
+    /// 
+    /// 更新定时器任务的回调
+    /// 
+    /// # Parameters
+    /// - `callback`: The new callback for the task
+    /// 
+    #[inline]
+    pub fn update_callback(&mut self, callback: CallbackWrapper) {
+        self.task.callback = Some(callback)
     }
 }
 

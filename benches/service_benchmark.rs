@@ -2,7 +2,6 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-use std::hint::black_box;
 use kestrel_timer::{CallbackWrapper, TimerWheel, TimerTask};
 use kestrel_timer::config::ServiceConfig;
 
@@ -27,17 +26,13 @@ fn bench_schedule_single(c: &mut Criterion) {
                 // 测量阶段：只测量 create_task + register 的性能
                 let start = std::time::Instant::now();
                 
-                let task = black_box(
-                    TimerTask::new_oneshot(
-                        Duration::from_secs(10),
-                        None
-                    )
+                let task = TimerTask::new_oneshot(
+                    Duration::from_secs(10),
+                    None
                 );
-                let task_id = task.get_id();
                 service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
-                black_box(task_id);
             }
             
             total_duration
@@ -73,13 +68,9 @@ fn bench_schedule_batch(c: &mut Criterion) {
                     // 测量阶段：只测量 create_batch + register_batch 的性能
                     let start = std::time::Instant::now();
                     
-                    let batch = black_box(
-                        service.register_batch(tasks).unwrap()
-                    );
-                    let task_ids: Vec<_> = batch.task_ids().to_vec();
+                    let _batch = service.register_batch(tasks).unwrap();
                     
                     total_duration += start.elapsed();
-                    black_box(task_ids);
                 }
                 
                 total_duration
@@ -118,12 +109,9 @@ fn bench_cancel_single(c: &mut Criterion) {
                 // 测量阶段：只测量 cancel_task 的性能
                 let start = std::time::Instant::now();
                 
-                let result = black_box(
-                    service.cancel_task(task_id)
-                );
+                let _result = service.cancel_task(task_id);
                 
                 total_duration += start.elapsed();
-                black_box(result);
             }
             
             total_duration
@@ -161,12 +149,9 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     // 测量阶段：只测量 cancel_batch 的性能
                     let start = std::time::Instant::now();
                     
-                    let cancelled = black_box(
-                        service.cancel_batch(&task_ids)
-                    );
+                    let _cancelled = service.cancel_batch(&task_ids);
                     
                     total_duration += start.elapsed();
-                    black_box(cancelled);
                 }
                 
                 total_duration
@@ -215,10 +200,9 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                     
                     // Wait for all scheduling to complete
                     // 等待所有调度完成
-                    let results = futures::future::join_all(handles).await;
+                    let _results = futures::future::join_all(handles).await;
                     
                     total_duration += start.elapsed();
-                    black_box(results);
                 }
                 
                 total_duration
@@ -256,12 +240,9 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 // 测量阶段：只测量 cancel_batch 的性能
                 let start = std::time::Instant::now();
                 
-                let cancelled = black_box(
-                    service.cancel_batch(&task_ids)
-                );
+                let _cancelled = service.cancel_batch(&task_ids);
                 
                 total_duration += start.elapsed();
-                black_box(cancelled);
             }
             
             total_duration
@@ -307,7 +288,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
                     let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
                     let cancelled = service.cancel_batch(&to_cancel);
                     
-                    black_box(cancelled);
+                    let _cancelled = cancelled;
                 }
                 
                 total_duration += start.elapsed();
@@ -341,14 +322,10 @@ fn bench_schedule_notify(c: &mut Criterion) {
                 // 测量阶段：只测量仅通知定时器的创建和注册性能
                 let start = std::time::Instant::now();
                 
-                let task = black_box(
-                    TimerTask::new_oneshot(Duration::from_secs(10), None)
-                );
-                let task_id = task.get_id();
+                let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
                 service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
-                black_box(task_id);
             }
             
             total_duration
@@ -382,7 +359,6 @@ fn bench_schedule_notify(c: &mut Criterion) {
                     service.register_batch(tasks).unwrap();
                     
                     total_duration += start.elapsed();
-                    black_box(task_ids);
                 }
                 
                 total_duration
@@ -416,22 +392,16 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let counter_clone = Arc::clone(&counter);
-                let task = black_box(
-                    TimerTask::new_oneshot(
-                        Duration::from_secs(10),
-                        Some(CallbackWrapper::new(move || {
-                            let counter = Arc::clone(&counter_clone);
-                            async move {
-                                counter.fetch_add(1, Ordering::SeqCst);
-                            }
-                        }))
-                    )
-                );
-                let task_id = task.get_id();
+                let callback = CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                });
+                let task = TimerTask::new_oneshot(Duration::from_secs(10), Some(callback));
                 service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
-                black_box(task_id);
             }
             
             total_duration
@@ -470,12 +440,9 @@ fn bench_postpone_single(c: &mut Criterion) {
                 // 测量阶段：只测量 postpone_task 的性能
                 let start = std::time::Instant::now();
                 
-                let result = black_box(
-                    service.postpone(task_id, Duration::from_millis(200), None)
-                );
+                let _result = service.postpone(task_id, Duration::from_millis(200), None);
                 
                 total_duration += start.elapsed();
-                black_box(result);
             }
             
             total_duration
@@ -520,12 +487,8 @@ fn bench_postpone_batch(c: &mut Criterion) {
                     // 测量阶段：只测量 postpone_batch 的性能
                     let start = std::time::Instant::now();
                     
-                    let postponed = black_box(
-                        service.postpone_batch(postpone_updates)
-                    );
-                    
+                    let _postponed = service.postpone_batch(postpone_updates);
                     total_duration += start.elapsed();
-                    black_box(postponed);
                 }
                 
                 total_duration
@@ -566,21 +529,19 @@ fn bench_postpone_with_callback(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let counter_clone = Arc::clone(&counter);
-                let result = black_box(
-                    service.postpone(
-                        task_id,
+                let callback = CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                });
+                let _result = service.postpone(
+                    task_id,
                         Duration::from_millis(200),
-                        Some(CallbackWrapper::new(move || {
-                            let counter = Arc::clone(&counter_clone);
-                            async move {
-                                counter.fetch_add(1, Ordering::SeqCst);
-                            }
-                        }))
-                    )
+                        Some(callback)
                 );
                 
                 total_duration += start.elapsed();
-                black_box(result);
             }
             
             total_duration
@@ -634,12 +595,8 @@ fn bench_postpone_batch_with_callbacks(c: &mut Criterion) {
                     // 测量阶段：只测量 postpone_batch_with_callbacks 的性能
                     let start = std::time::Instant::now();
                     
-                    let postponed = black_box(
-                        service.postpone_batch_with_callbacks(postpone_updates)
-                    );
-                    
+                    let _postponed = service.postpone_batch_with_callbacks(postpone_updates);
                     total_duration += start.elapsed();
-                    black_box(postponed);
                 }
                 
                 total_duration
@@ -687,16 +644,15 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
                     let to_postpone: Vec<_> = task_ids.iter().take(5)
                         .map(|&id| (id, Duration::from_secs(20)))
                         .collect();
-                    let postponed = service.postpone_batch(to_postpone);
+                    let _postponed = service.postpone_batch(to_postpone);
                     
                     // Cancel middle 5 tasks
                     // 取消中间5个任务
                     let to_cancel: Vec<_> = task_ids.iter().skip(5).take(5).copied().collect();
-                    let cancelled = service.cancel_batch(&to_cancel);
+                    let _cancelled = service.cancel_batch(&to_cancel);
                     
                     // Measurement stage: only measure mixed operation performance
                     // 测量阶段：只测量混合操作的性能
-                    black_box((postponed, cancelled));
                 }
                 
                 total_duration += start.elapsed();

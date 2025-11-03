@@ -1,5 +1,4 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::hint::black_box;
 use std::time::Duration;
 use kestrel_timer::{TimerWheel, TimerTask};
 
@@ -24,9 +23,7 @@ fn bench_wheel_insert(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
-                let _handle = black_box(
-                    timer.register(task)
-                );
+                let _handle = timer.register(task);
                 
                 total_duration += start.elapsed();
             }
@@ -63,9 +60,7 @@ fn bench_wheel_insert_batch(c: &mut Criterion) {
                     // 测量阶段：只测量批量插入操作的性能
                     let start = std::time::Instant::now();
                     
-                    let _batch = black_box(
-                        timer.register_batch(tasks)
-                    );
+                    let _batch = timer.register_batch(tasks);
                     
                     total_duration += start.elapsed();
                 }
@@ -101,12 +96,9 @@ fn bench_wheel_cancel(c: &mut Criterion) {
                 // 测量阶段：只测量取消操作的性能
                 let start = std::time::Instant::now();
                 
-                let result = black_box(
-                    timer.cancel(task_id)
-                );
+                let _result = timer.cancel(task_id);
                 
                 total_duration += start.elapsed();
-                black_box(result);
             }
             
             total_duration
@@ -143,12 +135,9 @@ fn bench_wheel_cancel_batch(c: &mut Criterion) {
                     // 测量阶段：只测量批量取消操作的性能
                     let start = std::time::Instant::now();
                     
-                    let cancelled = black_box(
-                        timer.cancel_batch(&task_ids)
-                    );
+                    let _cancelled = timer.cancel_batch(&task_ids);
                     
                     total_duration += start.elapsed();
-                    black_box(cancelled);
                 }
                 
                 total_duration
@@ -186,12 +175,9 @@ fn bench_wheel_cancel_batch_same_slot(c: &mut Criterion) {
                     // 测量阶段：只测量批量取消操作的性能
                     let start = std::time::Instant::now();
                     
-                    let cancelled = black_box(
-                        timer.cancel_batch(&task_ids)
-                    );
+                    let _cancelled = timer.cancel_batch(&task_ids);
                     
                     total_duration += start.elapsed();
-                    black_box(cancelled);
                 }
                 
                 total_duration
@@ -399,12 +385,9 @@ fn bench_wheel_cancel_small_batch(c: &mut Criterion) {
                     // 测量阶段：只测量批量取消操作的性能
                     let start = std::time::Instant::now();
                     
-                    let cancelled = black_box(
-                        timer.cancel_batch(&task_ids)
-                    );
+                    let _cancelled = timer.cancel_batch(&task_ids);
                     
                     total_duration += start.elapsed();
-                    black_box(cancelled);
                 }
                 
                 total_duration
@@ -443,12 +426,9 @@ fn bench_wheel_batch_multiple_slots(c: &mut Criterion) {
                     // 测量阶段：批量取消
                     let start = std::time::Instant::now();
                     
-                    let cancelled = black_box(
-                        timer.cancel_batch(&task_ids)
-                    );
+                    let _cancelled = timer.cancel_batch(&task_ids);
                     
                     total_duration += start.elapsed();
-                    black_box(cancelled);
                 }
                 
                 total_duration
@@ -482,12 +462,9 @@ fn bench_wheel_postpone(c: &mut Criterion) {
                 // 测量阶段：只测量推迟操作的性能
                 let start = std::time::Instant::now();
                 
-                let result = black_box(
-                    timer.postpone(task_id, Duration::from_millis(200), None)
-                );
+                let _result = timer.postpone(task_id, Duration::from_millis(200), None);
                 
                 total_duration += start.elapsed();
-                black_box(result);
             }
             
             total_duration
@@ -530,12 +507,9 @@ fn bench_wheel_postpone_batch(c: &mut Criterion) {
                     // 测量阶段：只测量批量推迟操作的性能
                     let start = std::time::Instant::now();
                     
-                    let postponed = black_box(
-                        timer.postpone_batch(postpone_updates)
-                    );
+                    let _postponed = timer.postpone_batch(postpone_updates);
                     
                     total_duration += start.elapsed();
-                    black_box(postponed);
                 }
                 
                 total_duration
@@ -569,16 +543,13 @@ fn bench_wheel_postpone_with_callback(c: &mut Criterion) {
                 // 测量阶段：只测量推迟并替换回调操作的性能
                 let start = std::time::Instant::now();
                 
-                let result = black_box(
-                    timer.postpone(
-                        task_id,
-                        Duration::from_millis(200),
-                        None
-                    )
+                let _result = timer.postpone(
+                    task_id,
+                    Duration::from_millis(200),
+                    None
                 );
                 
                 total_duration += start.elapsed();
-                black_box(result);
             }
             
             total_duration
@@ -621,12 +592,8 @@ fn bench_wheel_postpone_batch_with_callbacks(c: &mut Criterion) {
                     // 测量阶段：只测量批量推迟并替换回调操作的性能
                     let start = std::time::Instant::now();
                     
-                    let postponed = black_box(
-                        timer.postpone_batch(postpone_updates)
-                    );
-                    
+                    let _postponed = timer.postpone_batch(postpone_updates);
                     total_duration += start.elapsed();
-                    black_box(postponed);
                 }
                 
                 total_duration
@@ -671,12 +638,9 @@ fn bench_wheel_postpone_batch_same_slot(c: &mut Criterion) {
                     // 测量阶段：只测量批量推迟操作的性能
                     let start = std::time::Instant::now();
                     
-                    let postponed = black_box(
-                        timer.postpone_batch(postpone_updates)
-                    );
+                    let _postponed = timer.postpone_batch(postpone_updates);
                     
                     total_duration += start.elapsed();
-                    black_box(postponed);
                 }
                 
                 total_duration

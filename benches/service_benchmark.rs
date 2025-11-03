@@ -27,7 +27,7 @@ fn bench_schedule_single(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let task = TimerTask::new_oneshot(
-                    Duration::from_secs(10),
+                    Duration::from_millis(100),
                     None
                 );
                 service.register(task).unwrap();
@@ -61,7 +61,7 @@ fn bench_schedule_batch(c: &mut Criterion) {
                     let service = timer.create_service(ServiceConfig::default());
                     
                     let tasks: Vec<TimerTask> = (0..size)
-                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
                     
                     // Measurement stage: only measure create_batch + register_batch performance
@@ -99,7 +99,7 @@ fn bench_cancel_single(c: &mut Criterion) {
                 let service = timer.create_service(ServiceConfig::default());
                 
                 let task = TimerTask::new_oneshot(
-                    Duration::from_secs(10),
+                    Duration::from_millis(100),
                     None
                 );
                 let task_id = task.get_id();
@@ -140,7 +140,7 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     let service = timer.create_service(ServiceConfig::default());
                     
                     let tasks: Vec<TimerTask> = (0..size)
-                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
                     let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
                     service.register_batch(tasks).unwrap();
@@ -191,7 +191,7 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                         let service_clone = Arc::clone(&service);
                         let fut = async move {
                             let tasks: Vec<TimerTask> = (0..10)
-                                .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
+                                .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                                 .collect();
                             service_clone.register_batch(tasks).unwrap();
                         };
@@ -231,7 +231,7 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 let service = timer.create_service(ServiceConfig::default());
                 
                 let tasks: Vec<TimerTask> = (0..1000)
-                    .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
+                    .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                     .collect();
                 let batch = service.register_batch(tasks).unwrap();
                 let task_ids: Vec<_> = batch.task_ids().to_vec();
@@ -278,7 +278,7 @@ fn bench_mixed_operations(c: &mut Criterion) {
                 for _ in 0..50 {
                     // 调度10个任务
                     let tasks: Vec<TimerTask> = (0..10)
-                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
                     let batch = service.register_batch(tasks).unwrap();
                     let task_ids: Vec<_> = batch.task_ids().to_vec();
@@ -322,7 +322,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                 // 测量阶段：只测量仅通知定时器的创建和注册性能
                 let start = std::time::Instant::now();
                 
-                let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
+                let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
                 service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
@@ -352,7 +352,7 @@ fn bench_schedule_notify(c: &mut Criterion) {
                     let mut tasks = Vec::new();
                     let mut task_ids = Vec::new();
                     for _ in 0..size {
-                        let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
+                        let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
                         task_ids.push(task.get_id());
                         tasks.push(task);
                     }
@@ -398,7 +398,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                 });
-                let task = TimerTask::new_oneshot(Duration::from_secs(10), Some(callback));
+                let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
                 service.register(task).unwrap();
                 
                 total_duration += start.elapsed();
@@ -634,7 +634,7 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
                     // Schedule 15 tasks
                     // 调度15个任务
                     let tasks: Vec<TimerTask> = (0..15)
-                        .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
                     let batch = service.register_batch(tasks).unwrap();
                     let task_ids: Vec<_> = batch.task_ids().to_vec();
@@ -687,7 +687,7 @@ fn bench_periodic_register_comparison(c: &mut Criterion) {
                     
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_periodic(
-                            Duration::from_secs(10),
+                            Duration::from_millis(100),
                             Duration::from_secs(1),
                             None,
                             None
@@ -763,7 +763,7 @@ fn bench_periodic_cancel_comparison(c: &mut Criterion) {
                     
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_periodic(
-                            Duration::from_secs(10),
+                            Duration::from_millis(100),
                             Duration::from_secs(1),
                             None,
                             None
@@ -840,7 +840,7 @@ fn bench_periodic_single_register_comparison(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 
                 let task = TimerTask::new_periodic(
-                    Duration::from_secs(10),
+                    Duration::from_millis(100),
                     Duration::from_secs(1),
                     None,
                     None
@@ -903,7 +903,7 @@ fn bench_periodic_with_callback_comparison(c: &mut Criterion) {
                         .map(|_| {
                             let counter = Arc::clone(&counter);
                             TimerTask::new_periodic(
-                                Duration::from_secs(10),
+                                Duration::from_millis(100),
                                 Duration::from_secs(1),
                                 Some(CallbackWrapper::new(move || {
                                     let counter = Arc::clone(&counter);

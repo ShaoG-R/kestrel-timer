@@ -1,9 +1,9 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicPtr, Ordering};
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::sync::Notify;
+use std::task::{Context, Poll, Waker};
+use std::ptr;
 
 use crate::task::{ONESHOT_PENDING, ONESHOT_CALLED, ONESHOT_CANCELLED, TaskCompletion};
 
@@ -138,49 +138,117 @@ pub fn channel<T: State>() -> (Sender<T>, Receiver<T>) {
 
 /// Inner state for one-shot completion notification
 /// 
-/// Combines Notify and AtomicU8 into single allocation for better performance
+/// Uses AtomicPtr<Waker> for minimal overhead:
+/// - Creation: Just initialize null pointer (no allocation)
+/// - Send: Atomic swap and wake (minimal operations)
+/// - Recv: Atomic store waker pointer (no intermediate futures)
+/// 
+/// Much lighter than both Notify (has waitlist) and AtomicWaker (has state machine)
 /// 
 /// 一次性完成通知的内部状态
 /// 
-/// 将 Notify 和 AtomicU8 合并到单个分配中以提高性能
+/// 使用 AtomicPtr<Waker> 实现最小开销：
+/// - 创建：仅初始化空指针（无分配）
+/// - 发送：原子交换并唤醒（最少操作）
+/// - 接收：原子存储 waker 指针（无中间 future）
+/// 
+/// 比 Notify（有等待列表）和 AtomicWaker（有状态机）都更轻量
 pub(crate) struct Inner<T: State> {
-    pub(crate) notify: Notify,
-    pub(crate) state: AtomicU8,
-    pub(crate) _marker: std::marker::PhantomData<T>,
+    waker: AtomicPtr<Waker>,
+    state: AtomicU8,
+    _marker: std::marker::PhantomData<T>,
 }
 
 impl<T: State> Inner<T> {
     /// Create a new oneshot inner state
     /// 
+    /// Extremely fast: just initializes null pointer and pending state
+    /// 
     /// 创建一个新的 oneshot 内部状态
+    /// 
+    /// 极快：仅初始化空指针和待处理状态
     #[inline]
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
-            notify: Notify::new(),
+            waker: AtomicPtr::new(ptr::null_mut()),
             state: AtomicU8::new(T::pending_value()),
             _marker: std::marker::PhantomData,
         })
     }
     
-    /// Send a completion notification (set state and notify)
+    /// Send a completion notification (set state and wake)
     /// 
-    /// 发送完成通知（设置状态并通知）
+    /// Optimized: atomically swap waker and wake if exists
+    /// 
+    /// 发送完成通知（设置状态并唤醒）
+    /// 
+    /// 优化：原子交换 waker 并在存在时唤醒
     #[inline]
     pub(crate) fn send(&self, state: T) {
+        // Store state first with Release ordering
         self.state.store(state.to_u8(), Ordering::Release);
-        self.notify.notify_one();
+        
+        // Atomically take the waker (if any) and wake it
+        let waker_ptr = self.waker.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !waker_ptr.is_null() {
+            // SAFETY: We know this pointer was created by Box::into_raw in register_waker
+            // and we're the only one who can swap it out
+            unsafe {
+                let waker = Box::from_raw(waker_ptr);
+                waker.wake();
+            }
+        }
+    }
+    
+    /// Register a waker to be notified on completion
+    /// 
+    /// 注册一个 waker 以在完成时收到通知
+    #[inline]
+    fn register_waker(&self, waker: &Waker) {
+        // Create a boxed waker and convert to raw pointer
+        let new_waker = Box::into_raw(Box::new(waker.clone()));
+        
+        // Atomically swap the old waker with the new one
+        let old_waker = self.waker.swap(new_waker, Ordering::AcqRel);
+        
+        // Drop the old waker if it exists
+        if !old_waker.is_null() {
+            // SAFETY: This pointer was created by Box::into_raw
+            unsafe {
+                let _ = Box::from_raw(old_waker);
+            }
+        }
+    }
+}
+
+impl<T: State> Drop for Inner<T> {
+    fn drop(&mut self) {
+        // Clean up any remaining waker
+        let waker_ptr = self.waker.load(Ordering::Acquire);
+        if !waker_ptr.is_null() {
+            // SAFETY: This pointer was created by Box::into_raw and we're dropping
+            unsafe {
+                let _ = Box::from_raw(waker_ptr);
+            }
+        }
     }
 }
 
 /// Completion notifier for one-shot tasks
 /// 
-/// Uses Notify + AtomicU8 for zero-allocation, low-latency notification
-/// Optimized to use single Arc allocation
+/// Optimized implementation using AtomicPtr<Waker> + AtomicU8:
+/// - Faster creation than Notify (no waitlist allocation) or AtomicWaker (no state machine)
+/// - Lower memory footprint (just two atomic fields)
+/// - Direct waker management without intermediate futures
+/// - Single Arc allocation for both sender and receiver
 /// 
 /// 一次性任务完成通知器
 /// 
-/// 使用 Notify + AtomicU8 实现零分配、低延迟通知
-/// 优化为使用单个 Arc 分配
+/// 使用 AtomicPtr<Waker> + AtomicU8 的优化实现：
+/// - 比 Notify（无等待列表分配）或 AtomicWaker（无状态机）创建更快
+/// - 更小的内存占用（仅两个原子字段）
+/// - 直接管理 waker，无中间 future
+/// - 发送器和接收器共享单个 Arc 分配
 pub struct Sender<T: State = TaskCompletion> {
     inner: Arc<Inner<T>>,
 }
@@ -203,7 +271,6 @@ impl<T: State> Sender<T> {
         };
         let receiver = Receiver {
             inner,
-            notified: None,
         };
         
         (notifier, receiver)
@@ -285,8 +352,7 @@ impl<T: State> Sender<T> {
 /// }
 /// ```
 pub struct Receiver<T: State = TaskCompletion> {
-    pub(crate) inner: Arc<Inner<T>>,
-    pub(crate) notified: Option<tokio::sync::futures::Notified<'static>>,
+    inner: Arc<Inner<T>>,
 }
 
 // Receiver is Unpin because all its fields are Unpin
@@ -316,9 +382,19 @@ impl<T: State> Receiver<T> {
 /// 
 /// This allows both `receiver.await` and `(&mut receiver).await` to work
 /// 
+/// Optimized implementation:
+/// - Fast path: Immediate return if already completed (no allocation)
+/// - Slow path: Direct waker registration (simpler than Notify's waitlist)
+/// - No intermediate future state needed
+/// 
 /// 为 Receiver 直接实现 Future
 /// 
 /// 这允许 `receiver.await` 和 `(&mut receiver).await` 都能工作
+/// 
+/// 优化实现：
+/// - 快速路径：如已完成则立即返回（无分配）
+/// - 慢速路径：直接注册 waker（比 Notify 的等待列表更简单）
+/// - 无需中间 future 状态
 impl<T: State> Future for Receiver<T> {
     type Output = T;
     
@@ -334,18 +410,12 @@ impl<T: State> Future for Receiver<T> {
             }
         }
         
-        // Slow path: setup notification if needed
-        if this.notified.is_none() {
-            // SAFETY: We extend the lifetime to 'static because we know the Arc<Inner>
-            // will live as long as this future. The notified future is always dropped
-            // before or at the same time as the Receiver.
-            let notify_ref: &'static Notify = unsafe {
-                std::mem::transmute::<&Notify, &'static Notify>(&this.inner.notify)
-            };
-            this.notified = Some(notify_ref.notified());
-        }
+        // Slow path: register waker for notification
+        // This is much lighter than Notify's waitlist management
+        this.inner.register_waker(cx.waker());
         
-        // Check again before polling notified to avoid race
+        // Check again after registering waker to avoid race condition
+        // The sender might have completed between our first check and waker registration
         let current = this.inner.state.load(Ordering::Acquire);
         if let Some(state) = T::from_u8(current) {
             if current != T::pending_value() {
@@ -353,30 +423,7 @@ impl<T: State> Future for Receiver<T> {
             }
         }
         
-        // Poll the notified future
-        if let Some(notified) = this.notified.as_mut() {
-            // Pin the notified future
-            let notified_pin = unsafe { Pin::new_unchecked(notified) };
-            match notified_pin.poll(cx) {
-                Poll::Ready(_) => {
-                    // After notification, check state
-                    let current = this.inner.state.load(Ordering::Acquire);
-                    if let Some(state) = T::from_u8(current) {
-                        if current != T::pending_value() {
-                            return Poll::Ready(state);
-                        }
-                    }
-                    // Spurious wakeup, need to create a new notified
-                    this.notified = None;
-                    // Re-poll ourselves to continue
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Poll::Pending => Poll::Pending,
-            }
-        } else {
-            Poll::Pending
-        }
+        Poll::Pending
     }
 }
 

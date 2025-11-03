@@ -48,7 +48,7 @@
 //!     let (rx, _handle) = handle.into_parts();
 //!     match rx {
 //!         CompletionReceiver::OneShot(receiver) => {
-//!             receiver.0.await?;
+//!             receiver.wait().await;
 //!         },
 //!         _ => {}
 //!     }
@@ -115,6 +115,11 @@ pub mod task;
 pub mod wheel;
 pub mod timer;
 mod service;
+pub mod utils {
+    pub mod oneshot;
+    pub mod spsc;
+    pub mod ringbuf;
+}
 
 // Re-export public API
 pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletion};
@@ -229,7 +234,7 @@ mod tests {
         let (rx, _handle) = handle.into_parts();
         match rx {
             task::CompletionReceiver::OneShot(receiver) => {
-                receiver.0.await.expect("Should receive completion notification");
+                receiver.wait().await;
             },
             _ => panic!("Expected OneShot completion receiver"),
         }
@@ -250,7 +255,7 @@ mod tests {
         let (rx, _handle) = handle.into_parts();
         match rx {
             task::CompletionReceiver::OneShot(receiver) => {
-                receiver.0.await.expect("Should receive completion notification");
+                receiver.wait().await;
             },
             _ => panic!("Expected OneShot completion receiver"),
         }
@@ -283,7 +288,7 @@ mod tests {
         for rx in receivers {
             match rx {
                 task::CompletionReceiver::OneShot(receiver) => {
-                    receiver.0.await.expect("Should receive completion notification");
+                    receiver.wait().await;
                 },
                 _ => panic!("Expected OneShot completion receiver"),
             }
@@ -307,7 +312,7 @@ mod tests {
         let (rx, _handle) = handle.into_parts();
         let result = match rx {
             task::CompletionReceiver::OneShot(receiver) => {
-                receiver.0.await.expect("Should receive completion notification")
+                receiver.wait().await
             },
             _ => panic!("Expected OneShot completion receiver"),
         };
@@ -329,7 +334,7 @@ mod tests {
         let (rx, _handle) = handle.into_parts();
         let result = match rx {
             task::CompletionReceiver::OneShot(receiver) => {
-                receiver.0.await.expect("Should receive completion notification")
+                receiver.wait().await
             },
             _ => panic!("Expected OneShot completion receiver"),
         };
@@ -356,7 +361,7 @@ mod tests {
         for rx in receivers.drain(0..3) {
             let result = match rx {
                 task::CompletionReceiver::OneShot(receiver) => {
-                    receiver.0.await.expect("Should receive completion notification")
+                    receiver.wait().await
                 },
                 _ => panic!("Expected OneShot completion receiver"),
             };
@@ -368,7 +373,7 @@ mod tests {
         for rx in receivers {
             let result = match rx {
                 task::CompletionReceiver::OneShot(receiver) => {
-                    receiver.0.await.expect("Should receive completion notification")
+                    receiver.wait().await
                 },
                 _ => panic!("Expected OneShot completion receiver"),
             };

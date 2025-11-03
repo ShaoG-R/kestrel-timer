@@ -414,9 +414,13 @@ impl Wheel {
 
         match removed_task.into_task_type() {
             TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                let _ = completion_notifier.0.send(TaskCompletion::Cancelled);
+                // Use Notify + AtomicU8 for zero-allocation notification
+                // 使用 Notify + AtomicU8 实现零分配通知
+                completion_notifier.notify(crate::task::TaskCompletion::Cancelled);
             }
             TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
+                // Use flume for high-performance periodic notification
+                // 使用 flume 实现高性能周期通知
                 let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
             }
         }
@@ -517,9 +521,13 @@ impl Wheel {
                     let removed_task = slot.swap_remove(vec_index);
                     match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                            let _ = completion_notifier.0.send(TaskCompletion::Cancelled);
+                            // Use Notify + AtomicU8 for zero-allocation notification
+                            // 使用 Notify + AtomicU8 实现零分配通知
+                            completion_notifier.notify(crate::task::TaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
+                            // Use flume for high-performance periodic notification
+                            // 使用 flume 实现高性能周期通知
                             let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
                         }
                     }
@@ -556,9 +564,13 @@ impl Wheel {
                     
                     match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                            let _ = completion_notifier.0.send(TaskCompletion::Cancelled);
+                            // Use Notify + AtomicU8 for zero-allocation notification
+                            // 使用 Notify + AtomicU8 实现零分配通知
+                            completion_notifier.notify(crate::task::TaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
+                            // Use flume for high-performance periodic notification
+                            // 使用 flume 实现高性能周期通知
                             let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
                         }
                     }
@@ -688,6 +700,8 @@ impl Wheel {
 
                 match task.task_type {
                     TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => {
+                        // Use flume for high-performance periodic notification
+                        // 使用 flume 实现高性能周期通知
                         let _ = completion_notifier.0.try_send(TaskCompletion::Called);
                         
                         periodic_tasks_to_reinsert.push(TimerTaskWithCompletionNotifier {
@@ -698,7 +712,9 @@ impl Wheel {
                         });
                     }
                     TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                        let _ = completion_notifier.0.send(TaskCompletion::Called);
+                        // Use Notify + AtomicU8 for zero-allocation notification
+                        // 使用 Notify + AtomicU8 实现零分配通知
+                        completion_notifier.notify(crate::task::TaskCompletion::Called);
                     }
                 }
 

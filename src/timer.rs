@@ -233,7 +233,7 @@ impl TimerWheel {
     ///     let (rx, _handle) = handle.into_parts();
     ///     match rx {
     ///         CompletionReceiver::OneShot(receiver) => {
-    ///             receiver.0.await.ok();
+    ///             receiver.wait().await;
     ///         },
     ///         _ => {}
     ///     }
@@ -824,7 +824,7 @@ mod tests {
             crate::task::CompletionReceiver::OneShot(receiver) => {
                 tokio::time::timeout(
                     Duration::from_millis(200),
-                    receiver.0
+                    receiver.wait()
                 ).await
             },
             _ => panic!("Expected OneShot completion receiver"),
@@ -879,7 +879,7 @@ mod tests {
             crate::task::CompletionReceiver::OneShot(receiver) => {
                 tokio::time::timeout(
                     Duration::from_millis(200),
-                    receiver.0
+                    receiver.wait()
                 ).await
             },
             _ => panic!("Expected OneShot completion receiver"),
@@ -1036,7 +1036,7 @@ mod tests {
             crate::task::CompletionReceiver::OneShot(receiver) => {
                 tokio::time::timeout(
                     Duration::from_millis(200),
-                    receiver.0
+                    receiver.wait()
                 ).await
             },
             _ => panic!("Expected OneShot completion receiver"),

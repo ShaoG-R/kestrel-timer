@@ -3,12 +3,21 @@ use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::oneshot;
+
+use crate::utils::oneshot::{new_oneshot, OneShotCompletionNotifier, OneShotCompletionReceiver};
+use crate::utils::spsc::{self, TryRecvError};
 
 /// Global unique task ID generator
 /// 
 /// 全局唯一任务 ID 生成器
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+
+/// One-shot task completion state constants
+/// 
+/// 一次性任务完成状态常量
+pub(crate) const ONESHOT_PENDING: u8 = 0;
+pub(crate) const ONESHOT_CALLED: u8 = 1;
+pub(crate) const ONESHOT_CANCELLED: u8 = 2;
 
 /// Task Completion Reason for Periodic Tasks
 ///
@@ -208,32 +217,28 @@ pub enum TaskTypeWithCompletionNotifier {
     },
 }
 
-/// Completion notifier for one-shot tasks
-/// 
-/// 一次性任务完成通知器
-pub struct OneShotCompletionNotifier(pub oneshot::Sender<TaskCompletion>);
 
-/// Completion receiver for one-shot tasks
-/// 
-/// 一次性任务完成通知接收器
-pub struct OneShotCompletionReceiver(pub oneshot::Receiver<TaskCompletion>);
 
 /// Completion notifier for periodic tasks
 /// 
+/// Uses custom SPSC channel for high-performance, low-latency notification
+/// 
 /// 周期任务完成通知器
-pub struct PeriodicCompletionNotifier(pub tokio::sync::mpsc::Sender<TaskCompletion>);
+/// 
+/// 使用自定义 SPSC 通道实现高性能、低延迟的通知
+pub struct PeriodicCompletionNotifier(pub spsc::Sender<TaskCompletion>);
 
 /// Completion receiver for periodic tasks
 /// 
 /// 周期任务完成通知接收器
-pub struct PeriodicCompletionReceiver(pub tokio::sync::mpsc::Receiver<TaskCompletion>);
+pub struct PeriodicCompletionReceiver(pub spsc::Receiver<TaskCompletion>);
 
 impl PeriodicCompletionReceiver {
     /// Try to receive a completion notification
     /// 
     /// 尝试接收完成通知
     #[inline]
-    pub fn try_recv(&mut self) -> Result<TaskCompletion, tokio::sync::mpsc::error::TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<TaskCompletion, TryRecvError> {
         self.0.try_recv()
     }
     
@@ -449,24 +454,36 @@ impl TimerTaskWithCompletionNotifier {
     pub fn from_timer_task(task: TimerTask) -> (Self, CompletionReceiver) {
         match task.task_type {
             TaskType::OneShot { .. } => {
-                let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-                let notifier = crate::task::OneShotCompletionNotifier(completion_tx);
+                // Create oneshot notifier and receiver with optimized single Arc allocation
+                // 创建 oneshot 通知器和接收器，使用优化的单个 Arc 分配
+                let (notifier, receiver) = new_oneshot();
+
                 (Self {
                     id: task.id,
-                    task_type: TaskTypeWithCompletionNotifier::OneShot { completion_notifier: notifier },
+                    task_type: TaskTypeWithCompletionNotifier::OneShot { 
+                        completion_notifier: notifier 
+                    },
                     delay: task.delay,
                     callback: task.callback,
-                }, CompletionReceiver::OneShot(OneShotCompletionReceiver(completion_rx)))
+                }, CompletionReceiver::OneShot(receiver))
             },
             TaskType::Periodic { interval, buffer_size } => {
-                let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(buffer_size.get() as usize);
-                let notifier = crate::task::PeriodicCompletionNotifier(completion_tx);
+                // Use custom SPSC channel for high-performance periodic notification
+                // 使用自定义 SPSC 通道实现高性能周期通知
+                let (tx, rx) = spsc::channel(buffer_size.get() as usize);
+                
+                let notifier = PeriodicCompletionNotifier(tx);
+                let receiver = PeriodicCompletionReceiver(rx);
+                
                 (Self {
                     id: task.id,
-                    task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier: notifier },
+                    task_type: TaskTypeWithCompletionNotifier::Periodic { 
+                        interval, 
+                        completion_notifier: notifier 
+                    },
                     delay: task.delay,
                     callback: task.callback,
-                }, CompletionReceiver::Periodic(PeriodicCompletionReceiver(completion_rx)))
+                }, CompletionReceiver::Periodic(receiver))
             },
         }
     }

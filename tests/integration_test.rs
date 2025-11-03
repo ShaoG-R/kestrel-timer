@@ -80,7 +80,7 @@ async fn test_timer_precision() {
     let (rx, _handle) = handle.into_parts();
     match rx {
         CompletionReceiver::OneShot(receiver) => {
-            let _ = receiver.0.await;
+            receiver.wait().await;
         },
         _ => {}
     }
@@ -183,7 +183,7 @@ async fn test_timer_with_different_delays() {
         let (rx, _handle) = handle.into_parts();
         match rx {
             CompletionReceiver::OneShot(receiver) => {
-                let _ = receiver.0.await;
+                receiver.wait().await;
             },
             _ => {}
         }
@@ -408,7 +408,7 @@ async fn test_postpone_single_timer() {
         CompletionReceiver::OneShot(receiver) => {
             tokio::time::timeout(
                 Duration::from_millis(200),
-                receiver.0
+                receiver.wait()
             ).await
         },
         _ => panic!("Expected OneShot receiver")
@@ -462,7 +462,7 @@ async fn test_postpone_with_new_callback() {
         CompletionReceiver::OneShot(receiver) => {
             tokio::time::timeout(
                 Duration::from_millis(200),
-                receiver.0
+                receiver.wait()
             ).await
         },
         _ => panic!("Expected OneShot receiver")
@@ -615,7 +615,7 @@ async fn test_postpone_multiple_times() {
         CompletionReceiver::OneShot(receiver) => {
             tokio::time::timeout(
                 Duration::from_millis(200),
-                receiver.0
+                receiver.wait()
             ).await
         },
         _ => panic!("Expected OneShot receiver")
@@ -659,7 +659,7 @@ async fn test_postpone_with_service() {
 
     // Receive timeout notification
     // 接收超时通知
-    let mut rx = service.take_receiver().unwrap();
+    let rx = service.take_receiver().unwrap();
     let result = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
     assert!(result.is_ok(), "Should receive timeout notification");
     

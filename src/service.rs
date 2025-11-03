@@ -1,3 +1,4 @@
+use crate::utils::{oneshot, spsc};
 use crate::{BatchHandle, TimerHandle};
 use crate::config::ServiceConfig;
 use crate::error::TimerError;
@@ -8,7 +9,6 @@ use futures::future::BoxFuture;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Task notification type for distinguishing between one-shot and periodic tasks
@@ -121,7 +121,7 @@ enum ServiceCommand {
 ///     service.register(periodic_task).unwrap();
 ///     
 ///     // Receive notifications (接收通知)
-///     let mut rx = service.take_receiver().unwrap();
+///     let rx = service.take_receiver().unwrap();
 ///     while let Some(notification) = rx.recv().await {
 ///         match notification {
 ///             TaskNotification::OneShot(task_id) => {
@@ -138,11 +138,11 @@ pub struct TimerService {
     /// Command sender
     /// 
     /// 命令发送器
-    command_tx: mpsc::Sender<ServiceCommand>,
+    command_tx: spsc::Sender<ServiceCommand>,
     /// Timeout receiver (supports both one-shot and periodic task notifications)
     /// 
     /// 超时接收器（支持一次性和周期性任务通知）
-    timeout_rx: Option<mpsc::Receiver<TaskNotification>>,
+    timeout_rx: Option<spsc::Receiver<TaskNotification>>,
     /// Actor task handle
     /// 
     /// Actor 任务句柄
@@ -154,7 +154,7 @@ pub struct TimerService {
     /// Actor shutdown signal sender
     /// 
     /// Actor 关闭信号发送器
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    shutdown_tx: Option<oneshot::OneShotCompletionNotifier<()>>,
 }
 
 impl TimerService {
@@ -177,10 +177,10 @@ impl TimerService {
     /// 通常不直接调用，而是通过 `TimerWheel::create_service()` 创建
     ///
     pub(crate) fn new(wheel: Arc<Mutex<Wheel>>, config: ServiceConfig) -> Self {
-        let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity);
-        let (timeout_tx, timeout_rx) = mpsc::channel::<TaskNotification>(config.timeout_channel_capacity);
+        let (command_tx, command_rx) = spsc::channel(config.command_channel_capacity);
+        let (timeout_tx, timeout_rx) = spsc::channel::<TaskNotification>(config.timeout_channel_capacity);
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::new_oneshot::<()>();
         let actor = ServiceActor::new(command_rx, timeout_tx, shutdown_rx);
         let actor_handle = tokio::spawn(async move {
             actor.run().await;
@@ -221,7 +221,7 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let mut service = timer.create_service(ServiceConfig::default());
     /// 
-    /// let mut rx = service.take_receiver().unwrap();
+    /// let rx = service.take_receiver().unwrap();
     /// while let Some(notification) = rx.recv().await {
     ///     match notification {
     ///         TaskNotification::OneShot(task_id) => {
@@ -234,7 +234,7 @@ impl TimerService {
     /// }
     /// # }
     /// ```
-    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<TaskNotification>> {
+    pub fn take_receiver(&mut self) -> Option<spsc::Receiver<TaskNotification>> {
         self.timeout_rx.take()
     }
 
@@ -697,7 +697,7 @@ impl TimerService {
     /// ```
     pub async fn shutdown(mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
+            shutdown_tx.notify(());
         }
         if let Some(handle) = self.actor_handle.take() {
             let _ = handle.await;
@@ -721,22 +721,22 @@ struct ServiceActor {
     /// Command receiver
     /// 
     /// 命令接收器
-    command_rx: mpsc::Receiver<ServiceCommand>,
+    command_rx: spsc::Receiver<ServiceCommand>,
     /// Timeout sender (supports both one-shot and periodic task notifications)
     /// 
     /// 超时发送器（支持一次性和周期性任务通知）
-    timeout_tx: mpsc::Sender<TaskNotification>,
+    timeout_tx: spsc::Sender<TaskNotification>,
     /// Actor shutdown signal receiver
     /// 
     /// Actor 关闭信号接收器
-    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    shutdown_rx: oneshot::OneShotCompletionReceiver<()>,
 }
 
 impl ServiceActor {
     /// Create new ServiceActor
     /// 
     /// 创建新的 ServiceActor
-    fn new(command_rx: mpsc::Receiver<ServiceCommand>, timeout_tx: mpsc::Sender<TaskNotification>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Self {
+    fn new(command_rx: spsc::Receiver<ServiceCommand>, timeout_tx: spsc::Sender<TaskNotification>, shutdown_rx: oneshot::OneShotCompletionReceiver<()>) -> Self {
         Self {
             command_rx,
             timeout_tx,
@@ -747,13 +747,13 @@ impl ServiceActor {
     /// Run Actor event loop
     /// 
     /// 运行 Actor 事件循环
-    async fn run(mut self) {
+    async fn run(self) {
         // Use separate FuturesUnordered for one-shot and periodic tasks
         // 为一次性任务和周期性任务使用独立的 FuturesUnordered
         
-        // One-shot futures: each future returns (TaskId, Result<OneShotTaskCompletion>)
-        // 一次性任务 futures：每个 future 返回 (TaskId, Result<OneShotTaskCompletion>)
-        let mut oneshot_futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<TaskCompletion, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
+        // One-shot futures: each future returns (TaskId, TaskCompletion)
+        // 一次性任务 futures：每个 future 返回 (TaskId, TaskCompletion)
+        let mut oneshot_futures: FuturesUnordered<BoxFuture<'static, (TaskId, TaskCompletion)>> = FuturesUnordered::new();
 
         // Periodic futures: each future returns (TaskId, Option<PeriodicTaskCompletion>, mpsc::Receiver)
         // The receiver is returned so we can continue listening for next event
@@ -778,10 +778,10 @@ impl ServiceActor {
 
                 // Listen to one-shot task timeout events
                 // 监听一次性任务超时事件
-                Some((task_id, result)) = oneshot_futures.next() => {
+                Some((task_id, completion)) = oneshot_futures.next() => {
                     // Check completion reason, only forward Called events, do not forward Cancelled events
                     // 检查完成原因，只转发 Called 事件，不转发 Cancelled 事件
-                    if let Ok(TaskCompletion::Called) = result {
+                    if completion == TaskCompletion::Called {
                         let _ = self.timeout_tx.send(TaskNotification::OneShot(task_id)).await;
                     }
                     // Task will be automatically removed from FuturesUnordered
@@ -818,8 +818,8 @@ impl ServiceActor {
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
                                 match rx {
                                     crate::task::CompletionReceiver::OneShot(receiver) => {
-                                        let future: BoxFuture<'static, (TaskId, Result<TaskCompletion, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
-                                            (task_id, receiver.0.await)
+                                        let future: BoxFuture<'static, (TaskId, TaskCompletion)> = Box::pin(async move {
+                                            (task_id, receiver.wait().await)
                                         });
                                         oneshot_futures.push(future);
                                     },
@@ -838,8 +838,8 @@ impl ServiceActor {
                             // 添加到相应的 futures
                             match completion_rx {
                                 crate::task::CompletionReceiver::OneShot(receiver) => {
-                                    let future: BoxFuture<'static, (TaskId, Result<TaskCompletion, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
-                                        (task_id, receiver.0.await)
+                                    let future: BoxFuture<'static, (TaskId, TaskCompletion)> = Box::pin(async move {
+                                        (task_id, receiver.wait().await)
                                     });
                                     oneshot_futures.push(future);
                                 },
@@ -893,7 +893,7 @@ mod tests {
         service.register(task).unwrap();
 
         // Receive timeout notification (接收超时通知)
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -971,7 +971,7 @@ mod tests {
         service.register(task).unwrap();
 
         // Wait for task timeout (等待任务超时)
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1045,7 +1045,7 @@ mod tests {
 
         // Wait for timer to trigger
         // 等待定时器触发
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1085,7 +1085,7 @@ mod tests {
         // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         
         while received_count < 3 {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -1118,7 +1118,7 @@ mod tests {
 
         // Receive timeout notification
         // 接收超时通知
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1279,7 +1279,7 @@ mod tests {
 
         // Receive timeout notification (after postponing, need to wait 100ms, plus margin)
         // 接收超时通知（延期后，需要等待 100ms，加上余量）
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1348,7 +1348,7 @@ mod tests {
         // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         
         while received_count < 3 {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -1412,7 +1412,7 @@ mod tests {
         // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         
         while received_count < 3 {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -1470,7 +1470,7 @@ mod tests {
 
         // Verify timeout notification is still valid (after postponing, need to wait 100ms, plus margin)
         // 验证超时通知是否仍然有效（延期后，需要等待 100ms，加上余量）
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let received_task_id = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1506,7 +1506,7 @@ mod tests {
 
         // Wait for second task to expire
         // 等待第二个任务过期
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let received_notification = tokio::time::timeout(Duration::from_millis(200), rx.recv())
             .await
             .expect("Should receive timeout notification")
@@ -1577,7 +1577,7 @@ mod tests {
         // Receive all timeout notifications
         // 接收所有超时通知
         let mut received_count = 0;
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         
         while received_count < 3 {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
@@ -1620,7 +1620,7 @@ mod tests {
         service.register(task).unwrap();
 
         // Receive periodic notifications (接收周期性通知)
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let mut notification_count = 0;
 
         // Receive first 3 notifications (接收前 3 个通知)
@@ -1668,7 +1668,7 @@ mod tests {
         service.register(task).unwrap();
 
         // Wait for first notification (等待第一个通知)
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let notification = tokio::time::timeout(Duration::from_millis(100), rx.recv())
             .await
             .expect("Should receive first notification")
@@ -1708,7 +1708,7 @@ mod tests {
         service.register(periodic_task).unwrap();
 
         // Receive notifications (接收通知)
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let mut oneshot_received = false;
         let mut periodic_count = 0;
 
@@ -1768,7 +1768,7 @@ mod tests {
         service.register_batch(tasks).unwrap();
 
         // Receive notifications (接收通知)
-        let mut rx = service.take_receiver().unwrap();
+        let rx = service.take_receiver().unwrap();
         let mut notification_counts = std::collections::HashMap::new();
 
         // Receive notifications for a while (接收一段时间的通知)

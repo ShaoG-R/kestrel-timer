@@ -218,25 +218,11 @@ pub enum TaskTypeWithCompletionNotifier {
         /// 
         /// 周期任务的间隔时间
         interval: std::time::Duration,
-        /// Buffer size for periodic task completion notifier
-        /// 
-        /// 周期性任务完成通知器的缓冲区大小
-        buffer_size: NonZeroU16,
         /// Completion notifier for periodic tasks
         /// 
         /// 周期性任务完成通知器
         completion_notifier: PeriodicCompletionNotifier,
     },
-}
-
-impl TaskTypeWithCompletionNotifier {
-    #[inline]
-    pub fn get_task_type(&self) -> TaskType {
-        match self {
-            TaskTypeWithCompletionNotifier::OneShot { .. } => TaskType::OneShot,
-            TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, .. } => TaskType::Periodic { interval: *interval, buffer_size: *buffer_size },
-        }
-    }
 }
 
 /// Completion notifier for one-shot tasks
@@ -494,7 +480,7 @@ impl TimerTaskWithCompletionNotifier {
                 let notifier = crate::task::PeriodicCompletionNotifier(completion_tx);
                 (Self {
                     id: task.id,
-                    task_type: TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, completion_notifier: notifier },
+                    task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier: notifier },
                     delay: task.delay,
                     callback: task.callback,
                 }, CompletionReceiver::Periodic(PeriodicCompletionReceiver(completion_rx)))

@@ -687,12 +687,12 @@ impl Wheel {
                 let TimerTaskForWheel { task, .. } = task_with_notifier;
 
                 match task.task_type {
-                    TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, completion_notifier } => {
+                    TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => {
                         let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Called);
                         
                         periodic_tasks_to_reinsert.push(TimerTaskWithCompletionNotifier {
                             id: task.id,
-                            task_type: TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, completion_notifier },
+                            task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier },
                             delay: task.delay,
                             callback: task.callback.clone(), 
                         });

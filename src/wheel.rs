@@ -1,6 +1,6 @@
-use crate::{TaskCompletionReasonPeriodic, TimerTask};
+use crate::{PeriodicTaskCompletion, TimerTask};
 use crate::config::{BatchConfig, WheelConfig};
-use crate::task::{TaskCompletionReasonOneShot, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
+use crate::task::{OneShotTaskCompletion, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
 
@@ -409,10 +409,10 @@ impl Wheel {
 
         match removed_task.into_task_type() {
             TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Cancelled);
+                let _ = completion_notifier.0.send(OneShotTaskCompletion::Cancelled);
             }
             TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
-                let _ = completion_notifier.0.try_send(TaskCompletionReasonPeriodic::Cancelled);
+                let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Cancelled);
             }
         }
         
@@ -512,10 +512,10 @@ impl Wheel {
                     let removed_task = slot.swap_remove(vec_index);
                     match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                            let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Cancelled);
+                            let _ = completion_notifier.0.send(OneShotTaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
-                            let _ = completion_notifier.0.try_send(TaskCompletionReasonPeriodic::Cancelled);
+                            let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Cancelled);
                         }
                     }
                     
@@ -551,10 +551,10 @@ impl Wheel {
                     
                     match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                            let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Cancelled);
+                            let _ = completion_notifier.0.send(OneShotTaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
-                            let _ = completion_notifier.0.try_send(TaskCompletionReasonPeriodic::Cancelled);
+                            let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Cancelled);
                         }
                     }
                     
@@ -583,14 +583,13 @@ impl Wheel {
     /// 用于在周期性任务过期后自动重新调度
     fn reinsert_periodic_task(
         &mut self,
-        task_id: TaskId,
-        interval: Duration,
-        callback: Option<crate::task::CallbackWrapper>,
-        notifier: crate::task::PeriodicCompletionNotifier,
+        periodic_task: TimerTaskWithCompletionNotifier,
     ) {
+        let task_id = periodic_task.get_id();
+
         // Determine which layer the interval should be inserted into
         // 确定间隔应该插入到哪一层
-        let (level, ticks, rounds) = self.determine_layer(interval);
+        let (level, ticks, rounds) = self.determine_layer(periodic_task.get_interval().unwrap());
         
         // Use match to reduce branches, and use cached slot mask
         // 使用 match 减少分支，并使用缓存的槽掩码
@@ -604,12 +603,7 @@ impl Wheel {
         
         // Create new task with the same TaskId
         // 创建新任务，使用相同的 TaskId
-        let task = TimerTaskForWheel::new(TimerTaskWithCompletionNotifier {
-            id: task_id,
-            task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier: notifier },
-            delay: interval,
-            callback,
-        }, total_ticks, rounds);
+        let task = TimerTaskForWheel::new(periodic_task, total_ticks, rounds);
         
         // Get the index position of the task in Vec
         // 获取任务在 Vec 中的索引位置
@@ -686,32 +680,31 @@ impl Wheel {
 
 
                 let TimerTaskForWheel { task, .. } = task_with_notifier;
-                
-                let TimerTaskWithCompletionNotifier { id, task_type, delay, callback } = task;
 
-                use crate::task::TaskType;
-                
-                match task_type {
-                    TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => {
-                        let _ = completion_notifier.0.try_send(TaskCompletionReasonPeriodic::Called);
-                        periodic_tasks_to_reinsert.push((task_id, interval, callback.clone(), completion_notifier));
-                        expired_tasks.push(TimerTask {
-                            id,
-                            task_type: TaskType::Periodic { interval },
-                            delay,
-                            callback,
+                let task_type = task.task_type.get_task_type();
+
+                match task.task_type {
+                    TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, completion_notifier } => {
+                        let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Called);
+                        
+                        periodic_tasks_to_reinsert.push(TimerTaskWithCompletionNotifier {
+                            id: task.id,
+                            task_type: TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, completion_notifier },
+                            delay: task.delay,
+                            callback: task.callback.clone(), 
                         });
                     }
                     TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                        let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Expired);
-                        expired_tasks.push(TimerTask {
-                            id,
-                            task_type: TaskType::OneShot,
-                            delay,
-                            callback,
-                        });
+                        let _ = completion_notifier.0.send(OneShotTaskCompletion::Expired);
                     }
                 }
+
+                expired_tasks.push(TimerTask {
+                    id: task.id,
+                    task_type,
+                    delay: task.delay,
+                    callback: task.callback,
+                });
                 
                 // Don't increment i, as we've removed the current element
                 // 不增加 i，因为我们已经移除了当前元素
@@ -720,8 +713,8 @@ impl Wheel {
         
         // Reinsert periodic tasks for next interval
         // 重新插入周期性任务到下一个周期
-        for (task_id, interval, callback, notifier) in periodic_tasks_to_reinsert {
-            self.reinsert_periodic_task(task_id, interval, callback, notifier);
+        for task_type in periodic_tasks_to_reinsert {
+            self.reinsert_periodic_task(task_type);
         }
         
         // Process L1 layer
@@ -1103,7 +1096,7 @@ mod tests {
         // Insert short delay task into L0 (插入短延迟任务到 L0)
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // Verify task is in L0 layer (验证任务在 L0 层)
@@ -1139,7 +1132,7 @@ mod tests {
         // Insert task, delay 6000ms (exceeds L0 range 5120ms) (插入任务，延迟 6000毫秒 (超过 L0 范围 5120毫秒))
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(6000), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // Verify task is in L1 layer (验证任务在 L1 层)
@@ -1173,13 +1166,13 @@ mod tests {
         // Insert L0 task (插入 L0 任务)
         let callback1 = CallbackWrapper::new(|| async {});
         let task1 = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback1));
-        let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1, 32);
+        let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1);
         let task_id1 = wheel.insert(task_with_notifier1);
         
         // Insert L1 task (插入 L1 任务)
         let callback2 = CallbackWrapper::new(|| async {});
         let task2 = TimerTask::new_oneshot(Duration::from_secs(10), Some(callback2));
-        let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2, 32);
+        let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2);
         let task_id2 = wheel.insert(task_with_notifier2);
         
         // Verify levels (验证层级)
@@ -1206,7 +1199,7 @@ mod tests {
         // Insert L0 task (100ms) (插入 L0 任务 (100毫秒))
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // Verify in L0 layer (验证在 L0 层)
@@ -1256,7 +1249,7 @@ mod tests {
             .map(|i| {
                 let callback = CallbackWrapper::new(|| async {});
                 let task = TimerTask::new_oneshot(Duration::from_millis(100 + i * 10), Some(callback));
-                let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+                let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
                 task_with_notifier
             })
             .collect();
@@ -1276,7 +1269,7 @@ mod tests {
         for i in 0..10 {
             let callback = CallbackWrapper::new(|| async {});
             let task = TimerTask::new_oneshot(Duration::from_millis(100 + i * 10), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let task_id = wheel.insert(task_with_notifier);
             task_ids.push(task_id);
         }
@@ -1310,7 +1303,7 @@ mod tests {
         for _ in 0..20 {
             let callback = CallbackWrapper::new(|| async {});
             let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let task_id = wheel.insert(task_with_notifier);
             task_ids.push(task_id);
         }
@@ -1328,7 +1321,7 @@ mod tests {
         // Insert task, delay 100ms (插入任务，延迟 100毫秒)
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // Postpone task to 200ms (keep original callback) (延期任务到 200毫秒 (保留原始回调))
@@ -1365,7 +1358,7 @@ mod tests {
         // Insert task, with original callback (插入任务，原始回调)
         let old_callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(old_callback.clone()));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // Postpone task and replace callback (延期任务并替换回调)
@@ -1407,7 +1400,7 @@ mod tests {
         for _ in 0..5 {
             let callback = CallbackWrapper::new(|| async {});
             let task = TimerTask::new_oneshot(Duration::from_millis(50), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let task_id = wheel.insert(task_with_notifier);
             task_ids.push(task_id);
         }
@@ -1444,7 +1437,7 @@ mod tests {
         for _ in 0..10 {
             let callback = CallbackWrapper::new(|| async {});
             let task = TimerTask::new_oneshot(Duration::from_millis(50), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let task_id = wheel.insert(task_with_notifier);
             task_ids.push(task_id);
         }
@@ -1486,7 +1479,7 @@ mod tests {
         // Insert a task that exceeds one L1 circle, delay 120000ms (120 seconds) (插入一个超过一个 L1 圈的任务，延迟 120000毫秒 (120秒))
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_secs(120), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // 120000ms / 1000ms = 120 L1 ticks (120000毫秒 / 1000毫秒 = 120个L1 tick)
@@ -1529,7 +1522,7 @@ mod tests {
         // Test minimum delay (delays less than 1 tick should be rounded up to 1 tick) (测试最小延迟 (延迟小于 1 个 tick 应该向上舍入到 1 个 tick))
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(1), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id: TaskId = wheel.insert(task_with_notifier);
         
         // Advance 1 tick, task should trigger (前进 1 个 tick，任务应该触发)
@@ -1562,7 +1555,7 @@ mod tests {
         // Insert task (插入任务)
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // First postpone (第一次延期)
@@ -1611,7 +1604,7 @@ mod tests {
         // Insert task (插入任务)
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         // Postpone task (延期任务)
@@ -1639,13 +1632,13 @@ mod tests {
         // 第一个任务：延迟 10ms（1 tick），应该在 slot 1 触发
         let callback1 = CallbackWrapper::new(|| async {});
         let task1 = TimerTask::new_oneshot(Duration::from_millis(10), Some(callback1));
-        let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1, 32);
+        let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1);
         let task_id_1 = wheel.insert(task_with_notifier1);
         
         // Second task: delay 5110ms (511 ticks), should trigger on slot 511 (第二个任务：延迟 5110毫秒 (511个tick)，应该在槽 511 触发) 
         let callback2 = CallbackWrapper::new(|| async {});
         let task2 = TimerTask::new_oneshot(Duration::from_millis(5110), Some(callback2));
-        let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2, 32);
+        let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2);
         let task_id_2 = wheel.insert(task_with_notifier2);
         
         // Advance 1 tick, first task should trigger (前进 1 个 tick，第一个任务应该触发)
@@ -1682,7 +1675,7 @@ mod tests {
         for _ in 0..10 {
             let callback = CallbackWrapper::new(|| async {});
             let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let task_id = wheel.insert(task_with_notifier);
             task_ids.push(task_id);
         }
@@ -1707,7 +1700,7 @@ mod tests {
         for _ in 0..100 {
             let callback = CallbackWrapper::new(|| async {});
             let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let task_id = wheel.insert(task_with_notifier);
             
             assert!(task_ids.insert(task_id), "TaskId should be unique"); // TaskId 应该唯一
@@ -1728,8 +1721,9 @@ mod tests {
             Duration::from_millis(50),  // initial delay
             Duration::from_millis(50),  // interval
             Some(callback),
+            None
         );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         let mut rx = match completion_receiver {
@@ -1771,7 +1765,7 @@ mod tests {
 
     #[test]
     fn test_periodic_task_cancel() {
-        use crate::task::{TaskCompletionReasonPeriodic, CompletionReceiver};
+        use crate::task::{PeriodicTaskCompletion, CompletionReceiver};
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
@@ -1781,8 +1775,9 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_millis(100),
             Some(callback),
+            None
         );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         let mut rx = match completion_receiver {
@@ -1796,7 +1791,7 @@ mod tests {
         // Check cancellation notification
         // 检查取消通知
         if let Ok(reason) = rx.try_recv() {
-            assert_eq!(reason, TaskCompletionReasonPeriodic::Cancelled, "Should receive Cancelled notification");
+            assert_eq!(reason, PeriodicTaskCompletion::Cancelled, "Should receive Cancelled notification");
         } else {
             panic!("Should receive cancellation notification");
         }
@@ -1825,8 +1820,9 @@ mod tests {
             Duration::from_millis(30),
             Duration::from_millis(30),
             Some(callback),
+            None
         );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         let mut rx = match completion_receiver {
@@ -1869,8 +1865,9 @@ mod tests {
             Duration::from_secs(10),  // 10000ms > 5120ms
             Duration::from_secs(10),
             Some(callback),
+            None
         );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         let mut rx = match completion_receiver {
@@ -1906,7 +1903,7 @@ mod tests {
 
     #[test]
     fn test_periodic_task_batch_cancel() {
-        use crate::task::{TaskCompletionReasonPeriodic, CompletionReceiver};
+        use crate::task::{PeriodicTaskCompletion, CompletionReceiver};
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
@@ -1920,8 +1917,9 @@ mod tests {
                 Duration::from_millis(100 + i * 10),
                 Duration::from_millis(100),
                 Some(callback),
+                None
             );
-            let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+            let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let task_id = wheel.insert(task_with_notifier);
             task_ids.push(task_id);
             
@@ -1938,7 +1936,7 @@ mod tests {
         // 验证所有接收到取消通知
         for mut rx in receivers {
             if let Ok(reason) = rx.try_recv() {
-                assert_eq!(reason, TaskCompletionReasonPeriodic::Cancelled);
+                assert_eq!(reason, PeriodicTaskCompletion::Cancelled);
             } else {
                 panic!("Should receive cancellation notification");
             }
@@ -1960,8 +1958,9 @@ mod tests {
             Duration::from_millis(100),  // initial delay 100ms
             Duration::from_millis(50),   // interval 50ms
             Some(callback),
+            None
         );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task, 32);
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let task_id = wheel.insert(task_with_notifier);
         
         let mut rx = match completion_receiver {

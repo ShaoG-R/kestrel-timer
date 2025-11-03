@@ -117,7 +117,7 @@ pub mod timer;
 mod service;
 
 // Re-export public API
-pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletionReasonOneShot, TaskCompletionReasonPeriodic};
+pub use task::{CallbackWrapper, TaskId, TimerTask, OneShotTaskCompletion, PeriodicTaskCompletion};
 pub use timer::handle::{TimerHandle, TimerHandleWithCompletion, BatchHandle, BatchHandleWithCompletion};
 pub use task::CompletionReceiver;
 pub use timer::TimerWheel;
@@ -129,7 +129,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-    use crate::task::TaskCompletionReasonOneShot;
+    use crate::task::OneShotTaskCompletion;
 
     #[tokio::test]
     async fn test_basic_timer() {
@@ -312,7 +312,7 @@ mod tests {
             },
             _ => panic!("Expected OneShot completion receiver"),
         };
-        assert_eq!(result, TaskCompletionReasonOneShot::Expired);
+        assert_eq!(result, OneShotTaskCompletion::Expired);
     }
 
     #[tokio::test]
@@ -334,7 +334,7 @@ mod tests {
             },
             _ => panic!("Expected OneShot completion receiver"),
         };
-        assert_eq!(result, TaskCompletionReasonOneShot::Cancelled);
+        assert_eq!(result, OneShotTaskCompletion::Cancelled);
     }
 
     #[tokio::test]
@@ -361,7 +361,7 @@ mod tests {
                 },
                 _ => panic!("Expected OneShot completion receiver"),
             };
-            assert_eq!(result, TaskCompletionReasonOneShot::Cancelled);
+            assert_eq!(result, OneShotTaskCompletion::Cancelled);
         }
 
         // Cancel remaining tasks and verify
@@ -373,7 +373,7 @@ mod tests {
                 },
                 _ => panic!("Expected OneShot completion receiver"),
             };
-            assert_eq!(result, TaskCompletionReasonOneShot::Cancelled);
+            assert_eq!(result, OneShotTaskCompletion::Cancelled);
         }
     }
 }

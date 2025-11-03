@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,7 +16,7 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 /// 
 /// 任务完成原因，过期或取消。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskCompletionReasonOneShot {
+pub enum OneShotTaskCompletion {
     /// Task expired normally
     /// 
     /// 任务正常过期
@@ -32,7 +33,7 @@ pub enum TaskCompletionReasonOneShot {
 /// 
 /// 任务完成原因，调用或取消。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskCompletionReasonPeriodic {
+pub enum PeriodicTaskCompletion {
     /// Task was called
     /// 
     /// 任务被调用
@@ -176,6 +177,7 @@ impl CallbackWrapper {
 /// Task type enum to distinguish between one-shot and periodic timers
 /// 
 /// 任务类型枚举，用于区分一次性和周期性定时器
+#[derive(Clone)]
 pub enum TaskType {
     /// One-shot timer: executes once and completes
     /// 
@@ -190,6 +192,10 @@ pub enum TaskType {
         /// 
         /// 周期任务的间隔时间
         interval: std::time::Duration,
+        /// Buffer size for periodic task completion notifier
+        /// 
+        /// 周期性任务完成通知器的缓冲区大小
+        buffer_size: NonZeroUsize,
     },
 }
 
@@ -212,36 +218,53 @@ pub enum TaskTypeWithCompletionNotifier {
         /// 
         /// 周期任务的间隔时间
         interval: std::time::Duration,
+        /// Buffer size for periodic task completion notifier
+        /// 
+        /// 周期性任务完成通知器的缓冲区大小
+        buffer_size: NonZeroUsize,
+        /// Completion notifier for periodic tasks
+        /// 
+        /// 周期性任务完成通知器
         completion_notifier: PeriodicCompletionNotifier,
     },
+}
+
+impl TaskTypeWithCompletionNotifier {
+    #[inline]
+    pub fn get_task_type(&self) -> TaskType {
+        match self {
+            TaskTypeWithCompletionNotifier::OneShot { .. } => TaskType::OneShot,
+            TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, .. } => TaskType::Periodic { interval: *interval, buffer_size: *buffer_size },
+        }
+    }
 }
 
 /// Completion notifier for one-shot tasks
 /// 
 /// 一次性任务完成通知器
-pub struct OneShotCompletionNotifier(pub oneshot::Sender<TaskCompletionReasonOneShot>);
+pub struct OneShotCompletionNotifier(pub oneshot::Sender<OneShotTaskCompletion>);
 
 /// Completion receiver for one-shot tasks
 /// 
 /// 一次性任务完成通知接收器
-pub struct OneShotCompletionReceiver(pub oneshot::Receiver<TaskCompletionReasonOneShot>);
+pub struct OneShotCompletionReceiver(pub oneshot::Receiver<OneShotTaskCompletion>);
 
 /// Completion notifier for periodic tasks
 /// 
 /// 周期任务完成通知器
-pub struct PeriodicCompletionNotifier(pub tokio::sync::mpsc::Sender<TaskCompletionReasonPeriodic>);
+pub struct PeriodicCompletionNotifier(pub tokio::sync::mpsc::Sender<PeriodicTaskCompletion>);
 
 /// Completion receiver for periodic tasks
 /// 
 /// 周期任务完成通知接收器
-pub struct PeriodicCompletionReceiver(pub tokio::sync::mpsc::Receiver<TaskCompletionReasonPeriodic>);
+pub struct PeriodicCompletionReceiver(pub tokio::sync::mpsc::Receiver<PeriodicTaskCompletion>);
 
 impl PeriodicCompletionReceiver {
     /// Try to receive a completion notification
     /// 
     /// 尝试接收完成通知
     #[inline]
-    pub fn try_recv(&mut self) -> Result<TaskCompletionReasonPeriodic, tokio::sync::mpsc::error::TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<PeriodicTaskCompletion, tokio::sync::mpsc::error::TryRecvError> {
         self.0.try_recv()
     }
     
@@ -249,7 +272,7 @@ impl PeriodicCompletionReceiver {
     /// 
     /// 接收完成通知
     #[inline]
-    pub async fn recv(&mut self) -> Option<TaskCompletionReasonPeriodic> {
+    pub async fn recv(&mut self) -> Option<PeriodicTaskCompletion> {
         self.0.recv().await
     }
 }
@@ -352,10 +375,11 @@ impl TimerTask {
         initial_delay: std::time::Duration,
         interval: std::time::Duration,
         callback: Option<CallbackWrapper>,
+        buffer_size: Option<NonZeroUsize>,
     ) -> Self {
         Self {
             id: TaskId::new(),
-            task_type: TaskType::Periodic { interval },
+            task_type: TaskType::Periodic { interval, buffer_size: buffer_size.unwrap_or(NonZeroUsize::new(32).unwrap()) },
             delay: initial_delay,
             callback,
         }
@@ -453,7 +477,7 @@ impl TimerTaskWithCompletionNotifier {
     /// 
     /// 返回一个包含新的定时器任务完成通知器和完成通知接收器的元组
     /// 
-    pub fn from_timer_task(task: TimerTask, buffer_size: usize) -> (Self, CompletionReceiver) {
+    pub fn from_timer_task(task: TimerTask) -> (Self, CompletionReceiver) {
         match task.task_type {
             TaskType::OneShot { .. } => {
                 let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
@@ -465,12 +489,12 @@ impl TimerTaskWithCompletionNotifier {
                     callback: task.callback,
                 }, CompletionReceiver::OneShot(OneShotCompletionReceiver(completion_rx)))
             },
-            TaskType::Periodic { interval, .. } => {
-                let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(buffer_size);
+            TaskType::Periodic { interval, buffer_size } => {
+                let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(buffer_size.get());
                 let notifier = crate::task::PeriodicCompletionNotifier(completion_tx);
                 (Self {
                     id: task.id,
-                    task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier: notifier },
+                    task_type: TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, completion_notifier: notifier },
                     delay: task.delay,
                     callback: task.callback,
                 }, CompletionReceiver::Periodic(PeriodicCompletionReceiver(completion_rx)))

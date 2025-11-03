@@ -241,7 +241,7 @@ impl TimerWheel {
     /// ```
     #[inline]
     pub fn register(&self, task: crate::task::TimerTask) -> TimerHandleWithCompletion {
-        let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task, 30);
+        let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
         
         let task_id = task.id;
         
@@ -296,7 +296,7 @@ impl TimerWheel {
         
         // Step 1: Prepare all channels and notifiers
         for task in tasks {
-            let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task, 30);
+            let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
             task_ids.push(task.id);
             completion_rxs.push(completion_rx);
             prepared_tasks.push(task);

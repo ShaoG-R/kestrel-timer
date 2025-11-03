@@ -2005,5 +2005,317 @@ mod tests {
         // 取消任务
         wheel.cancel(task_id);
     }
+
+    #[test]
+    fn test_periodic_task_postpone() {
+        use crate::task::CompletionReceiver;
+        
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        
+        // Insert periodic task with 50ms interval
+        // 插入 50毫秒间隔的周期性任务
+        let callback = CallbackWrapper::new(|| async {});
+        let task = TimerTask::new_periodic(
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            Some(callback),
+            None
+        );
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+        let task_id = wheel.insert(task_with_notifier);
+        
+        let mut rx = match completion_receiver {
+            CompletionReceiver::Periodic(receiver) => receiver,
+            _ => panic!("Expected periodic completion receiver"),
+        };
+        
+        // Postpone the periodic task to 100ms
+        // 延期周期任务到 100毫秒
+        assert!(wheel.postpone(task_id, Duration::from_millis(100), None), "Should postpone periodic task");
+        
+        // Advance 5 ticks (50ms), task should not trigger yet
+        // 前进 5 个 tick (50毫秒)，任务还不应该触发
+        for _ in 0..5 {
+            wheel.advance();
+        }
+        assert!(rx.try_recv().is_err(), "Should not receive notification before postponed time");
+        
+        // Advance another 5 ticks (total 100ms), task should trigger
+        // 再前进 5 个 tick (总共 100毫秒)，任务应该触发
+        for _ in 0..5 {
+            wheel.advance();
+        }
+        assert!(rx.try_recv().is_ok(), "Should receive notification at postponed time");
+        
+        // Verify task is reinserted and will trigger again at interval (50ms)
+        // 验证任务已重新插入，并将在间隔时间 (50毫秒) 后再次触发
+        for _ in 0..5 {
+            wheel.advance();
+        }
+        assert!(rx.try_recv().is_ok(), "Should receive second notification after interval");
+        
+        wheel.cancel(task_id);
+    }
+
+    #[test]
+    fn test_periodic_task_postpone_cross_layer() {
+        use crate::task::CompletionReceiver;
+        
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        
+        // Insert periodic task in L0 (short interval)
+        // 在 L0 层插入周期性任务（短间隔）
+        let callback = CallbackWrapper::new(|| async {});
+        let task = TimerTask::new_periodic(
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Some(callback),
+            None
+        );
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+        let task_id = wheel.insert(task_with_notifier);
+        
+        let mut rx = match completion_receiver {
+            CompletionReceiver::Periodic(receiver) => receiver,
+            _ => panic!("Expected periodic completion receiver"),
+        };
+        
+        // Verify task is in L0
+        // 验证任务在 L0 层
+        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
+        
+        // Postpone to long delay (should migrate to L1)
+        // 延期到长延迟（应该迁移到 L1）
+        // L0 range: 512 slots * 10ms = 5120ms
+        assert!(wheel.postpone(task_id, Duration::from_secs(10), None));
+        
+        // Verify task migrated to L1
+        // 验证任务迁移到 L1
+        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 1);
+        
+        // Postpone back to short delay (should migrate back to L0)
+        // 延期回短延迟（应该迁移回 L0）
+        assert!(wheel.postpone(task_id, Duration::from_millis(200), None));
+        
+        // Verify task migrated back to L0
+        // 验证任务迁移回 L0
+        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
+        
+        // Advance to trigger
+        // 前进到触发
+        for _ in 0..20 {
+            wheel.advance();
+        }
+        assert!(rx.try_recv().is_ok(), "Should receive notification");
+        
+        wheel.cancel(task_id);
+    }
+
+    #[test]
+    fn test_periodic_task_batch_insert() {
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        
+        // Create batch of periodic tasks
+        // 创建批量周期性任务
+        let tasks: Vec<TimerTaskWithCompletionNotifier> = (0..10)
+            .map(|i| {
+                let callback = CallbackWrapper::new(|| async {});
+                let task = TimerTask::new_periodic(
+                    Duration::from_millis(100 + i * 10),
+                    Duration::from_millis(50),
+                    Some(callback),
+                    None
+                );
+                let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+                task_with_notifier
+            })
+            .collect();
+        
+        let task_ids = wheel.insert_batch(tasks);
+        
+        assert_eq!(task_ids.len(), 10, "Should insert all 10 periodic tasks");
+        assert_eq!(wheel.task_index.len(), 10, "All tasks should be in index");
+        
+        // Advance and verify tasks trigger
+        // 前进并验证任务触发
+        for _ in 0..200 {
+            let _expired = wheel.advance();
+            // Some tasks should trigger during advancement
+            // 某些任务应该在推进过程中触发
+        }
+        
+        // All tasks should still be in wheel (periodic tasks reinsert)
+        // 所有任务应该仍在时间轮中（周期性任务会重新插入）
+        assert_eq!(wheel.task_index.len(), 10, "All periodic tasks should still be in wheel");
+        
+        // Batch cancel all
+        // 批量取消所有
+        let cancelled = wheel.cancel_batch(&task_ids);
+        assert_eq!(cancelled, 10, "Should cancel all periodic tasks");
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn test_periodic_task_batch_postpone() {
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        
+        // Insert multiple periodic tasks
+        // 插入多个周期性任务
+        let mut task_ids = Vec::new();
+        for _ in 0..5 {
+            let callback = CallbackWrapper::new(|| async {});
+            let task = TimerTask::new_periodic(
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+                Some(callback),
+                None
+            );
+            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+            let task_id = wheel.insert(task_with_notifier);
+            task_ids.push(task_id);
+        }
+        
+        // Batch postpone all tasks to 150ms
+        // 批量延期所有任务到 150毫秒
+        let updates: Vec<_> = task_ids
+            .iter()
+            .map(|&id| (id, Duration::from_millis(150)))
+            .collect();
+        let postponed_count = wheel.postpone_batch(updates);
+        assert_eq!(postponed_count, 5, "Should postpone all 5 periodic tasks");
+        
+        // Advance 5 ticks (50ms), tasks should not trigger
+        // 前进 5 个 tick (50毫秒)，任务不应该触发
+        for _ in 0..5 {
+            let expired = wheel.advance();
+            assert!(expired.is_empty(), "Tasks should not trigger before postponed time");
+        }
+        
+        // Advance to 15 ticks (150ms), all tasks should trigger
+        // 前进到 15 个 tick (150毫秒)，所有任务应该触发
+        let mut total_triggered = 0;
+        for _ in 0..10 {
+            let expired = wheel.advance();
+            total_triggered += expired.len();
+        }
+        assert_eq!(total_triggered, 5, "All 5 tasks should trigger at postponed time");
+        
+        // Clean up
+        // 清理
+        wheel.cancel_batch(&task_ids);
+    }
+
+    #[test]
+    fn test_mixed_oneshot_and_periodic_tasks() {
+        use crate::task::CompletionReceiver;
+        
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        
+        // Insert oneshot tasks
+        // 插入一次性任务
+        let mut oneshot_ids = Vec::new();
+        for i in 0..5 {
+            let callback = CallbackWrapper::new(|| async {});
+            let task = TimerTask::new_oneshot(Duration::from_millis(100 + i * 10), Some(callback));
+            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+            let task_id = wheel.insert(task_with_notifier);
+            oneshot_ids.push(task_id);
+        }
+        
+        // Insert periodic tasks
+        // 插入周期性任务
+        let mut periodic_ids = Vec::new();
+        let mut periodic_receivers = Vec::new();
+        for _ in 0..5 {
+            let callback = CallbackWrapper::new(|| async {});
+            let task = TimerTask::new_periodic(
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+                Some(callback),
+                None
+            );
+            let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+            let task_id = wheel.insert(task_with_notifier);
+            periodic_ids.push(task_id);
+            
+            if let CompletionReceiver::Periodic(rx) = completion_receiver {
+                periodic_receivers.push(rx);
+            }
+        }
+        
+        assert_eq!(wheel.task_index.len(), 10, "Should have 10 tasks total");
+        
+        // Advance 15 ticks (150ms)
+        // 前进 15 个 tick (150毫秒)
+        let mut total_expired = 0;
+        for _ in 0..15 {
+            let expired = wheel.advance();
+            total_expired += expired.len();
+        }
+        
+        // All oneshot tasks (5) + first trigger of periodic tasks (5) = 10
+        // 所有一次性任务 (5) + 周期性任务的第一次触发 (5) = 10
+        assert_eq!(total_expired, 10, "Should have triggered oneshot and periodic tasks");
+        
+        // Oneshot tasks should be removed, periodic tasks should remain
+        // 一次性任务应该被移除，周期性任务应该保留
+        assert_eq!(wheel.task_index.len(), 5, "Only periodic tasks should remain");
+        
+        // Verify all oneshot tasks are removed
+        // 验证所有一次性任务已移除
+        for id in &oneshot_ids {
+            assert!(!wheel.task_index.contains_key(id), "Oneshot task should be removed");
+        }
+        
+        // Verify all periodic tasks are still present
+        // 验证所有周期性任务仍然存在
+        for id in &periodic_ids {
+            assert!(wheel.task_index.contains_key(id), "Periodic task should still be present");
+        }
+        
+        // Clean up periodic tasks
+        // 清理周期性任务
+        wheel.cancel_batch(&periodic_ids);
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn test_periodic_task_postpone_with_callback() {
+        use crate::task::CompletionReceiver;
+        
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        
+        // Insert periodic task
+        // 插入周期性任务
+        let old_callback = CallbackWrapper::new(|| async {});
+        let task = TimerTask::new_periodic(
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            Some(old_callback),
+            None
+        );
+        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+        let task_id = wheel.insert(task_with_notifier);
+        
+        let mut rx = match completion_receiver {
+            CompletionReceiver::Periodic(receiver) => receiver,
+            _ => panic!("Expected periodic completion receiver"),
+        };
+        
+        // Postpone with new callback
+        // 使用新回调延期
+        let new_callback = CallbackWrapper::new(|| async {});
+        assert!(wheel.postpone(task_id, Duration::from_millis(100), Some(new_callback)));
+        
+        // Advance to trigger
+        // 前进到触发
+        for _ in 0..10 {
+            wheel.advance();
+        }
+        
+        assert!(rx.try_recv().is_ok(), "Should receive notification with new callback");
+        
+        wheel.cancel(task_id);
+    }
 }
 

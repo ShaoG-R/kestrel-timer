@@ -221,18 +221,17 @@ impl<T: State> Inner<T> {
     }
 }
 
-impl<T: State> Drop for Inner<T> {
-    fn drop(&mut self) {
-        // Clean up any remaining waker
-        let waker_ptr = self.waker.load(Ordering::Acquire);
-        if !waker_ptr.is_null() {
-            // SAFETY: This pointer was created by Box::into_raw and we're dropping
-            unsafe {
-                let _ = Box::from_raw(waker_ptr);
-            }
-        }
-    }
-}
+// PERFORMANCE OPTIMIZATION: No Drop implementation for Inner
+// Waker cleanup is handled by Receiver::drop instead, which is more efficient because:
+// 1. In the common case (sender notifies before receiver drops), waker is already consumed
+// 2. Only Receiver creates wakers, so only Receiver needs to clean them up
+// 3. This makes Inner::drop a complete no-op, eliminating atomic load overhead
+//
+// 性能优化：Inner 不实现 Drop
+// Waker 清理由 Receiver::drop 处理，这更高效因为：
+// 1. 在常见情况下（发送方在接收方 drop 前通知），waker 已被消费
+// 2. 只有 Receiver 创建 waker，所以只有 Receiver 需要清理它们
+// 3. 这使得 Inner::drop 完全成为 no-op，消除了原子加载开销
 
 /// Completion notifier for one-shot tasks
 /// 
@@ -357,6 +356,31 @@ pub struct Receiver<T: State = TaskCompletion> {
 
 // Receiver is Unpin because all its fields are Unpin
 impl<T: State> Unpin for Receiver<T> {}
+
+impl<T: State> Drop for Receiver<T> {
+    fn drop(&mut self) {
+        // Clean up any waker that was registered but not consumed
+        // PERFORMANCE: Direct swap without pre-check is faster:
+        // - Single atomic operation instead of two (load + swap)
+        // - Relaxed ordering is sufficient - if we're dropping the Receiver,
+        //   the Sender either already notified (waker consumed) or will never notify.
+        //   No synchronization needed in either case.
+        //
+        // 清理任何已注册但未消费的 waker
+        // 性能优化：直接 swap 无需预检查更快：
+        // - 单次原子操作而不是两次（load + swap）
+        // - Relaxed ordering 就足够了 - 如果我们正在 drop Receiver，
+        //   Sender 要么已经通知（waker 已消费），要么永远不会通知。
+        //   两种情况都不需要同步。
+        let waker_ptr = self.inner.waker.swap(ptr::null_mut(), Ordering::Relaxed);
+        if !waker_ptr.is_null() {
+            // SAFETY: This pointer was created by Box::into_raw in register_waker
+            unsafe {
+                let _ = Box::from_raw(waker_ptr);
+            }
+        }
+    }
+}
 
 impl<T: State> Receiver<T> {
     /// Wait for task completion asynchronously

@@ -154,7 +154,7 @@ pub struct TimerService {
     /// Actor shutdown signal sender
     /// 
     /// Actor 关闭信号发送器
-    shutdown_tx: Option<oneshot::OneShotCompletionNotifier<()>>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 impl TimerService {
@@ -180,7 +180,7 @@ impl TimerService {
         let (command_tx, command_rx) = spsc::channel(config.command_channel_capacity);
         let (timeout_tx, timeout_rx) = spsc::channel::<TaskNotification>(config.timeout_channel_capacity);
 
-        let (shutdown_tx, shutdown_rx) = oneshot::new_oneshot::<()>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let actor = ServiceActor::new(command_rx, timeout_tx, shutdown_rx);
         let actor_handle = tokio::spawn(async move {
             actor.run().await;
@@ -729,14 +729,14 @@ struct ServiceActor {
     /// Actor shutdown signal receiver
     /// 
     /// Actor 关闭信号接收器
-    shutdown_rx: oneshot::OneShotCompletionReceiver<()>,
+    shutdown_rx: oneshot::Receiver<()>,
 }
 
 impl ServiceActor {
     /// Create new ServiceActor
     /// 
     /// 创建新的 ServiceActor
-    fn new(command_rx: spsc::Receiver<ServiceCommand>, timeout_tx: spsc::Sender<TaskNotification>, shutdown_rx: oneshot::OneShotCompletionReceiver<()>) -> Self {
+    fn new(command_rx: spsc::Receiver<ServiceCommand>, timeout_tx: spsc::Sender<TaskNotification>, shutdown_rx: oneshot::Receiver<()>) -> Self {
         Self {
             command_rx,
             timeout_tx,

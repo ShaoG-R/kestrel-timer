@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::mpsc;
-use kestrel_timer::utils::oneshot::new_oneshot;
+use kestrel_timer::utils::oneshot::channel;
 use kestrel_timer::utils::spsc;
 use kestrel_timer::task::TaskCompletion;
 
@@ -15,7 +15,7 @@ fn bench_oneshot_creation_comparison(c: &mut Criterion) {
     // 自定义 oneshot - 优化版（1个 Arc 分配）
     group.bench_function("custom_1arc_optimized", |b| {
         b.iter(|| {
-            let (_notifier, _receiver) = new_oneshot::<TaskCompletion>();
+            let (_notifier, _receiver) = channel::<TaskCompletion>();
         });
     });
     
@@ -43,7 +43,7 @@ fn bench_oneshot_send_recv_comparison(c: &mut Criterion) {
             let mut total_duration = Duration::from_secs(0);
             
             for _ in 0..iters {
-                let (notifier, receiver) = new_oneshot();
+                let (notifier, receiver) = channel();
                 
                 let start = std::time::Instant::now();
                 
@@ -103,7 +103,7 @@ fn bench_oneshot_batch_comparison(c: &mut Criterion) {
                         // Create channels
                         let mut channels = Vec::new();
                         for _ in 0..size {
-                            channels.push(new_oneshot());
+                            channels.push(channel());
                         }
                         
                         let start = std::time::Instant::now();
@@ -182,7 +182,7 @@ fn bench_oneshot_cross_task_comparison(c: &mut Criterion) {
             let mut total_duration = Duration::from_secs(0);
             
             for _ in 0..iters {
-                let (notifier, receiver) = new_oneshot();
+                let (notifier, receiver) = channel();
                 
                 let start = std::time::Instant::now();
                 
@@ -250,7 +250,7 @@ fn bench_oneshot_immediate_notification(c: &mut Criterion) {
             let mut total_duration = Duration::from_secs(0);
             
             for _ in 0..iters {
-                let (notifier, receiver) = new_oneshot();
+                let (notifier, receiver) = channel();
                 
                 let start = std::time::Instant::now();
                 

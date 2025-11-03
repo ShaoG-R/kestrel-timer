@@ -62,7 +62,7 @@ use crate::task::{ONESHOT_PENDING, ONESHOT_CALLED, ONESHOT_CANCELLED, TaskComple
 /// });
 /// let result = receiver.await; // Direct await via IntoFuture
 /// ```
-pub trait OneShotState: Sized + Send + Sync + 'static {
+pub trait State: Sized + Send + Sync + 'static {
     /// Convert the state to u8 for atomic storage
     /// 
     /// 将状态转换为 u8 以进行原子存储
@@ -83,7 +83,7 @@ pub trait OneShotState: Sized + Send + Sync + 'static {
     fn pending_value() -> u8;
 }
 
-impl OneShotState for TaskCompletion {
+impl State for TaskCompletion {
     #[inline]
     fn to_u8(&self) -> u8 {
         match self {
@@ -110,7 +110,7 @@ impl OneShotState for TaskCompletion {
 /// Implementation for unit type () - simple completion notification without state
 /// 
 /// 为单元类型 () 实现 - 简单的完成通知，无需状态信息
-impl OneShotState for () {
+impl State for () {
     #[inline]
     fn to_u8(&self) -> u8 {
         1 // Completed
@@ -131,8 +131,8 @@ impl OneShotState for () {
 }
 
 #[inline]
-pub fn new_oneshot<T: OneShotState>() -> (OneShotCompletionNotifier<T>, OneShotCompletionReceiver<T>) {
-    let (notifier, receiver) = OneShotCompletionNotifier::<T>::new();
+pub fn channel<T: State>() -> (Sender<T>, Receiver<T>) {
+    let (notifier, receiver) = Sender::<T>::new();
     (notifier, receiver)
 }
 
@@ -143,13 +143,13 @@ pub fn new_oneshot<T: OneShotState>() -> (OneShotCompletionNotifier<T>, OneShotC
 /// 一次性完成通知的内部状态
 /// 
 /// 将 Notify 和 AtomicU8 合并到单个分配中以提高性能
-pub(crate) struct OneShotInner<T: OneShotState> {
+pub(crate) struct Inner<T: State> {
     pub(crate) notify: Notify,
     pub(crate) state: AtomicU8,
     pub(crate) _marker: std::marker::PhantomData<T>,
 }
 
-impl<T: OneShotState> OneShotInner<T> {
+impl<T: State> Inner<T> {
     /// Create a new oneshot inner state
     /// 
     /// 创建一个新的 oneshot 内部状态
@@ -181,11 +181,11 @@ impl<T: OneShotState> OneShotInner<T> {
 /// 
 /// 使用 Notify + AtomicU8 实现零分配、低延迟通知
 /// 优化为使用单个 Arc 分配
-pub struct OneShotCompletionNotifier<T: OneShotState = TaskCompletion> {
-    inner: Arc<OneShotInner<T>>,
+pub struct Sender<T: State = TaskCompletion> {
+    inner: Arc<Inner<T>>,
 }
 
-impl<T: OneShotState> OneShotCompletionNotifier<T> {
+impl<T: State> Sender<T> {
     /// Create a new oneshot completion notifier with receiver
     /// 
     /// 创建一个新的 oneshot 完成通知器和接收器
@@ -195,13 +195,13 @@ impl<T: OneShotState> OneShotCompletionNotifier<T> {
     /// 
     /// 返回 (通知器, 接收器) 元组
     #[inline]
-    pub fn new() -> (Self, OneShotCompletionReceiver<T>) {
-        let inner = OneShotInner::new();
+    pub fn new() -> (Self, Receiver<T>) {
+        let inner = Inner::new();
         
-        let notifier = OneShotCompletionNotifier {
+        let notifier = Sender {
             inner: inner.clone(),
         };
-        let receiver = OneShotCompletionReceiver {
+        let receiver = Receiver {
             inner,
             notified: None,
         };
@@ -284,15 +284,15 @@ impl<T: OneShotState> OneShotCompletionNotifier<T> {
 ///     CustomState::Timeout => println!("Timed out"),
 /// }
 /// ```
-pub struct OneShotCompletionReceiver<T: OneShotState = TaskCompletion> {
-    pub(crate) inner: Arc<OneShotInner<T>>,
+pub struct Receiver<T: State = TaskCompletion> {
+    pub(crate) inner: Arc<Inner<T>>,
     pub(crate) notified: Option<tokio::sync::futures::Notified<'static>>,
 }
 
 // OneShotCompletionReceiver is Unpin because all its fields are Unpin
-impl<T: OneShotState> Unpin for OneShotCompletionReceiver<T> {}
+impl<T: State> Unpin for Receiver<T> {}
 
-impl<T: OneShotState> OneShotCompletionReceiver<T> {
+impl<T: State> Receiver<T> {
     /// Wait for task completion asynchronously
     /// 
     /// This is equivalent to using `.await` directly on the receiver
@@ -319,7 +319,7 @@ impl<T: OneShotState> OneShotCompletionReceiver<T> {
 /// 为 OneShotCompletionReceiver 直接实现 Future
 /// 
 /// 这允许 `receiver.await` 和 `(&mut receiver).await` 都能工作
-impl<T: OneShotState> Future for OneShotCompletionReceiver<T> {
+impl<T: State> Future for Receiver<T> {
     type Output = T;
     
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -386,7 +386,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_called() {
-        let (notifier, receiver) = OneShotCompletionNotifier::new();
+        let (notifier, receiver) = Sender::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -399,7 +399,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_cancelled() {
-        let (notifier, receiver) = OneShotCompletionNotifier::new();
+        let (notifier, receiver) = Sender::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -412,7 +412,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_immediate_called() {
-        let (notifier, receiver) = OneShotCompletionNotifier::new();
+        let (notifier, receiver) = Sender::new();
         
         // Notify before waiting (fast path)
         notifier.notify(TaskCompletion::Called);
@@ -423,7 +423,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_immediate_cancelled() {
-        let (notifier, receiver) = OneShotCompletionNotifier::new();
+        let (notifier, receiver) = Sender::new();
         
         // Notify before waiting (fast path)
         notifier.notify(TaskCompletion::Cancelled);
@@ -440,7 +440,7 @@ mod tests {
         Timeout,
     }
     
-    impl OneShotState for CustomState {
+    impl State for CustomState {
         fn to_u8(&self) -> u8 {
             match self {
                 CustomState::Success => 1,
@@ -465,7 +465,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_custom_state() {
-        let (notifier, receiver) = OneShotCompletionNotifier::<CustomState>::new();
+        let (notifier, receiver) = Sender::<CustomState>::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -478,7 +478,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_custom_state_timeout() {
-        let (notifier, receiver) = OneShotCompletionNotifier::<CustomState>::new();
+        let (notifier, receiver) = Sender::<CustomState>::new();
         
         // Immediate notification
         notifier.notify(CustomState::Timeout);
@@ -489,7 +489,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_unit_type() {
-        let (notifier, receiver) = OneShotCompletionNotifier::<()>::new();
+        let (notifier, receiver) = Sender::<()>::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -502,7 +502,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_unit_type_immediate() {
-        let (notifier, receiver) = OneShotCompletionNotifier::<()>::new();
+        let (notifier, receiver) = Sender::<()>::new();
         
         // Immediate notification (fast path)
         notifier.notify(());
@@ -514,7 +514,7 @@ mod tests {
     // Tests for IntoFuture implementation
     #[tokio::test]
     async fn test_oneshot_into_future_called() {
-        let (notifier, receiver) = OneShotCompletionNotifier::new();
+        let (notifier, receiver) = Sender::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -528,7 +528,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_into_future_immediate() {
-        let (notifier, receiver) = OneShotCompletionNotifier::new();
+        let (notifier, receiver) = Sender::new();
         
         // Notify before awaiting (fast path)
         notifier.notify(TaskCompletion::Cancelled);
@@ -540,7 +540,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_into_future_unit_type() {
-        let (notifier, receiver) = OneShotCompletionNotifier::<()>::new();
+        let (notifier, receiver) = Sender::<()>::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -554,7 +554,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_into_future_custom_state() {
-        let (notifier, receiver) = OneShotCompletionNotifier::<CustomState>::new();
+        let (notifier, receiver) = Sender::<CustomState>::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -569,7 +569,7 @@ mod tests {
     // Test awaiting on &mut receiver
     #[tokio::test]
     async fn test_oneshot_await_mut_reference() {
-        let (notifier, mut receiver) = OneShotCompletionNotifier::new();
+        let (notifier, mut receiver) = Sender::new();
         
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -583,7 +583,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_oneshot_await_mut_reference_unit_type() {
-        let (notifier, mut receiver) = OneShotCompletionNotifier::<()>::new();
+        let (notifier, mut receiver) = Sender::<()>::new();
         
         // Immediate notification
         notifier.notify(());

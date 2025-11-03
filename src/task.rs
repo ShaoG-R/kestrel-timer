@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::utils::oneshot::{new_oneshot, OneShotCompletionNotifier, OneShotCompletionReceiver};
+use crate::utils::oneshot::{channel, Sender, Receiver};
 use crate::utils::spsc::{self, TryRecvError};
 
 /// Global unique task ID generator
@@ -199,7 +199,7 @@ pub enum TaskTypeWithCompletionNotifier {
     /// 
     /// 一次性定时器：执行一次后完成
     OneShot {
-        completion_notifier: OneShotCompletionNotifier,
+        completion_notifier: Sender,
     },
     
     /// Periodic timer: repeats at fixed intervals
@@ -256,7 +256,7 @@ impl PeriodicCompletionReceiver {
 /// 
 /// 一次性任务完成通知器
 pub enum CompletionNotifier {
-    OneShot(OneShotCompletionNotifier),
+    OneShot(Sender),
     Periodic(PeriodicCompletionNotifier),
 }
 
@@ -264,7 +264,7 @@ pub enum CompletionNotifier {
 /// 
 /// 一次性和周期任务完成通知接收器
 pub enum CompletionReceiver {
-    OneShot(OneShotCompletionReceiver),
+    OneShot(Receiver),
     Periodic(PeriodicCompletionReceiver),
 }
 
@@ -456,7 +456,7 @@ impl TimerTaskWithCompletionNotifier {
             TaskType::OneShot { .. } => {
                 // Create oneshot notifier and receiver with optimized single Arc allocation
                 // 创建 oneshot 通知器和接收器，使用优化的单个 Arc 分配
-                let (notifier, receiver) = new_oneshot();
+                let (notifier, receiver) = channel();
 
                 (Self {
                     id: task.id,

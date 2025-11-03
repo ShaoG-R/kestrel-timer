@@ -32,7 +32,7 @@ use crate::task::{ONESHOT_PENDING, ONESHOT_CALLED, ONESHOT_CANCELLED, TaskComple
 ///     Timeout,
 /// }
 /// 
-/// impl OneShotState for CustomState {
+/// impl State for CustomState {
 ///     fn to_u8(&self) -> u8 {
 ///         match self {
 ///             CustomState::Success => 1,
@@ -56,11 +56,11 @@ use crate::task::{ONESHOT_PENDING, ONESHOT_CALLED, ONESHOT_CANCELLED, TaskComple
 /// }
 /// 
 /// // Usage:
-/// let (notifier, receiver) = OneShotCompletionNotifier::<CustomState>::new();
+/// let (notifier, receiver) = Sender::<CustomState>::new();
 /// tokio::spawn(async move {
 ///     notifier.notify(CustomState::Success);
 /// });
-/// let result = receiver.await; // Direct await via IntoFuture
+/// let result = receiver.await; // Direct await
 /// ```
 pub trait State: Sized + Send + Sync + 'static {
     /// Convert the state to u8 for atomic storage
@@ -231,7 +231,7 @@ impl<T: State> Sender<T> {
 /// ## Using default TaskCompletion type
 /// 
 /// ```rust,ignore
-/// let (notifier, receiver) = new_oneshot();
+/// let (notifier, receiver) = Sender::new();
 /// 
 /// tokio::spawn(async move {
 ///     notifier.notify(TaskCompletion::Called);
@@ -246,7 +246,7 @@ impl<T: State> Sender<T> {
 /// ## Awaiting on mutable reference
 /// 
 /// ```rust,ignore
-/// let (notifier, mut receiver) = new_oneshot();
+/// let (notifier, mut receiver) = Sender::new();
 /// 
 /// tokio::spawn(async move {
 ///     notifier.notify(TaskCompletion::Called);
@@ -259,7 +259,7 @@ impl<T: State> Sender<T> {
 /// ## Using unit type for simple completion
 /// 
 /// ```rust,ignore
-/// let (notifier, receiver) = OneShotCompletionNotifier::<()>::new();
+/// let (notifier, receiver) = Sender::<()>::new();
 /// 
 /// tokio::spawn(async move {
 ///     // ... do work ...
@@ -272,7 +272,7 @@ impl<T: State> Sender<T> {
 /// ## Using custom state
 /// 
 /// ```rust,ignore
-/// let (notifier, receiver) = OneShotCompletionNotifier::<CustomState>::new();
+/// let (notifier, receiver) = Sender::<CustomState>::new();
 /// 
 /// tokio::spawn(async move {
 ///     notifier.notify(CustomState::Success);
@@ -289,7 +289,7 @@ pub struct Receiver<T: State = TaskCompletion> {
     pub(crate) notified: Option<tokio::sync::futures::Notified<'static>>,
 }
 
-// OneShotCompletionReceiver is Unpin because all its fields are Unpin
+// Receiver is Unpin because all its fields are Unpin
 impl<T: State> Unpin for Receiver<T> {}
 
 impl<T: State> Receiver<T> {
@@ -312,18 +312,18 @@ impl<T: State> Receiver<T> {
     }
 }
 
-/// Direct Future implementation for OneShotCompletionReceiver
+/// Direct Future implementation for Receiver
 /// 
 /// This allows both `receiver.await` and `(&mut receiver).await` to work
 /// 
-/// 为 OneShotCompletionReceiver 直接实现 Future
+/// 为 Receiver 直接实现 Future
 /// 
 /// 这允许 `receiver.await` 和 `(&mut receiver).await` 都能工作
 impl<T: State> Future for Receiver<T> {
     type Output = T;
     
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: OneShotCompletionReceiver is Unpin, so we can safely get a mutable reference
+        // SAFETY: Receiver is Unpin, so we can safely get a mutable reference
         let this = self.get_mut();
         
         // Fast path: check if already completed
@@ -336,9 +336,9 @@ impl<T: State> Future for Receiver<T> {
         
         // Slow path: setup notification if needed
         if this.notified.is_none() {
-            // SAFETY: We extend the lifetime to 'static because we know the Arc<OneShotInner>
+            // SAFETY: We extend the lifetime to 'static because we know the Arc<Inner>
             // will live as long as this future. The notified future is always dropped
-            // before or at the same time as the OneShotCompletionReceiver.
+            // before or at the same time as the Receiver.
             let notify_ref: &'static Notify = unsafe {
                 std::mem::transmute::<&Notify, &'static Notify>(&this.inner.notify)
             };

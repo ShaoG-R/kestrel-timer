@@ -64,14 +64,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kestrel-timer = "0.1.0"
+kestrel-timer = "0.2.0"
 tokio = { version = "1.48", features = ["full"] }
 ```
 
 ### Basic Usage
 
 ```rust
-use kestrel_timer::{TimerWheel, CallbackWrapper};
+use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask, CompletionReceiver};
 use std::time::Duration;
 
 #[tokio::main]
@@ -83,33 +83,39 @@ async fn main() {
     let callback = Some(CallbackWrapper::new(|| async {
         println!("Timer fired!");
     }));
-    let task = TimerWheel::create_task(Duration::from_secs(1), callback);
+    let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     let handle = timer.register(task);
     
     // Wait for completion
-    handle.into_completion_receiver().0.await.ok();
+    let (rx, _handle) = handle.into_parts();
+    match rx {
+        CompletionReceiver::OneShot(receiver) => {
+            receiver.wait().await;
+        },
+        _ => {}
+    }
 }
 ```
 
 ### Batch Operations
 
 ```rust
-use kestrel_timer::CallbackWrapper;
+use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
+use std::time::Duration;
 
 let timer = TimerWheel::with_defaults();
 
 // Batch create + register
-let callbacks: Vec<_> = (0..100)
+let tasks: Vec<_> = (0..100)
     .map(|i| {
         let delay = Duration::from_millis(100 + i * 10);
         let callback = Some(CallbackWrapper::new(move || async move {
             println!("Timer {} fired", i);
         }));
-        (delay, callback)
+        TimerTask::new_oneshot(delay, callback)
     })
     .collect();
 
-let tasks = TimerWheel::create_batch_with_callbacks(callbacks);
 let batch_handle = timer.register_batch(tasks);
 
 // Batch cancel
@@ -119,10 +125,15 @@ batch_handle.cancel_all();
 ### Postpone Timer
 
 ```rust
+use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
+use std::time::Duration;
+
+let timer = TimerWheel::with_defaults();
+
 let callback = Some(CallbackWrapper::new(|| async {
     println!("Original callback");
 }));
-let task = TimerWheel::create_task(Duration::from_millis(50), callback);
+let task = TimerTask::new_oneshot(Duration::from_millis(50), callback);
 let task_id = task.get_id();
 let handle = timer.register(task);
 
@@ -139,23 +150,31 @@ timer.postpone(task_id, Duration::from_millis(200), new_callback);
 ### TimerService Usage
 
 ```rust
-use kestrel_timer::{TimerService, ServiceConfig};
+use kestrel_timer::{TimerWheel, TimerService, TimerTask, CallbackWrapper, TaskNotification};
+use kestrel_timer::config::ServiceConfig;
+use std::time::Duration;
 
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
 // Batch schedule
-let callbacks = vec![
-    (Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))),
-    (Duration::from_millis(200), Some(CallbackWrapper::new(|| async {}))),
+let tasks: Vec<_> = vec![
+    TimerTask::new_oneshot(Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))),
+    TimerTask::new_oneshot(Duration::from_millis(200), Some(CallbackWrapper::new(|| async {}))),
 ];
-let tasks = TimerService::create_batch_with_callbacks(callbacks);
 service.register_batch(tasks).unwrap();
 
 // Receive timeout notifications
 let mut timeout_rx = service.take_receiver().unwrap();
-while let Some(task_id) = timeout_rx.recv().await {
-    println!("Task {:?} completed", task_id);
+while let Some(notification) = timeout_rx.recv().await {
+    match notification {
+        TaskNotification::OneShot(task_id) => {
+            println!("One-shot task {:?} completed", task_id);
+        },
+        TaskNotification::Periodic(task_id) => {
+            println!("Periodic task {:?} called", task_id);
+        },
+    }
 }
 
 service.shutdown().await;
@@ -209,26 +228,36 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 
 ### Main APIs
 
+**TimerTask**:
+- `TimerTask::new_oneshot(delay, callback)` - Create one-shot task
+- `TimerTask::new_periodic(initial_delay, interval, callback, buffer_size)` - Create periodic task
+- `get_id()` - Get task ID
+- `get_task_type()` - Get task type
+- `get_interval()` - Get interval for periodic tasks
+
 **TimerWheel**:
 - `TimerWheel::with_defaults()` - Create with default config
 - `TimerWheel::new(config)` - Create with custom config
-- `create_task(delay, callback)` - Create task (static method)
 - `register(task)` - Register task
 - `register_batch(tasks)` - Batch register
+- `cancel(task_id)` - Cancel task
+- `cancel_batch(task_ids)` - Batch cancel
 - `postpone(task_id, delay, callback)` - Postpone task
 - `postpone_batch(updates)` - Batch postpone
 
 **TimerHandle**:
 - `cancel()` - Cancel timer
 - `task_id()` - Get task ID
-- `into_completion_receiver()` - Get completion notification
+- `into_parts()` - Get completion receiver and handle
 
 **TimerService**:
-- `create_task(delay, callback)` - Create task (static method)
 - `register(task)` - Register task
+- `register_batch(tasks)` - Batch register
 - `take_receiver()` - Get timeout notification receiver
 - `cancel_task(task_id)` - Cancel task
+- `cancel_batch(task_ids)` - Batch cancel
 - `postpone(task_id, delay, callback)` - Postpone task
+- `postpone_batch(updates)` - Batch postpone
 - `shutdown()` - Shutdown service
 
 ## Configuration
@@ -311,12 +340,15 @@ cargo test --test integration_test test_large_scale_timers
 ### 1. Network Timeout Management
 
 ```rust
+use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
+use std::time::Duration;
+
 async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
     let callback = Some(CallbackWrapper::new(move || async move {
         println!("Connection {} timed out", conn_id);
         close_connection(conn_id).await;
     }));
-    let task = TimerWheel::create_task(Duration::from_secs(30), callback);
+    let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
     let handle = timer.register(task);
     
     // Cancel timeout when connection completes
@@ -327,6 +359,10 @@ async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
 ### 2. Heartbeat Detection
 
 ```rust
+use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
+use kestrel_timer::config::ServiceConfig;
+use std::time::Duration;
+
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
@@ -334,7 +370,7 @@ for client_id in client_ids {
     let callback = Some(CallbackWrapper::new(move || async move {
         println!("Client {} heartbeat timeout", client_id);
     }));
-    let task = TimerService::create_task(Duration::from_secs(30), callback);
+    let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
     service.register(task).unwrap();
 }
 ```
@@ -342,6 +378,10 @@ for client_id in client_ids {
 ### 3. Cache Expiration
 
 ```rust
+use kestrel_timer::{TimerTask, CallbackWrapper};
+use std::sync::Arc;
+use std::time::Duration;
+
 async fn set_cache(&self, key: String, value: String, ttl: Duration) {
     self.cache.lock().insert(key.clone(), value);
     
@@ -353,7 +393,7 @@ async fn set_cache(&self, key: String, value: String, ttl: Duration) {
             cache.lock().remove(&key);
         }
     }));
-    let task = TimerWheel::create_task(ttl, callback);
+    let task = TimerTask::new_oneshot(ttl, callback);
     self.timer.register(task);
 }
 ```
@@ -361,6 +401,9 @@ async fn set_cache(&self, key: String, value: String, ttl: Duration) {
 ### 4. Game Buff System
 
 ```rust
+use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper, TaskId};
+use std::time::Duration;
+
 async fn apply_buff(
     timer: &TimerWheel,
     player_id: u64,
@@ -370,7 +413,7 @@ async fn apply_buff(
     let callback = Some(CallbackWrapper::new(move || async move {
         remove_buff(player_id, buff_type).await;
     }));
-    let task = TimerWheel::create_task(duration, callback);
+    let task = TimerTask::new_oneshot(duration, callback);
     let task_id = task.get_id();
     timer.register(task);
     task_id
@@ -383,13 +426,16 @@ timer.postpone(task_id, new_duration, None);
 ### 5. Retry Mechanism
 
 ```rust
+use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
+use std::time::Duration;
+
 async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
     for retry in 1..=5 {
         let delay = Duration::from_secs(2_u64.pow(retry - 1));
         let callback = Some(CallbackWrapper::new(move || async move {
             operation().await;
         }));
-        let task = TimerWheel::create_task(delay, callback);
+        let task = TimerTask::new_oneshot(delay, callback);
         timer.register(task);
     }
 }

@@ -665,6 +665,305 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark: Periodic timer registration (compare tokio vs kestrel)
+/// 基准测试：周期定时器注册 (对比 tokio 和 kestrel)
+fn bench_periodic_register_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("periodic_register");
+    
+    for size in [10, 100].iter() {
+        // Benchmark kestrel-timer periodic registration
+        // 基准测试 kestrel-timer 周期性任务注册
+        group.bench_with_input(BenchmarkId::new("kestrel", size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // Preparation stage: create timer and service (not measured)
+                    // 准备阶段：创建 timer 和 service（不计入测量）
+                    let timer = TimerWheel::with_defaults();
+                    let service = timer.create_service(ServiceConfig::default());
+                    
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_periodic(
+                            Duration::from_secs(10),
+                            Duration::from_secs(1),
+                            None,
+                            None
+                        ))
+                        .collect();
+                    
+                    // Measurement stage: only measure register_batch performance
+                    // 测量阶段：只测量 register_batch 的性能
+                    let start = std::time::Instant::now();
+                    
+                    let _batch = service.register_batch(tasks).unwrap();
+                    
+                    total_duration += start.elapsed();
+                }
+                
+                total_duration
+            });
+        });
+        
+        // Benchmark tokio::time::interval registration (no spawn overhead)
+        // 基准测试 tokio::time::interval 注册（去除 spawn 开销）
+        group.bench_with_input(BenchmarkId::new("tokio", size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // Measurement stage: only measure creating intervals, without spawn overhead
+                    // 测量阶段：只测量创建 interval，不包含 spawn 开销
+                    let start = std::time::Instant::now();
+                    
+                    let mut intervals = Vec::new();
+                    for _ in 0..size {
+                        let mut interval = tokio::time::interval(Duration::from_secs(1));
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        intervals.push(interval);
+                    }
+                    
+                    total_duration += start.elapsed();
+                    
+                    // Intervals will be dropped automatically (cleanup not measured)
+                    // interval 会自动 drop（清理不计入测量）
+                }
+                
+                total_duration
+            });
+        });
+    }
+    
+    group.finish();
+}
+
+/// Benchmark: Periodic timer cancellation (compare tokio vs kestrel)
+/// 基准测试：周期定时器取消 (对比 tokio 和 kestrel)
+fn bench_periodic_cancel_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("periodic_cancel");
+    
+    for size in [10, 100].iter() {
+        // Benchmark kestrel-timer periodic cancellation
+        // 基准测试 kestrel-timer 周期性任务取消
+        group.bench_with_input(BenchmarkId::new("kestrel", size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // Preparation stage: create timer, service and scheduled tasks (not measured)
+                    // 准备阶段：创建 timer、service 和调度任务（不计入测量）
+                    let timer = TimerWheel::with_defaults();
+                    let service = timer.create_service(ServiceConfig::default());
+                    
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_periodic(
+                            Duration::from_secs(10),
+                            Duration::from_secs(1),
+                            None,
+                            None
+                        ))
+                        .collect();
+                    let batch = service.register_batch(tasks).unwrap();
+                    let task_ids: Vec<_> = batch.task_ids().to_vec();
+                    
+                    // Measurement stage: only measure cancel_batch performance
+                    // 测量阶段：只测量 cancel_batch 的性能
+                    let start = std::time::Instant::now();
+                    
+                    let _cancelled = service.cancel_batch(&task_ids);
+                    
+                    total_duration += start.elapsed();
+                }
+                
+                total_duration
+            });
+        });
+        
+        // Benchmark tokio interval drop/cancellation (no spawn overhead)
+        // 基准测试 tokio interval drop/取消（去除 spawn 开销）
+        group.bench_with_input(BenchmarkId::new("tokio", size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    // Preparation stage: create intervals (not measured)
+                    // 准备阶段：创建 interval（不计入测量）
+                    let mut intervals = Vec::new();
+                    for _ in 0..size {
+                        let mut interval = tokio::time::interval(Duration::from_secs(1));
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        intervals.push(interval);
+                    }
+                    
+                    // Measurement stage: measure drop performance
+                    // 测量阶段：测量 drop 性能
+                    let start = std::time::Instant::now();
+                    
+                    drop(intervals);
+                    
+                    total_duration += start.elapsed();
+                }
+                
+                total_duration
+            });
+        });
+    }
+    
+    group.finish();
+}
+
+/// Benchmark: Single periodic timer registration (compare tokio vs kestrel)
+/// 基准测试：单个周期定时器注册 (对比 tokio 和 kestrel)
+fn bench_periodic_single_register_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("periodic_single_register");
+    
+    // Benchmark kestrel-timer single periodic registration
+    // 基准测试 kestrel-timer 单个周期性任务注册
+    group.bench_function("kestrel", |b| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                let timer = TimerWheel::with_defaults();
+                let service = timer.create_service(ServiceConfig::default());
+                
+                let start = std::time::Instant::now();
+                
+                let task = TimerTask::new_periodic(
+                    Duration::from_secs(10),
+                    Duration::from_secs(1),
+                    None,
+                    None
+                );
+                service.register(task).unwrap();
+                
+                total_duration += start.elapsed();
+            }
+            
+            total_duration
+        });
+    });
+    
+    // Benchmark tokio::time::interval single registration (no spawn overhead)
+    // 基准测试 tokio::time::interval 单个注册（去除 spawn 开销）
+    group.bench_function("tokio", |b| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                let start = std::time::Instant::now();
+                
+                // Only measure creating the interval, without spawn overhead
+                // 只测量创建 interval，不包含 spawn 开销
+                let mut _interval = tokio::time::interval(Duration::from_secs(1));
+                _interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                
+                total_duration += start.elapsed();
+            }
+            
+            total_duration
+        });
+    });
+    
+    group.finish();
+}
+
+/// Benchmark: Periodic timer with callback performance (compare tokio vs kestrel)
+/// 基准测试：带回调的周期定时器性能 (对比 tokio 和 kestrel)
+fn bench_periodic_with_callback_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("periodic_with_callback");
+    
+    for size in [10, 100].iter() {
+        // Benchmark kestrel-timer periodic with callback
+        // 基准测试 kestrel-timer 周期性任务带回调
+        group.bench_with_input(BenchmarkId::new("kestrel", size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    let timer = TimerWheel::with_defaults();
+                    let service = timer.create_service(ServiceConfig::default());
+                    let counter = Arc::new(AtomicU32::new(0));
+                    
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| {
+                            let counter = Arc::clone(&counter);
+                            TimerTask::new_periodic(
+                                Duration::from_secs(10),
+                                Duration::from_secs(1),
+                                Some(CallbackWrapper::new(move || {
+                                    let counter = Arc::clone(&counter);
+                                    async move {
+                                        counter.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                })),
+                                None
+                            )
+                        })
+                        .collect();
+                    
+                    let start = std::time::Instant::now();
+                    
+                    let _batch = service.register_batch(tasks).unwrap();
+                    
+                    total_duration += start.elapsed();
+                }
+                
+                total_duration
+            });
+        });
+        
+        // Benchmark tokio with callback (no spawn overhead)
+        // 基准测试 tokio 带回调（去除 spawn 开销）
+        group.bench_with_input(BenchmarkId::new("tokio", size), size, |b, &size| {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            
+            b.to_async(&runtime).iter_custom(|iters| async move {
+                let mut total_duration = Duration::from_secs(0);
+                
+                for _ in 0..iters {
+                    let counter = Arc::new(AtomicU32::new(0));
+                    
+                    let start = std::time::Instant::now();
+                    
+                    // Create intervals with callback closures (no spawn overhead)
+                    // 创建带有回调闭包的 interval（不包含 spawn 开销）
+                    let mut intervals_with_callbacks: Vec<(tokio::time::Interval, Box<dyn Fn() + Send>)> = Vec::new();
+                    for _ in 0..size {
+                        let counter = Arc::clone(&counter);
+                        let mut interval = tokio::time::interval(Duration::from_secs(1));
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        let callback = Box::new(move || {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        });
+                        intervals_with_callbacks.push((interval, callback));
+                    }
+                    
+                    total_duration += start.elapsed();
+                }
+                
+                total_duration
+            });
+        });
+    }
+    
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_schedule_single,
@@ -681,6 +980,10 @@ criterion_group!(
     bench_postpone_with_callback,
     bench_postpone_batch_with_callbacks,
     bench_mixed_operations_with_postpone,
+    bench_periodic_register_comparison,
+    bench_periodic_cancel_comparison,
+    bench_periodic_single_register_comparison,
+    bench_periodic_with_callback_comparison,
 );
 
 criterion_main!(benches);

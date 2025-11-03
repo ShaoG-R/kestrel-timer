@@ -1,8 +1,13 @@
-use crate::{PeriodicTaskCompletion, TimerTask};
+use crate::{CallbackWrapper, PeriodicTaskCompletion};
 use crate::config::{BatchConfig, WheelConfig};
 use crate::task::{OneShotTaskCompletion, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
+
+pub struct WheelAdvanceResult {
+    pub id: TaskId,
+    pub callback: Option<CallbackWrapper>
+}
 
 /// Timing wheel single layer data structure
 /// 
@@ -638,7 +643,7 @@ impl Wheel {
     /// - L0 层每次推进 1 个 tick（无轮数检查）
     /// - L1 层每 (L1_tick / L0_tick) 次推进一次
     /// - L1 层过期任务批量降级到 L0
-    pub fn advance(&mut self) -> Vec<TimerTask> {
+    pub fn advance(&mut self) -> Vec<WheelAdvanceResult> {
         // Advance L0 layer
         // 推进 L0 层
         self.l0.current_tick += 1;
@@ -681,8 +686,6 @@ impl Wheel {
 
                 let TimerTaskForWheel { task, .. } = task_with_notifier;
 
-                let task_type = task.task_type.get_task_type();
-
                 match task.task_type {
                     TaskTypeWithCompletionNotifier::Periodic { interval, buffer_size, completion_notifier } => {
                         let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Called);
@@ -699,10 +702,8 @@ impl Wheel {
                     }
                 }
 
-                expired_tasks.push(TimerTask {
-                    id: task.id,
-                    task_type,
-                    delay: task.delay,
+                expired_tasks.push(WheelAdvanceResult {
+                    id: task_id,
                     callback: task.callback,
                 });
                 

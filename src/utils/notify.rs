@@ -8,11 +8,12 @@
 /// 为 SPSC（单生产者单消费者）模式优化，其中每次只有一个任务等待。
 /// 比 tokio::sync::Notify 更轻量。
 
-use std::sync::atomic::{AtomicU8, AtomicPtr, Ordering};
-use std::ptr;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
+
+use super::atomic_waker::AtomicWaker;
 
 // States for the notification
 const EMPTY: u8 = 0;      // No waiter, no notification
@@ -22,21 +23,21 @@ const NOTIFIED: u8 = 2;   // Notification sent
 /// Lightweight single-waiter notifier optimized for SPSC pattern
 /// 
 /// Much lighter than tokio::sync::Notify:
-/// - No waitlist allocation (just one atomic pointer + one atomic state)
-/// - Direct waker management (no intermediate state machine)
+/// - No waitlist allocation (just AtomicWaker + one atomic state)
+/// - Reuses common AtomicWaker implementation (no Box allocation)
 /// - Faster creation and notification
 /// - Handles notification-before-wait correctly
 /// 
 /// 为 SPSC 模式优化的轻量级单等待者通知器
 /// 
 /// 比 tokio::sync::Notify 更轻量：
-/// - 无需等待列表分配（仅一个原子指针 + 一个原子状态）
-/// - 直接管理 waker（无复杂状态机）
+/// - 无需等待列表分配（仅 AtomicWaker + 一个原子状态）
+/// - 复用通用的 AtomicWaker 实现（无 Box 分配）
 /// - 更快的创建和通知速度
 /// - 正确处理通知先于等待的情况
 pub struct SingleWaiterNotify {
     state: AtomicU8,
-    waker: AtomicPtr<Waker>,
+    waker: AtomicWaker,
 }
 
 impl SingleWaiterNotify {
@@ -47,7 +48,7 @@ impl SingleWaiterNotify {
     pub fn new() -> Self {
         Self {
             state: AtomicU8::new(EMPTY),
-            waker: AtomicPtr::new(ptr::null_mut()),
+            waker: AtomicWaker::new(),
         }
     }
     
@@ -76,14 +77,7 @@ impl SingleWaiterNotify {
         
         // If there was a waiter, wake it
         if prev_state == WAITING {
-            let waker_ptr = self.waker.swap(ptr::null_mut(), Ordering::AcqRel);
-            if !waker_ptr.is_null() {
-                // SAFETY: This pointer was created by Box::into_raw in register_waker
-                unsafe {
-                    let waker = Box::from_raw(waker_ptr);
-                    waker.wake();
-                }
-            }
+            self.waker.wake();
         }
     }
     
@@ -95,7 +89,7 @@ impl SingleWaiterNotify {
     /// 
     /// 如果已经被通知则返回 true（快速路径）
     #[inline]
-    fn register_waker(&self, waker: &Waker) -> bool {
+    fn register_waker(&self, waker: &std::task::Waker) -> bool {
         // Try to transition from EMPTY to WAITING
         match self.state.compare_exchange(
             EMPTY,
@@ -105,15 +99,7 @@ impl SingleWaiterNotify {
         ) {
             Ok(_) => {
                 // Successfully transitioned, store the waker
-                let new_waker = Box::into_raw(Box::new(waker.clone()));
-                let old_waker = self.waker.swap(new_waker, Ordering::AcqRel);
-                
-                if !old_waker.is_null() {
-                    // SAFETY: This pointer was created by Box::into_raw
-                    unsafe {
-                        let _ = Box::from_raw(old_waker);
-                    }
-                }
+                self.waker.register(waker);
                 false // Not notified yet
             }
             Err(state) => {
@@ -124,15 +110,7 @@ impl SingleWaiterNotify {
                     true // Already notified
                 } else {
                     // State is WAITING, update the waker
-                    let new_waker = Box::into_raw(Box::new(waker.clone()));
-                    let old_waker = self.waker.swap(new_waker, Ordering::AcqRel);
-                    
-                    if !old_waker.is_null() {
-                        // SAFETY: This pointer was created by Box::into_raw
-                        unsafe {
-                            let _ = Box::from_raw(old_waker);
-                        }
-                    }
+                    self.waker.register(waker);
                     
                     // Check if notified while we were updating waker
                     if self.state.load(Ordering::Acquire) == NOTIFIED {
@@ -147,18 +125,11 @@ impl SingleWaiterNotify {
     }
 }
 
-impl Drop for SingleWaiterNotify {
-    fn drop(&mut self) {
-        // Clean up any remaining waker
-        let waker_ptr = self.waker.load(Ordering::Acquire);
-        if !waker_ptr.is_null() {
-            // SAFETY: This pointer was created by Box::into_raw
-            unsafe {
-                let _ = Box::from_raw(waker_ptr);
-            }
-        }
-    }
-}
+// Drop is automatically handled by AtomicWaker's drop implementation
+// No need for explicit drop implementation
+//
+// Drop 由 AtomicWaker 的 drop 实现自动处理
+// 无需显式的 drop 实现
 
 /// Future returned by `SingleWaiterNotify::notified()`
 /// 
@@ -197,15 +168,22 @@ impl Drop for Notified<'_> {
     fn drop(&mut self) {
         if self.registered {
             // If we registered but are being dropped, try to clean up
-            if self.notify.state.load(Ordering::Acquire) == WAITING {
-                // Try to transition back to EMPTY
-                let _ = self.notify.state.compare_exchange(
-                    WAITING,
-                    EMPTY,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
-            }
+            // PERFORMANCE: Direct compare_exchange without pre-check:
+            // - Single atomic operation instead of two (load + compare_exchange)
+            // - Relaxed ordering is sufficient - just cleaning up state
+            // - CAS will fail harmlessly if state is not WAITING
+            //
+            // 如果我们注册了但正在被 drop，尝试清理
+            // 性能优化：直接 compare_exchange 无需预检查：
+            // - 单次原子操作而不是两次（load + compare_exchange）
+            // - Relaxed ordering 就足够了 - 只是清理状态
+            // - 如果状态不是 WAITING，CAS 会无害地失败
+            let _ = self.notify.state.compare_exchange(
+                WAITING,
+                EMPTY,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
         }
     }
 }

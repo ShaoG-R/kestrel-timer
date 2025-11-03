@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
-use std::ptr;
+use std::task::{Context, Poll};
 
 use crate::task::{ONESHOT_PENDING, ONESHOT_CALLED, ONESHOT_CANCELLED, TaskCompletion};
+use super::atomic_waker::AtomicWaker;
 
 /// Trait for types that can be used as oneshot state
 /// 
@@ -138,23 +138,19 @@ pub fn channel<T: State>() -> (Sender<T>, Receiver<T>) {
 
 /// Inner state for one-shot completion notification
 /// 
-/// Uses AtomicPtr<Waker> for minimal overhead:
-/// - Creation: Just initialize null pointer (no allocation)
-/// - Send: Atomic swap and wake (minimal operations)
-/// - Recv: Atomic store waker pointer (no intermediate futures)
-/// 
-/// Much lighter than both Notify (has waitlist) and AtomicWaker (has state machine)
+/// Uses AtomicWaker for zero Box allocation waker storage:
+/// - Waker itself is just 2 pointers (16 bytes on 64-bit), no additional heap allocation
+/// - Atomic state machine ensures safe concurrent access
+/// - Reuses common AtomicWaker implementation
 /// 
 /// 一次性完成通知的内部状态
 /// 
-/// 使用 AtomicPtr<Waker> 实现最小开销：
-/// - 创建：仅初始化空指针（无分配）
-/// - 发送：原子交换并唤醒（最少操作）
-/// - 接收：原子存储 waker 指针（无中间 future）
-/// 
-/// 比 Notify（有等待列表）和 AtomicWaker（有状态机）都更轻量
+/// 使用 AtomicWaker 实现零 Box 分配的 waker 存储：
+/// - Waker 本身只是 2 个指针（64 位系统上 16 字节），无额外堆分配
+/// - 原子状态机确保安全的并发访问
+/// - 复用通用的 AtomicWaker 实现
 pub(crate) struct Inner<T: State> {
-    waker: AtomicPtr<Waker>,
+    waker: AtomicWaker,
     state: AtomicU8,
     _marker: std::marker::PhantomData<T>,
 }
@@ -162,15 +158,15 @@ pub(crate) struct Inner<T: State> {
 impl<T: State> Inner<T> {
     /// Create a new oneshot inner state
     /// 
-    /// Extremely fast: just initializes null pointer and pending state
+    /// Extremely fast: just initializes empty waker and pending state
     /// 
     /// 创建一个新的 oneshot 内部状态
     /// 
-    /// 极快：仅初始化空指针和待处理状态
+    /// 极快：仅初始化空 waker 和待处理状态
     #[inline]
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
-            waker: AtomicPtr::new(ptr::null_mut()),
+            waker: AtomicWaker::new(),
             state: AtomicU8::new(T::pending_value()),
             _marker: std::marker::PhantomData,
         })
@@ -178,46 +174,22 @@ impl<T: State> Inner<T> {
     
     /// Send a completion notification (set state and wake)
     /// 
-    /// Optimized: atomically swap waker and wake if exists
-    /// 
     /// 发送完成通知（设置状态并唤醒）
-    /// 
-    /// 优化：原子交换 waker 并在存在时唤醒
     #[inline]
     pub(crate) fn send(&self, state: T) {
-        // Store state first with Release ordering
+        // Store completion state first with Release ordering
         self.state.store(state.to_u8(), Ordering::Release);
         
-        // Atomically take the waker (if any) and wake it
-        let waker_ptr = self.waker.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !waker_ptr.is_null() {
-            // SAFETY: We know this pointer was created by Box::into_raw in register_waker
-            // and we're the only one who can swap it out
-            unsafe {
-                let waker = Box::from_raw(waker_ptr);
-                waker.wake();
-            }
-        }
+        // Wake the registered waker if any
+        self.waker.wake();
     }
     
     /// Register a waker to be notified on completion
     /// 
     /// 注册一个 waker 以在完成时收到通知
     #[inline]
-    fn register_waker(&self, waker: &Waker) {
-        // Create a boxed waker and convert to raw pointer
-        let new_waker = Box::into_raw(Box::new(waker.clone()));
-        
-        // Atomically swap the old waker with the new one
-        let old_waker = self.waker.swap(new_waker, Ordering::AcqRel);
-        
-        // Drop the old waker if it exists
-        if !old_waker.is_null() {
-            // SAFETY: This pointer was created by Box::into_raw
-            unsafe {
-                let _ = Box::from_raw(old_waker);
-            }
-        }
+    fn register_waker(&self, waker: &std::task::Waker) {
+        self.waker.register(waker);
     }
 }
 
@@ -235,18 +207,20 @@ impl<T: State> Inner<T> {
 
 /// Completion notifier for one-shot tasks
 /// 
-/// Optimized implementation using AtomicPtr<Waker> + AtomicU8:
-/// - Faster creation than Notify (no waitlist allocation) or AtomicWaker (no state machine)
-/// - Lower memory footprint (just two atomic fields)
-/// - Direct waker management without intermediate futures
+/// Optimized implementation using direct RawWaker storage + AtomicU8:
+/// - Zero Box allocation: stores waker components directly in atomic fields
+/// - Faster creation than Notify (no waitlist) or AtomicWaker (no state machine)
+/// - Lower memory footprint (three atomic fields: data ptr, vtable ptr, state)
+/// - Direct waker management without intermediate futures or heap allocation
 /// - Single Arc allocation for both sender and receiver
 /// 
 /// 一次性任务完成通知器
 /// 
-/// 使用 AtomicPtr<Waker> + AtomicU8 的优化实现：
-/// - 比 Notify（无等待列表分配）或 AtomicWaker（无状态机）创建更快
-/// - 更小的内存占用（仅两个原子字段）
-/// - 直接管理 waker，无中间 future
+/// 使用直接 RawWaker 存储 + AtomicU8 的优化实现：
+/// - 零 Box 分配：直接在原子字段中存储 waker 组件
+/// - 比 Notify（无等待列表）或 AtomicWaker（无状态机）创建更快
+/// - 更小的内存占用（三个原子字段：data 指针、vtable 指针、状态）
+/// - 直接管理 waker，无中间 future 或堆分配
 /// - 发送器和接收器共享单个 Arc 分配
 pub struct Sender<T: State = TaskCompletion> {
     inner: Arc<Inner<T>>,
@@ -357,30 +331,11 @@ pub struct Receiver<T: State = TaskCompletion> {
 // Receiver is Unpin because all its fields are Unpin
 impl<T: State> Unpin for Receiver<T> {}
 
-impl<T: State> Drop for Receiver<T> {
-    fn drop(&mut self) {
-        // Clean up any waker that was registered but not consumed
-        // PERFORMANCE: Direct swap without pre-check is faster:
-        // - Single atomic operation instead of two (load + swap)
-        // - Relaxed ordering is sufficient - if we're dropping the Receiver,
-        //   the Sender either already notified (waker consumed) or will never notify.
-        //   No synchronization needed in either case.
-        //
-        // 清理任何已注册但未消费的 waker
-        // 性能优化：直接 swap 无需预检查更快：
-        // - 单次原子操作而不是两次（load + swap）
-        // - Relaxed ordering 就足够了 - 如果我们正在 drop Receiver，
-        //   Sender 要么已经通知（waker 已消费），要么永远不会通知。
-        //   两种情况都不需要同步。
-        let waker_ptr = self.inner.waker.swap(ptr::null_mut(), Ordering::Relaxed);
-        if !waker_ptr.is_null() {
-            // SAFETY: This pointer was created by Box::into_raw in register_waker
-            unsafe {
-                let _ = Box::from_raw(waker_ptr);
-            }
-        }
-    }
-}
+// Receiver drop is automatically handled by AtomicWaker's drop implementation
+// No need for explicit drop implementation
+//
+// Receiver 的 drop 由 AtomicWaker 的 drop 实现自动处理
+// 无需显式的 drop 实现
 
 impl<T: State> Receiver<T> {
     /// Wait for task completion asynchronously
@@ -408,7 +363,7 @@ impl<T: State> Receiver<T> {
 /// 
 /// Optimized implementation:
 /// - Fast path: Immediate return if already completed (no allocation)
-/// - Slow path: Direct waker registration (simpler than Notify's waitlist)
+/// - Slow path: Direct waker registration (no Box allocation, just copy two pointers)
 /// - No intermediate future state needed
 /// 
 /// 为 Receiver 直接实现 Future
@@ -417,7 +372,7 @@ impl<T: State> Receiver<T> {
 /// 
 /// 优化实现：
 /// - 快速路径：如已完成则立即返回（无分配）
-/// - 慢速路径：直接注册 waker（比 Notify 的等待列表更简单）
+/// - 慢速路径：直接注册 waker（无 Box 分配，只复制两个指针）
 /// - 无需中间 future 状态
 impl<T: State> Future for Receiver<T> {
     type Output = T;
@@ -435,7 +390,6 @@ impl<T: State> Future for Receiver<T> {
         }
         
         // Slow path: register waker for notification
-        // This is much lighter than Notify's waitlist management
         this.inner.register_waker(cx.waker());
         
         // Check again after registering waker to avoid race condition

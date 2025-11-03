@@ -623,6 +623,170 @@ fn bench_bounded_throughput_comparison(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark: Oneshot drop performance comparison (pure drop without creation overhead)
+/// 基准测试：Oneshot drop 性能对比（纯 drop 性能，不包含创建开销）
+fn bench_oneshot_drop_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("oneshot_drop_comparison");
+    
+    // Custom oneshot - drop without receiving (no waker registered)
+    group.bench_function("custom_1arc_optimized_drop_no_recv", |b| {
+        b.iter_batched(
+            || {
+                // Setup: create receiver (not measured)
+                let (_notifier, receiver) = channel::<TaskCompletion>();
+                receiver
+            },
+            |receiver| {
+                // Only measure drop
+                drop(receiver);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    // Tokio oneshot - drop without receiving
+    group.bench_function("tokio_oneshot_drop_no_recv", |b| {
+        b.iter_batched(
+            || {
+                // Setup: create receiver (not measured)
+                let (_tx, rx) = oneshot::channel::<u32>();
+                rx
+            },
+            |rx| {
+                // Only measure drop
+                drop(rx);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    // Custom oneshot - drop after notification (waker already consumed, common case)
+    group.bench_function("custom_1arc_optimized_drop_after_notify", |b| {
+        b.iter_batched(
+            || {
+                // Setup: create and notify (not measured)
+                let (notifier, receiver) = channel::<TaskCompletion>();
+                notifier.notify(TaskCompletion::Called);
+                receiver
+            },
+            |receiver| {
+                // Only measure drop
+                drop(receiver);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    // Tokio oneshot - drop after send (value already stored)
+    group.bench_function("tokio_oneshot_drop_after_send", |b| {
+        b.iter_batched(
+            || {
+                // Setup: create and send (not measured)
+                let (tx, rx) = oneshot::channel::<u32>();
+                let _ = tx.send(42);
+                rx
+            },
+            |rx| {
+                // Only measure drop
+                drop(rx);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    // Custom oneshot - drop with registered waker (uncommon slow path)
+    group.bench_function("custom_1arc_optimized_drop_with_waker", |b| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_batched(
+            || {
+                // Setup: create and register waker (not measured)
+                let (_notifier, mut receiver) = channel::<TaskCompletion>();
+                
+                // Poll once to register waker
+                let mut receiver_pin = std::pin::Pin::new(&mut receiver);
+                let waker = futures::task::noop_waker();
+                let mut cx = std::task::Context::from_waker(&waker);
+                let _ = std::future::Future::poll(receiver_pin.as_mut(), &mut cx);
+                
+                receiver
+            },
+            |receiver| async move {
+                // Only measure drop
+                drop(receiver);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    // Tokio oneshot - drop with registered waker (uncommon slow path)
+    group.bench_function("tokio_oneshot_drop_with_waker", |b| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_batched(
+            || {
+                // Setup: create and register waker (not measured)
+                let (_tx, mut rx) = oneshot::channel::<u32>();
+                
+                // Poll once to register waker
+                let mut rx_pin = std::pin::Pin::new(&mut rx);
+                let waker = futures::task::noop_waker();
+                let mut cx = std::task::Context::from_waker(&waker);
+                let _ = std::future::Future::poll(rx_pin.as_mut(), &mut cx);
+                
+                rx
+            },
+            |rx| async move {
+                // Only measure drop
+                drop(rx);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    // Custom oneshot - batch drop performance (100 receivers)
+    group.bench_function("custom_1arc_optimized_batch_drop", |b| {
+        b.iter_batched(
+            || {
+                // Setup: create 100 receivers (not measured)
+                let mut receivers = Vec::new();
+                for _ in 0..100 {
+                    let (_notifier, receiver) = channel::<TaskCompletion>();
+                    receivers.push(receiver);
+                }
+                receivers
+            },
+            |receivers| {
+                // Only measure batch drop
+                drop(receivers);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    // Tokio oneshot - batch drop performance (100 receivers)
+    group.bench_function("tokio_oneshot_batch_drop", |b| {
+        b.iter_batched(
+            || {
+                // Setup: create 100 receivers (not measured)
+                let mut receivers = Vec::new();
+                for _ in 0..100 {
+                    let (_tx, rx) = oneshot::channel::<u32>();
+                    receivers.push(rx);
+                }
+                receivers
+            },
+            |receivers| {
+                // Only measure batch drop
+                drop(receivers);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    
+    group.finish();
+}
+
 criterion_group!(
     benches,
     // Oneshot 优化版对比测试
@@ -631,6 +795,7 @@ criterion_group!(
     bench_oneshot_batch_comparison,
     bench_oneshot_cross_task_comparison,
     bench_oneshot_immediate_notification,
+    bench_oneshot_drop_comparison,
     // Bounded channel 对比测试 (tokio mpsc vs custom rtrb spsc)
     bench_rtrb_spsc_creation_comparison,
     bench_bounded_creation_comparison,

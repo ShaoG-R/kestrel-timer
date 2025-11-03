@@ -116,6 +116,7 @@ pub mod wheel;
 pub mod timer;
 mod service;
 pub mod utils {
+    pub(crate) mod atomic_waker;
     pub mod oneshot;
     pub mod spsc;
     pub mod ringbuf;

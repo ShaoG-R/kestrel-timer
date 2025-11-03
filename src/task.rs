@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::num::NonZeroUsize;
+use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -195,7 +195,7 @@ pub enum TaskType {
         /// Buffer size for periodic task completion notifier
         /// 
         /// 周期性任务完成通知器的缓冲区大小
-        buffer_size: NonZeroUsize,
+        buffer_size: NonZeroU16,
     },
 }
 
@@ -221,7 +221,7 @@ pub enum TaskTypeWithCompletionNotifier {
         /// Buffer size for periodic task completion notifier
         /// 
         /// 周期性任务完成通知器的缓冲区大小
-        buffer_size: NonZeroUsize,
+        buffer_size: NonZeroU16,
         /// Completion notifier for periodic tasks
         /// 
         /// 周期性任务完成通知器
@@ -375,11 +375,11 @@ impl TimerTask {
         initial_delay: std::time::Duration,
         interval: std::time::Duration,
         callback: Option<CallbackWrapper>,
-        buffer_size: Option<NonZeroUsize>,
+        buffer_size: Option<NonZeroU16>,
     ) -> Self {
         Self {
             id: TaskId::new(),
-            task_type: TaskType::Periodic { interval, buffer_size: buffer_size.unwrap_or(NonZeroUsize::new(32).unwrap()) },
+            task_type: TaskType::Periodic { interval, buffer_size: buffer_size.unwrap_or(NonZeroU16::new(32).unwrap()) },
             delay: initial_delay,
             callback,
         }
@@ -490,7 +490,7 @@ impl TimerTaskWithCompletionNotifier {
                 }, CompletionReceiver::OneShot(OneShotCompletionReceiver(completion_rx)))
             },
             TaskType::Periodic { interval, buffer_size } => {
-                let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(buffer_size.get());
+                let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(buffer_size.get() as usize);
                 let notifier = crate::task::PeriodicCompletionNotifier(completion_tx);
                 (Self {
                     id: task.id,

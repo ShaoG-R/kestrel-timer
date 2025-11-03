@@ -190,7 +190,7 @@ impl<T> Producer<T> {
         // 将值写入缓冲区
         let index = write & self.shared.mask;
         unsafe {
-            let ptr = self.shared.buffer.get_unchecked_ptr(index) as *const T as *mut T;
+            let ptr = self.shared.buffer.get_unchecked_ptr(index).cast::<T>() as *mut T;
             ptr.write(value);
         }
         
@@ -234,7 +234,7 @@ impl<T> Consumer<T> {
         // 从缓冲区读取值
         let index = read & self.shared.mask;
         let value = unsafe {
-            let ptr = self.shared.buffer.get_unchecked_ptr(index) as *const T;
+            let ptr = self.shared.buffer.get_unchecked_ptr(index).cast::<T>();
             ptr.read()
         };
         

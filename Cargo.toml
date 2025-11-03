@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "wheel_benchmark"
 harness = false
+
+[[bench]]
+name = "mpsc_benchmark"
+harness = false

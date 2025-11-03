@@ -1,6 +1,6 @@
-use crate::{CallbackWrapper, PeriodicTaskCompletion};
+use crate::CallbackWrapper;
 use crate::config::{BatchConfig, WheelConfig};
-use crate::task::{OneShotTaskCompletion, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
+use crate::task::{TaskCompletion, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
 
@@ -414,10 +414,10 @@ impl Wheel {
 
         match removed_task.into_task_type() {
             TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                let _ = completion_notifier.0.send(OneShotTaskCompletion::Cancelled);
+                let _ = completion_notifier.0.send(TaskCompletion::Cancelled);
             }
             TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
-                let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Cancelled);
+                let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
             }
         }
         
@@ -517,10 +517,10 @@ impl Wheel {
                     let removed_task = slot.swap_remove(vec_index);
                     match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                            let _ = completion_notifier.0.send(OneShotTaskCompletion::Cancelled);
+                            let _ = completion_notifier.0.send(TaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
-                            let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Cancelled);
+                            let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
                         }
                     }
                     
@@ -556,10 +556,10 @@ impl Wheel {
                     
                     match removed_task.into_task_type() {
                         TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                            let _ = completion_notifier.0.send(OneShotTaskCompletion::Cancelled);
+                            let _ = completion_notifier.0.send(TaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
-                            let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Cancelled);
+                            let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
                         }
                     }
                     
@@ -688,7 +688,7 @@ impl Wheel {
 
                 match task.task_type {
                     TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => {
-                        let _ = completion_notifier.0.try_send(PeriodicTaskCompletion::Called);
+                        let _ = completion_notifier.0.try_send(TaskCompletion::Called);
                         
                         periodic_tasks_to_reinsert.push(TimerTaskWithCompletionNotifier {
                             id: task.id,
@@ -698,7 +698,7 @@ impl Wheel {
                         });
                     }
                     TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                        let _ = completion_notifier.0.send(OneShotTaskCompletion::Expired);
+                        let _ = completion_notifier.0.send(TaskCompletion::Called);
                     }
                 }
 
@@ -1766,7 +1766,7 @@ mod tests {
 
     #[test]
     fn test_periodic_task_cancel() {
-        use crate::task::{PeriodicTaskCompletion, CompletionReceiver};
+        use crate::task::{TaskCompletion, CompletionReceiver};
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
@@ -1792,7 +1792,7 @@ mod tests {
         // Check cancellation notification
         // 检查取消通知
         if let Ok(reason) = rx.try_recv() {
-            assert_eq!(reason, PeriodicTaskCompletion::Cancelled, "Should receive Cancelled notification");
+            assert_eq!(reason, TaskCompletion::Cancelled, "Should receive Cancelled notification");
         } else {
             panic!("Should receive cancellation notification");
         }
@@ -1904,7 +1904,7 @@ mod tests {
 
     #[test]
     fn test_periodic_task_batch_cancel() {
-        use crate::task::{PeriodicTaskCompletion, CompletionReceiver};
+        use crate::task::{TaskCompletion, CompletionReceiver};
         
         let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
         
@@ -1937,7 +1937,7 @@ mod tests {
         // 验证所有接收到取消通知
         for mut rx in receivers {
             if let Ok(reason) = rx.try_recv() {
-                assert_eq!(reason, PeriodicTaskCompletion::Cancelled);
+                assert_eq!(reason, TaskCompletion::Cancelled);
             } else {
                 panic!("Should receive cancellation notification");
             }

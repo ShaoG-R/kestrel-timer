@@ -1,7 +1,7 @@
 use crate::{BatchHandle, TimerHandle};
 use crate::config::ServiceConfig;
 use crate::error::TimerError;
-use crate::task::{CallbackWrapper,  CompletionReceiver, OneShotTaskCompletion, PeriodicTaskCompletion, TaskId};
+use crate::task::{CallbackWrapper,  CompletionReceiver, TaskCompletion, TaskId};
 use crate::wheel::Wheel;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::BoxFuture;
@@ -753,13 +753,13 @@ impl ServiceActor {
         
         // One-shot futures: each future returns (TaskId, Result<OneShotTaskCompletion>)
         // 一次性任务 futures：每个 future 返回 (TaskId, Result<OneShotTaskCompletion>)
-        let mut oneshot_futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<OneShotTaskCompletion, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
+        let mut oneshot_futures: FuturesUnordered<BoxFuture<'static, (TaskId, Result<TaskCompletion, tokio::sync::oneshot::error::RecvError>)>> = FuturesUnordered::new();
 
         // Periodic futures: each future returns (TaskId, Option<PeriodicTaskCompletion>, mpsc::Receiver)
         // The receiver is returned so we can continue listening for next event
         // 周期性任务 futures：每个 future 返回 (TaskId, Option<PeriodicTaskCompletion>, mpsc::Receiver)
         // 返回接收器以便我们可以继续监听下一个事件
-        type PeriodicFutureResult = (TaskId, Option<PeriodicTaskCompletion>, crate::task::PeriodicCompletionReceiver);
+        type PeriodicFutureResult = (TaskId, Option<TaskCompletion>, crate::task::PeriodicCompletionReceiver);
         let mut periodic_futures: FuturesUnordered<BoxFuture<'static, PeriodicFutureResult>> = FuturesUnordered::new();
 
         // Move shutdown_rx out of self, so it can be used in select! with &mut
@@ -779,9 +779,9 @@ impl ServiceActor {
                 // Listen to one-shot task timeout events
                 // 监听一次性任务超时事件
                 Some((task_id, result)) = oneshot_futures.next() => {
-                    // Check completion reason, only forward expired (Expired) events, do not forward cancelled (Cancelled) events
-                    // 检查完成原因，只转发过期 (Expired) 事件，不转发取消 (Cancelled) 事件
-                    if let Ok(OneShotTaskCompletion::Expired) = result {
+                    // Check completion reason, only forward Called events, do not forward Cancelled events
+                    // 检查完成原因，只转发 Called 事件，不转发 Cancelled 事件
+                    if let Ok(TaskCompletion::Called) = result {
                         let _ = self.timeout_tx.send(TaskNotification::OneShot(task_id)).await;
                     }
                     // Task will be automatically removed from FuturesUnordered
@@ -793,7 +793,7 @@ impl ServiceActor {
                 Some((task_id, reason, mut receiver)) = periodic_futures.next() => {
                     // Check completion reason, only forward Called events, do not forward Cancelled events
                     // 检查完成原因，只转发 Called 事件，不转发 Cancelled 事件
-                    if let Some(PeriodicTaskCompletion::Called) = reason {
+                    if let Some(TaskCompletion::Called) = reason {
                         let _ = self.timeout_tx.send(TaskNotification::Periodic(task_id)).await;
                         
                         // Re-add the receiver to continue listening for next periodic event
@@ -818,7 +818,7 @@ impl ServiceActor {
                             for (task_id, rx) in task_ids.into_iter().zip(completion_rxs.into_iter()) {
                                 match rx {
                                     crate::task::CompletionReceiver::OneShot(receiver) => {
-                                        let future: BoxFuture<'static, (TaskId, Result<OneShotTaskCompletion, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
+                                        let future: BoxFuture<'static, (TaskId, Result<TaskCompletion, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                             (task_id, receiver.0.await)
                                         });
                                         oneshot_futures.push(future);
@@ -838,7 +838,7 @@ impl ServiceActor {
                             // 添加到相应的 futures
                             match completion_rx {
                                 crate::task::CompletionReceiver::OneShot(receiver) => {
-                                    let future: BoxFuture<'static, (TaskId, Result<OneShotTaskCompletion, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
+                                    let future: BoxFuture<'static, (TaskId, Result<TaskCompletion, tokio::sync::oneshot::error::RecvError>)> = Box::pin(async move {
                                         (task_id, receiver.0.await)
                                     });
                                     oneshot_futures.push(future);

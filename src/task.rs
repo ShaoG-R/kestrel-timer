@@ -10,30 +10,13 @@ use tokio::sync::oneshot;
 /// 全局唯一任务 ID 生成器
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Task Completion Reason for One-Shot Tasks
-///
-/// Indicates the reason for task completion, expired or cancelled.
-/// 
-/// 任务完成原因，过期或取消。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OneShotTaskCompletion {
-    /// Task expired normally
-    /// 
-    /// 任务正常过期
-    Expired,
-    /// Task was cancelled
-    /// 
-    /// 任务被取消
-    Cancelled,
-}
-
 /// Task Completion Reason for Periodic Tasks
 ///
 /// Indicates the reason for task completion, called or cancelled.
 /// 
 /// 任务完成原因，调用或取消。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeriodicTaskCompletion {
+pub enum TaskCompletion {
     /// Task was called
     /// 
     /// 任务被调用
@@ -228,29 +211,29 @@ pub enum TaskTypeWithCompletionNotifier {
 /// Completion notifier for one-shot tasks
 /// 
 /// 一次性任务完成通知器
-pub struct OneShotCompletionNotifier(pub oneshot::Sender<OneShotTaskCompletion>);
+pub struct OneShotCompletionNotifier(pub oneshot::Sender<TaskCompletion>);
 
 /// Completion receiver for one-shot tasks
 /// 
 /// 一次性任务完成通知接收器
-pub struct OneShotCompletionReceiver(pub oneshot::Receiver<OneShotTaskCompletion>);
+pub struct OneShotCompletionReceiver(pub oneshot::Receiver<TaskCompletion>);
 
 /// Completion notifier for periodic tasks
 /// 
 /// 周期任务完成通知器
-pub struct PeriodicCompletionNotifier(pub tokio::sync::mpsc::Sender<PeriodicTaskCompletion>);
+pub struct PeriodicCompletionNotifier(pub tokio::sync::mpsc::Sender<TaskCompletion>);
 
 /// Completion receiver for periodic tasks
 /// 
 /// 周期任务完成通知接收器
-pub struct PeriodicCompletionReceiver(pub tokio::sync::mpsc::Receiver<PeriodicTaskCompletion>);
+pub struct PeriodicCompletionReceiver(pub tokio::sync::mpsc::Receiver<TaskCompletion>);
 
 impl PeriodicCompletionReceiver {
     /// Try to receive a completion notification
     /// 
     /// 尝试接收完成通知
     #[inline]
-    pub fn try_recv(&mut self) -> Result<PeriodicTaskCompletion, tokio::sync::mpsc::error::TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<TaskCompletion, tokio::sync::mpsc::error::TryRecvError> {
         self.0.try_recv()
     }
     
@@ -258,7 +241,7 @@ impl PeriodicCompletionReceiver {
     /// 
     /// 接收完成通知
     #[inline]
-    pub async fn recv(&mut self) -> Option<PeriodicTaskCompletion> {
+    pub async fn recv(&mut self) -> Option<TaskCompletion> {
         self.0.recv().await
     }
 }

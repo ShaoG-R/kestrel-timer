@@ -297,11 +297,6 @@ impl<T> Drop for Consumer<T> {
     }
 }
 
-// Producer and Consumer are Send but not Sync (single-threaded access each)
-// Producer 和 Consumer 是 Send 但不是 Sync（每个都是单线程访问）
-unsafe impl<T: Send> Send for Producer<T> {}
-unsafe impl<T: Send> Send for Consumer<T> {}
-
 #[cfg(test)]
 mod tests {
     use super::*;

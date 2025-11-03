@@ -119,6 +119,7 @@ pub mod utils {
     pub mod oneshot;
     pub mod spsc;
     pub mod ringbuf;
+    pub mod notify;
     pub(crate) mod vec;
 }
 

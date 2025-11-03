@@ -10,9 +10,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::Notify;
 use parking_lot::Mutex;
 use super::ringbuf;
+use super::notify::SingleWaiterNotify;
 
 /// SPSC channel creation function
 /// 
@@ -60,8 +60,8 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         producer: Mutex::new(producer),
         consumer: Mutex::new(consumer),
         closed: AtomicBool::new(false),
-        recv_notify: Notify::new(),
-        send_notify: Notify::new(),
+        recv_notify: SingleWaiterNotify::new(),
+        send_notify: SingleWaiterNotify::new(),
     });
     
     let sender = Sender {
@@ -94,15 +94,15 @@ struct Inner<T> {
     /// 通道关闭标志
     closed: AtomicBool,
     
-    /// Notifier for receiver waiting
+    /// Notifier for receiver waiting (lightweight single-waiter)
     /// 
-    /// 接收者等待通知器
-    recv_notify: Notify,
+    /// 接收者等待通知器（轻量级单等待者）
+    recv_notify: SingleWaiterNotify,
     
-    /// Notifier for sender waiting (when buffer is full)
+    /// Notifier for sender waiting when buffer is full (lightweight single-waiter)
     /// 
-    /// 发送者等待通知器（当缓冲区满时）
-    send_notify: Notify,
+    /// 发送者等待通知器，当缓冲区满时使用（轻量级单等待者）
+    send_notify: SingleWaiterNotify,
 }
 
 /// SPSC channel sender

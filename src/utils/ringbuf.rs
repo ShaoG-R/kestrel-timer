@@ -1,16 +1,15 @@
-/// High-performance SPSC Ring Buffer with SmallVec optimization
+/// High-performance SPSC Ring Buffer with stack/heap optimization
 /// 
-/// 基于 SmallVec 的高性能 SPSC 环形缓冲区
+/// 基于栈/堆优化的高性能 SPSC 环形缓冲区
 /// 
-/// This implementation uses SmallVec to store data on the stack for small capacities (≤32),
+/// This implementation uses FixedVec to store data on the stack for small capacities (≤32),
 /// avoiding heap allocation overhead and improving `new()` performance.
 /// 
-/// 此实现使用 SmallVec 在栈上存储小容量数据（≤32），避免堆分配开销，提升 `new()` 性能。
+/// 此实现使用 FixedVec 在栈上存储小容量数据（≤32），避免堆分配开销，提升 `new()` 性能。
 
-use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use smallvec::SmallVec;
+use super::vec::FixedVec;
 
 /// Ring buffer error for push operations
 /// 
@@ -38,10 +37,10 @@ pub enum PopError {
 /// 
 /// 生产者和消费者之间的共享数据
 pub struct SharedData<T> {
-    /// Buffer storage using SmallVec for stack allocation optimization
+    /// Buffer storage using FixedVec for stack allocation optimization
     /// 
-    /// 使用 SmallVec 的缓冲区存储，优化栈分配
-    buffer: SmallVec<[MaybeUninit<T>; 32]>,
+    /// 使用 FixedVec 的缓冲区存储，优化栈分配
+    buffer: FixedVec<T, 32>,
     
     /// Actual capacity (power of 2)
     /// 
@@ -133,21 +132,10 @@ pub fn new<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
         let actual_capacity = capacity.next_power_of_two();
         let mask = actual_capacity - 1;
         
-        // Initialize buffer with uninitialized memory - optimized for performance
-        // 使用未初始化内存初始化缓冲区 - 性能优化版本
-        // 
-        // SAFETY: MaybeUninit<T> does not require initialization, so it's safe to 
-        // set the length directly. This is much faster than resize_with or a loop.
-        // 
-        // 安全性：MaybeUninit<T> 不需要初始化，因此直接设置长度是安全的。
-        // 这比 resize_with 或循环快得多。
-        let buffer = {
-            let mut buf = SmallVec::with_capacity(actual_capacity);
-            unsafe {
-                buf.set_len(actual_capacity);
-            }
-            buf
-        };
+        let mut buffer = FixedVec::with_capacity(actual_capacity);
+        unsafe {
+            buffer.set_len(actual_capacity);
+        }
         
         let shared = Arc::new(SharedData {
             buffer,
@@ -202,7 +190,7 @@ impl<T> Producer<T> {
         // 将值写入缓冲区
         let index = write & self.shared.mask;
         unsafe {
-            let ptr = self.shared.buffer[index].as_ptr() as *mut T;
+            let ptr = self.shared.buffer.get_unchecked_ptr(index) as *const T as *mut T;
             ptr.write(value);
         }
         
@@ -246,7 +234,7 @@ impl<T> Consumer<T> {
         // 从缓冲区读取值
         let index = read & self.shared.mask;
         let value = unsafe {
-            let ptr = self.shared.buffer[index].as_ptr();
+            let ptr = self.shared.buffer.get_unchecked_ptr(index) as *const T;
             ptr.read()
         };
         

@@ -119,6 +119,7 @@ pub mod utils {
     pub mod oneshot;
     pub mod spsc;
     pub mod ringbuf;
+    pub(crate) mod vec;
 }
 
 // Re-export public API

@@ -1,6 +1,6 @@
 use crate::{TaskCompletionReasonPeriodic, TimerTask};
 use crate::config::{BatchConfig, WheelConfig};
-use crate::task::{CompletionNotifier, TaskCompletionReasonOneShot, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
+use crate::task::{TaskCompletionReasonOneShot, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
 use rustc_hash::FxHashMap;
 use std::time::Duration;
 
@@ -666,10 +666,6 @@ impl Wheel {
             
             let i = 0;
             while i < l0_slot.len() {
-                // Check if this is a one-shot or periodic task
-                // 检查这是一次性任务还是周期性任务
-                let is_periodic = matches!(l0_slot[i].get_task_type(), TaskTypeWithCompletionNotifier::Periodic { .. });
-                
                 // Remove from index
                 // 从索引中移除
                 let task_id = l0_slot[i].get_id();
@@ -687,46 +683,34 @@ impl Wheel {
                         swapped_location.vec_index = i;
                     }
                 }
+
+
+                let TimerTaskForWheel { task, .. } = task_with_notifier;
                 
-                // Split task to get TimerTask and CompletionNotifier
-                // 拆分任务以获取 TimerTask 和 CompletionNotifier
-                let (timer_task, completion_notifier) = task_with_notifier.split();
+                let TimerTaskWithCompletionNotifier { id, task_type, delay, callback } = task;
+
+                use crate::task::TaskType;
                 
-                if is_periodic {
-                    // Periodic task: send notification and collect for reinsertion
-                    // 周期性任务：发送通知并收集用于重新插入
-                    
-                    if let CompletionNotifier::Periodic(notifier) = completion_notifier {
-                        // Send periodic notification
-                        // 发送周期性通知
-                        let _ = notifier.0.try_send(TaskCompletionReasonPeriodic::Called);
-                        
-                        // Extract necessary information for reinsertion
-                        // 提取重新插入所需的信息
-                        let interval = timer_task.get_interval().unwrap();
-                        let callback = timer_task.callback.clone();
-                        
-                        // Collect for reinsertion
-                        // 收集用于重新插入
-                        periodic_tasks_to_reinsert.push((task_id, interval, callback, crate::task::PeriodicCompletionNotifier(notifier.0)));
+                match task_type {
+                    TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => {
+                        let _ = completion_notifier.0.try_send(TaskCompletionReasonPeriodic::Called);
+                        periodic_tasks_to_reinsert.push((task_id, interval, callback.clone(), completion_notifier));
+                        expired_tasks.push(TimerTask {
+                            id,
+                            task_type: TaskType::Periodic { interval },
+                            delay,
+                            callback,
+                        });
                     }
-                    
-                    // Add to expired tasks for callback execution
-                    // 添加到过期任务以执行回调
-                    expired_tasks.push(timer_task);
-                } else {
-                    // One-shot task: send notification and add to expired list
-                    // 一次性任务：发送通知并添加到过期列表
-                    
-                    if let CompletionNotifier::OneShot(notifier) = completion_notifier {
-                        // Send completion notification
-                        // 发送完成通知
-                        let _ = notifier.0.send(TaskCompletionReasonOneShot::Expired);
+                    TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
+                        let _ = completion_notifier.0.send(TaskCompletionReasonOneShot::Expired);
+                        expired_tasks.push(TimerTask {
+                            id,
+                            task_type: TaskType::OneShot,
+                            delay,
+                            callback,
+                        });
                     }
-                    
-                    // Add to expired tasks
-                    // 添加到过期任务列表
-                    expired_tasks.push(timer_task);
                 }
                 
                 // Don't increment i, as we've removed the current element

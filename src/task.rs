@@ -478,33 +478,6 @@ impl TimerTaskWithCompletionNotifier {
         }
     }
 
-
-    /// Split the timer task into a timer task and a completion notifier
-    /// 
-    /// 将定时器任务拆分为一个定时器任务和一个完成通知器
-    /// 
-    /// # Returns
-    /// A tuple containing the timer task and the completion notifier
-    /// 
-    /// 返回一个包含定时器任务和完成通知器的元组
-    /// 
-    pub fn split(self) -> (TimerTask, CompletionNotifier) {
-        match self.task_type {
-            TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => (TimerTask {
-                id: self.id,
-                task_type: TaskType::OneShot,
-                delay: self.delay,
-                callback: self.callback,
-            }, CompletionNotifier::OneShot(completion_notifier)),
-            TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => (TimerTask {
-                id: self.id,
-                task_type: TaskType::Periodic { interval },
-                delay: self.delay,
-                callback: self.callback,
-            }, CompletionNotifier::Periodic(completion_notifier)),
-        }
-    }
-
     /// Get task ID
     /// 
     /// 获取任务 ID
@@ -522,14 +495,6 @@ impl TimerTaskWithCompletionNotifier {
     #[inline]
     pub fn get_id(&self) -> TaskId {
         self.id
-    }
-    
-    /// Get task type
-    /// 
-    /// 获取任务类型
-    #[inline]
-    pub fn get_task_type(&self) -> &TaskTypeWithCompletionNotifier {
-        &self.task_type
     }
 
     /// Into task type
@@ -590,34 +555,12 @@ impl TimerTaskForWheel {
         self.task.get_id()
     }
 
-    /// Get task type
-    /// 
-    /// 获取任务类型
-    #[inline]
-    pub fn get_task_type(&self) -> &TaskTypeWithCompletionNotifier {
-        self.task.get_task_type()
-    }
-
     /// Into task type
     /// 
     /// 将任务类型转换为完成通知器
     #[inline]
     pub fn into_task_type(self) -> TaskTypeWithCompletionNotifier {
         self.task.into_task_type()
-    }
-
-    /// Split the timer task into a timer task and a completion notifier
-    /// 
-    /// 将定时器任务拆分为一个定时器任务和一个完成通知器
-    /// 
-    /// # Returns
-    /// A tuple containing the timer task and the completion notifier
-    /// 
-    /// 返回一个包含定时器任务和完成通知器的元组
-    /// 
-    #[inline]
-    pub fn split(self) -> (TimerTask, CompletionNotifier) {
-        self.task.split()
     }
 
     /// Update the delay of the timer task

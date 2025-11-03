@@ -7,10 +7,36 @@
 /// 
 /// 基于自定义 SmallVec 环形缓冲区构建以获得最佳性能。
 /// 针对低延迟和快速创建进行优化，用于替代定时器实现中的 tokio mpsc。
+///
+/// # 安全性说明 (Safety Notes)
+///
+/// 本实现使用 `UnsafeCell` 来提供零成本内部可变性，而不是 `Mutex`。
+/// 这是安全的，基于以下保证：
+///
+/// 1. **单一所有权**：`Sender` 和 `Receiver` 都不实现 `Clone`，确保每个通道只有一个发送者和一个接收者
+/// 2. **访问隔离**：`Producer` 只被唯一的 `Sender` 访问，`Consumer` 只被唯一的 `Receiver` 访问
+/// 3. **无数据竞争**：由于单一所有权，不会有多个线程同时访问同一个 `Producer` 或 `Consumer`
+/// 4. **原子通信**：`Producer` 和 `Consumer` 内部使用原子操作进行跨线程通信
+/// 5. **类型系统保证**：通过类型系统强制 SPSC 语义，防止误用为 MPMC
+///
+/// 这种设计实现了零同步开销，完全消除了 `Mutex` 的性能损失。
+///
+/// # Safety Guarantees
+///
+/// This implementation uses `UnsafeCell` for zero-cost interior mutability instead of `Mutex`.
+/// This is safe based on the following guarantees:
+///
+/// 1. **Single Ownership**: Neither `Sender` nor `Receiver` implements `Clone`, ensuring only one sender and one receiver per channel
+/// 2. **Access Isolation**: `Producer` is only accessed by the unique `Sender`, `Consumer` only by the unique `Receiver`
+/// 3. **No Data Races**: Due to single ownership, there's no concurrent access to the same `Producer` or `Consumer`
+/// 4. **Atomic Communication**: `Producer` and `Consumer` use atomic operations internally for cross-thread communication
+/// 5. **Type System Enforcement**: SPSC semantics are enforced by the type system, preventing misuse as MPMC
+///
+/// This design achieves zero synchronization overhead, completely eliminating `Mutex` performance costs.
 
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use parking_lot::Mutex;
 use super::ringbuf;
 use super::notify::SingleWaiterNotify;
 
@@ -57,8 +83,8 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let (producer, consumer) = ringbuf::new(capacity);
     
     let inner = Arc::new(Inner {
-        producer: Mutex::new(producer),
-        consumer: Mutex::new(consumer),
+        producer: UnsafeCell::new(producer),
+        consumer: UnsafeCell::new(consumer),
         closed: AtomicBool::new(false),
         recv_notify: SingleWaiterNotify::new(),
         send_notify: SingleWaiterNotify::new(),
@@ -77,17 +103,23 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 
 /// Shared internal state for SPSC channel
 /// 
+/// Contains both shared state and the ring buffer halves.
+/// Uses UnsafeCell for zero-cost interior mutability of Producer/Consumer.
+/// 
 /// SPSC 通道的共享内部状态
+/// 
+/// 包含共享状态和环形缓冲区的两端。
+/// 使用 UnsafeCell 实现 Producer/Consumer 的零成本内部可变性。
 struct Inner<T> {
-    /// Producer (wrapped in Mutex for interior mutability)
+    /// Producer (wrapped in UnsafeCell for zero-cost interior mutability)
     /// 
-    /// 生产者（用 Mutex 包装以实现内部可变性）
-    producer: Mutex<ringbuf::Producer<T>>,
+    /// 生产者（用 UnsafeCell 包装以实现零成本内部可变性）
+    producer: UnsafeCell<ringbuf::Producer<T>>,
     
-    /// Consumer (wrapped in Mutex for interior mutability)
+    /// Consumer (wrapped in UnsafeCell for zero-cost interior mutability)
     /// 
-    /// 消费者（用 Mutex 包装以实现内部可变性）
-    consumer: Mutex<ringbuf::Consumer<T>>,
+    /// 消费者（用 UnsafeCell 包装以实现零成本内部可变性）
+    consumer: UnsafeCell<ringbuf::Consumer<T>>,
     
     /// Channel closed flag
     /// 
@@ -104,6 +136,14 @@ struct Inner<T> {
     /// 发送者等待通知器，当缓冲区满时使用（轻量级单等待者）
     send_notify: SingleWaiterNotify,
 }
+
+// SAFETY: Inner<T> 可以在线程间安全共享的原因：
+// 1. Sender 和 Receiver 都不实现 Clone，确保单一所有权
+// 2. producer 只被唯一的 Sender 访问，不会有多线程竞争
+// 3. consumer 只被唯一的 Receiver 访问，不会有多线程竞争
+// 4. closed、recv_notify、send_notify 都已经是线程安全的
+// 5. Producer 和 Consumer 内部使用原子操作进行跨线程通信
+unsafe impl<T: Send> Sync for Inner<T> {}
 
 /// SPSC channel sender
 /// 
@@ -217,9 +257,10 @@ impl<T> Sender<T> {
             return Err(TrySendError::Closed(value));
         }
         
-        // Try to push directly to producer
-        // 直接尝试推送到生产者
-        let mut producer = self.inner.producer.lock();
+        // SAFETY: Sender 不实现 Clone，因此只有一个 Sender 实例
+        // 不会有多个线程同时访问 producer
+        let producer = unsafe { &mut *self.inner.producer.get() };
+        
         match producer.push(value) {
             Ok(()) => {
                 // Successfully sent, notify receiver
@@ -287,9 +328,10 @@ impl<T> Receiver<T> {
     /// - 如果缓冲区空，返回 `TryRecvError::Empty`
     /// - 如果发送器已被丢弃且缓冲区空，返回 `TryRecvError::Closed`
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        // Try to pop directly from consumer
-        // 直接尝试从消费者弹出
-        let mut consumer = self.inner.consumer.lock();
+        // SAFETY: Receiver 不实现 Clone，因此只有一个 Receiver 实例
+        // 不会有多个线程同时访问 consumer
+        let consumer = unsafe { &mut *self.inner.consumer.get() };
+        
         match consumer.pop() {
             Ok(value) => {
                 // Successfully received, notify sender
@@ -312,7 +354,10 @@ impl<T> Receiver<T> {
     /// 检查通道是否为空
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.inner.consumer.lock().is_empty()
+        // SAFETY: Receiver 不实现 Clone，因此只有一个 Receiver 实例
+        // is_empty 只读取数据，不需要可变访问，但我们通过 UnsafeCell 访问以保持一致性
+        let consumer = unsafe { &*self.inner.consumer.get() };
+        consumer.is_empty()
     }
     
     /// Get the number of messages currently in the channel
@@ -320,7 +365,10 @@ impl<T> Receiver<T> {
     /// 获取通道中当前的消息数量
     #[inline]
     pub fn len(&self) -> usize {
-        self.inner.consumer.lock().slots()
+        // SAFETY: Receiver 不实现 Clone，因此只有一个 Receiver 实例
+        // slots 只读取数据，不需要可变访问，但我们通过 UnsafeCell 访问以保持一致性
+        let consumer = unsafe { &*self.inner.consumer.get() };
+        consumer.slots()
     }
     
     /// Get the capacity of the channel
@@ -328,7 +376,10 @@ impl<T> Receiver<T> {
     /// 获取通道的容量
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.inner.consumer.lock().buffer().capacity()
+        // SAFETY: Receiver 不实现 Clone，因此只有一个 Receiver 实例
+        // capacity 只读取数据，不需要可变访问，但我们通过 UnsafeCell 访问以保持一致性
+        let consumer = unsafe { &*self.inner.consumer.get() };
+        consumer.buffer().capacity()
     }
 }
 

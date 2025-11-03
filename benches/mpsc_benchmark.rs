@@ -2,6 +2,32 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
+/// Benchmark: Channel creation (mpsc)
+/// 基准测试：通道创建（mpsc）
+fn bench_mpsc_channel_creation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mpsc_channel_creation");
+    
+    group.bench_function(BenchmarkId::from_parameter(100), |b| {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        
+        b.to_async(&runtime).iter_custom(|iters| async move {
+            let mut total_duration = Duration::from_secs(0);
+            
+            for _ in 0..iters {
+                let start = std::time::Instant::now();
+                
+                let (_tx, _rx) = mpsc::channel::<u32>(100);
+                
+                total_duration += start.elapsed();
+            }
+            
+            total_duration
+        });
+    });
+    
+    group.finish();
+}
+
 /// Benchmark: Single message send and receive (mpsc)
 /// 基准测试：单条消息发送和接收（mpsc）
 fn bench_mpsc_single_send_recv(c: &mut Criterion) {
@@ -365,6 +391,7 @@ fn bench_mpsc_pipeline(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_mpsc_channel_creation,
     bench_mpsc_single_send_recv,
     bench_mpsc_single_send_only,
     bench_mpsc_batch_send_recv,

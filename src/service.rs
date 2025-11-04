@@ -1,4 +1,4 @@
-use crate::utils::{oneshot, spsc};
+use lite_sync::{oneshot, spsc};
 use crate::{BatchHandle, TimerHandle};
 use crate::config::ServiceConfig;
 use crate::error::TimerError;
@@ -138,11 +138,11 @@ pub struct TimerService {
     /// Command sender
     /// 
     /// 命令发送器
-    command_tx: spsc::Sender<ServiceCommand>,
+    command_tx: spsc::Sender<ServiceCommand, 32>,
     /// Timeout receiver (supports both one-shot and periodic task notifications)
     /// 
     /// 超时接收器（支持一次性和周期性任务通知）
-    timeout_rx: Option<spsc::Receiver<TaskNotification>>,
+    timeout_rx: Option<spsc::Receiver<TaskNotification, 32>>,
     /// Actor task handle
     /// 
     /// Actor 任务句柄
@@ -178,7 +178,7 @@ impl TimerService {
     ///
     pub(crate) fn new(wheel: Arc<Mutex<Wheel>>, config: ServiceConfig) -> Self {
         let (command_tx, command_rx) = spsc::channel(config.command_channel_capacity);
-        let (timeout_tx, timeout_rx) = spsc::channel::<TaskNotification>(config.timeout_channel_capacity);
+        let (timeout_tx, timeout_rx) = spsc::channel(config.timeout_channel_capacity);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let actor = ServiceActor::new(command_rx, timeout_tx, shutdown_rx);
@@ -234,7 +234,7 @@ impl TimerService {
     /// }
     /// # }
     /// ```
-    pub fn take_receiver(&mut self) -> Option<spsc::Receiver<TaskNotification>> {
+    pub fn take_receiver(&mut self) -> Option<spsc::Receiver<TaskNotification, 32>> {
         self.timeout_rx.take()
     }
 
@@ -721,11 +721,11 @@ struct ServiceActor {
     /// Command receiver
     /// 
     /// 命令接收器
-    command_rx: spsc::Receiver<ServiceCommand>,
+    command_rx: spsc::Receiver<ServiceCommand, 32>,
     /// Timeout sender (supports both one-shot and periodic task notifications)
     /// 
     /// 超时发送器（支持一次性和周期性任务通知）
-    timeout_tx: spsc::Sender<TaskNotification>,
+    timeout_tx: spsc::Sender<TaskNotification, 32>,
     /// Actor shutdown signal receiver
     /// 
     /// Actor 关闭信号接收器
@@ -736,7 +736,7 @@ impl ServiceActor {
     /// Create new ServiceActor
     /// 
     /// 创建新的 ServiceActor
-    fn new(command_rx: spsc::Receiver<ServiceCommand>, timeout_tx: spsc::Sender<TaskNotification>, shutdown_rx: oneshot::Receiver<()>) -> Self {
+    fn new(command_rx: spsc::Receiver<ServiceCommand, 32>, timeout_tx: spsc::Sender<TaskNotification, 32>, shutdown_rx: oneshot::Receiver<()>) -> Self {
         Self {
             command_rx,
             timeout_tx,

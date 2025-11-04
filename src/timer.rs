@@ -176,15 +176,15 @@ impl TimerWheel {
     /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, config::ServiceConfig, TimerTask};
+    /// use std::num::NonZeroUsize;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     let config = ServiceConfig::builder()
-    ///         .command_channel_capacity(1024)
-    ///         .timeout_channel_capacity(2000)
-    ///         .build()
-    ///         .unwrap();
+    ///         .command_channel_capacity(NonZeroUsize::new(1024).unwrap())
+    ///         .timeout_channel_capacity(NonZeroUsize::new(2000).unwrap())
+    ///         .build();
     ///     let service = timer.create_service_with_config(config);
     /// }
     /// ```

@@ -1,11 +1,11 @@
 use std::future::Future;
-use std::num::NonZeroU16;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::utils::oneshot::{channel, Sender, Receiver};
-use crate::utils::spsc::{self, TryRecvError};
+use lite_sync::oneshot::{channel, Sender, Receiver};
+use lite_sync::spsc::{self, TryRecvError};
 
 /// Global unique task ID generator
 /// 
@@ -15,9 +15,9 @@ static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 /// One-shot task completion state constants
 /// 
 /// 一次性任务完成状态常量
-pub(crate) const ONESHOT_PENDING: u8 = 0;
-pub(crate) const ONESHOT_CALLED: u8 = 1;
-pub(crate) const ONESHOT_CANCELLED: u8 = 2;
+const ONESHOT_PENDING: u8 = 0;
+const ONESHOT_CALLED: u8 = 1;
+const ONESHOT_CANCELLED: u8 = 2;
 
 /// Task Completion Reason for Periodic Tasks
 ///
@@ -35,6 +35,32 @@ pub enum TaskCompletion {
     /// 任务被取消
     Cancelled,
 }
+
+impl lite_sync::oneshot::State for TaskCompletion {
+    #[inline]
+    fn to_u8(&self) -> u8 {
+        match self {
+            TaskCompletion::Called => ONESHOT_CALLED,
+            TaskCompletion::Cancelled => ONESHOT_CANCELLED,
+        }
+    }
+    
+    #[inline]
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            ONESHOT_CALLED => Some(TaskCompletion::Called),
+            ONESHOT_CANCELLED => Some(TaskCompletion::Cancelled),
+            _ => None,
+        }
+    }
+    
+    #[inline]
+    fn pending_value() -> u8 {
+        ONESHOT_PENDING
+    }
+}
+
+
 
 /// Unique identifier for timer tasks
 /// 
@@ -187,7 +213,7 @@ pub enum TaskType {
         /// Buffer size for periodic task completion notifier
         /// 
         /// 周期性任务完成通知器的缓冲区大小
-        buffer_size: NonZeroU16,
+        buffer_size: NonZeroUsize,
     },
 }
 
@@ -199,7 +225,7 @@ pub enum TaskTypeWithCompletionNotifier {
     /// 
     /// 一次性定时器：执行一次后完成
     OneShot {
-        completion_notifier: Sender,
+        completion_notifier: Sender<TaskCompletion>,
     },
     
     /// Periodic timer: repeats at fixed intervals
@@ -226,12 +252,12 @@ pub enum TaskTypeWithCompletionNotifier {
 /// 周期任务完成通知器
 /// 
 /// 使用自定义 SPSC 通道实现高性能、低延迟的通知
-pub struct PeriodicCompletionNotifier(pub spsc::Sender<TaskCompletion>);
+pub struct PeriodicCompletionNotifier(pub spsc::Sender<TaskCompletion, 32>);
 
 /// Completion receiver for periodic tasks
 /// 
 /// 周期任务完成通知接收器
-pub struct PeriodicCompletionReceiver(pub spsc::Receiver<TaskCompletion>);
+pub struct PeriodicCompletionReceiver(pub spsc::Receiver<TaskCompletion, 32>);
 
 impl PeriodicCompletionReceiver {
     /// Try to receive a completion notification
@@ -256,7 +282,7 @@ impl PeriodicCompletionReceiver {
 /// 
 /// 一次性任务完成通知器
 pub enum CompletionNotifier {
-    OneShot(Sender),
+    OneShot(Sender<TaskCompletion>),
     Periodic(PeriodicCompletionNotifier),
 }
 
@@ -264,7 +290,7 @@ pub enum CompletionNotifier {
 /// 
 /// 一次性和周期任务完成通知接收器
 pub enum CompletionReceiver {
-    OneShot(Receiver),
+    OneShot(Receiver<TaskCompletion>),
     Periodic(PeriodicCompletionReceiver),
 }
 
@@ -349,11 +375,11 @@ impl TimerTask {
         initial_delay: std::time::Duration,
         interval: std::time::Duration,
         callback: Option<CallbackWrapper>,
-        buffer_size: Option<NonZeroU16>,
+        buffer_size: Option<NonZeroUsize>,
     ) -> Self {
         Self {
             id: TaskId::new(),
-            task_type: TaskType::Periodic { interval, buffer_size: buffer_size.unwrap_or(NonZeroU16::new(32).unwrap()) },
+            task_type: TaskType::Periodic { interval, buffer_size: buffer_size.unwrap_or(NonZeroUsize::new(32).unwrap()) },
             delay: initial_delay,
             callback,
         }
@@ -470,7 +496,7 @@ impl TimerTaskWithCompletionNotifier {
             TaskType::Periodic { interval, buffer_size } => {
                 // Use custom SPSC channel for high-performance periodic notification
                 // 使用自定义 SPSC 通道实现高性能周期通知
-                let (tx, rx) = spsc::channel(buffer_size.get() as usize);
+                let (tx, rx) = spsc::channel(buffer_size);
                 
                 let notifier = PeriodicCompletionNotifier(tx);
                 let receiver = PeriodicCompletionReceiver(rx);

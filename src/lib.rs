@@ -115,14 +115,6 @@ pub mod task;
 pub mod wheel;
 pub mod timer;
 mod service;
-pub mod utils {
-    pub(crate) mod atomic_waker;
-    pub mod oneshot;
-    pub mod spsc;
-    pub mod ringbuf;
-    pub mod notify;
-    pub(crate) mod vec;
-}
 
 // Re-export public API
 pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletion};

@@ -5,6 +5,7 @@
 //! 定时器配置模块，提供分层的配置结构和 Builder 模式，用于配置时间轮、服务和批处理行为。
 use crate::error::TimerError;
 use std::time::Duration;
+use std::num::NonZeroUsize;
 
 /// Timing Wheel Configuration
 ///
@@ -207,35 +208,35 @@ impl WheelConfigBuilder {
 /// # Examples (示例)
 /// ```no_run
 /// use kestrel_timer::config::ServiceConfig;
+/// use std::num::NonZeroUsize;
 ///
 /// // Use default configuration (使用默认配置)
 /// let config = ServiceConfig::default();
 ///
 /// // Use Builder to customize configuration (使用 Builder 自定义配置)
 /// let config = ServiceConfig::builder()
-///     .command_channel_capacity(1024)
-///     .timeout_channel_capacity(2000)
-///     .build()
-///     .unwrap();
+///     .command_channel_capacity(NonZeroUsize::new(1024).unwrap())
+///     .timeout_channel_capacity(NonZeroUsize::new(2000).unwrap())
+///     .build();
 /// ```
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     /// Command channel capacity 
     /// 
     /// 命令通道容量
-    pub command_channel_capacity: usize,
+    pub command_channel_capacity: NonZeroUsize,
 
     /// Timeout channel capacity
     /// 
     /// 超时通道容量
-    pub timeout_channel_capacity: usize,
+    pub timeout_channel_capacity: NonZeroUsize,
 }
 
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
-            command_channel_capacity: 512,
-            timeout_channel_capacity: 1000,
+            command_channel_capacity: NonZeroUsize::new(512).unwrap(),
+            timeout_channel_capacity: NonZeroUsize::new(1000).unwrap(),
         }
     }
 }
@@ -255,12 +256,12 @@ pub struct ServiceConfigBuilder {
     /// Command channel capacity
     /// 
     /// 命令通道容量
-    pub command_channel_capacity: usize,
+    pub command_channel_capacity: NonZeroUsize,
     
     /// Timeout channel capacity
     /// 
     /// 超时通道容量
-    pub timeout_channel_capacity: usize,
+    pub timeout_channel_capacity: NonZeroUsize,
 }
 
 impl Default for ServiceConfigBuilder {
@@ -275,13 +276,13 @@ impl Default for ServiceConfigBuilder {
 
 impl ServiceConfigBuilder {
     /// Set command channel capacity (设置命令通道容量)
-    pub fn command_channel_capacity(mut self, capacity: usize) -> Self {
+    pub fn command_channel_capacity(mut self, capacity: NonZeroUsize) -> Self {
         self.command_channel_capacity = capacity;
         self
     }
 
     /// Set timeout channel capacity (设置超时通道容量)
-    pub fn timeout_channel_capacity(mut self, capacity: usize) -> Self {
+    pub fn timeout_channel_capacity(mut self, capacity: NonZeroUsize) -> Self {
         self.timeout_channel_capacity = capacity;
         self
     }
@@ -304,25 +305,11 @@ impl ServiceConfigBuilder {
     /// # 验证规则
     /// - 所有通道容量必须大于 0
     /// 
-    pub fn build(self) -> Result<ServiceConfig, TimerError> {
-        if self.command_channel_capacity == 0 {
-            return Err(TimerError::InvalidConfiguration {
-                field: "command_channel_capacity".to_string(),
-                reason: "Command channel capacity must be greater than 0 (命令通道容量必须大于 0)".to_string(),
-            });
-        }
-
-        if self.timeout_channel_capacity == 0 {
-            return Err(TimerError::InvalidConfiguration {
-                field: "timeout_channel_capacity".to_string(),
-                reason: "Timeout channel capacity must be greater than 0 (超时通道容量必须大于 0)".to_string(),
-            });
-        }
-
-        Ok(ServiceConfig {
+    pub fn build(self) -> ServiceConfig {
+        ServiceConfig {
             command_channel_capacity: self.command_channel_capacity,
             timeout_channel_capacity: self.timeout_channel_capacity,
-        })
+        }
     }
 }
 
@@ -378,6 +365,7 @@ impl Default for BatchConfig {
 /// # Examples (示例)
 /// ```no_run
 /// use kestrel_timer::config::TimerConfig;
+/// use std::num::NonZeroUsize;
 ///
 /// // Use default configuration (使用默认配置)
 /// let config = TimerConfig::default();
@@ -385,10 +373,9 @@ impl Default for BatchConfig {
 /// // Use Builder to customize configuration, service parameters only
 /// // (使用 Builder 自定义配置，仅配置服务参数)
 /// let config = TimerConfig::builder()
-///     .command_channel_capacity(1024)
-///     .timeout_channel_capacity(2000)
-///     .build()
-///     .unwrap();
+///     .command_channel_capacity(NonZeroUsize::new(1024).unwrap())
+///     .timeout_channel_capacity(NonZeroUsize::new(2000).unwrap())
+///     .build();
 /// ```
 #[derive(Debug, Clone)]
 pub struct TimerConfig {
@@ -439,13 +426,13 @@ impl Default for TimerConfigBuilder {
 
 impl TimerConfigBuilder {
     /// Set command channel capacity (设置命令通道容量)
-    pub fn command_channel_capacity(mut self, capacity: usize) -> Self {
+    pub fn command_channel_capacity(mut self, capacity: NonZeroUsize) -> Self {
         self.service_builder = self.service_builder.command_channel_capacity(capacity);
         self
     }
 
     /// Set timeout channel capacity (设置超时通道容量)
-    pub fn timeout_channel_capacity(mut self, capacity: usize) -> Self {
+    pub fn timeout_channel_capacity(mut self, capacity: NonZeroUsize) -> Self {
         self.service_builder = self.service_builder.timeout_channel_capacity(capacity);
         self
     }
@@ -471,7 +458,7 @@ impl TimerConfigBuilder {
     pub fn build(self) -> Result<TimerConfig, TimerError> {
         Ok(TimerConfig {
             wheel: self.wheel_builder.build()?,
-            service: self.service_builder.build()?,
+            service: self.service_builder.build(),
             batch: self.batch_config,
         })
     }
@@ -525,22 +512,14 @@ mod tests {
     }
 
     #[test]
-    fn test_service_config_default() {
-        let config = ServiceConfig::default();
-        assert_eq!(config.command_channel_capacity, 512);
-        assert_eq!(config.timeout_channel_capacity, 1000);
-    }
-
-    #[test]
     fn test_service_config_builder() {
         let config = ServiceConfig::builder()
-            .command_channel_capacity(1024)
-            .timeout_channel_capacity(2000)
-            .build()
-            .unwrap();
+            .command_channel_capacity(NonZeroUsize::new(1024).unwrap())
+            .timeout_channel_capacity(NonZeroUsize::new(2000).unwrap())
+            .build();
 
-        assert_eq!(config.command_channel_capacity, 1024);
-        assert_eq!(config.timeout_channel_capacity, 2000);
+        assert_eq!(config.command_channel_capacity, NonZeroUsize::new(1024).unwrap());
+        assert_eq!(config.timeout_channel_capacity, NonZeroUsize::new(2000).unwrap());
     }
 
     #[test]
@@ -553,21 +532,21 @@ mod tests {
     fn test_timer_config_default() {
         let config = TimerConfig::default();
         assert_eq!(config.wheel.l0_slot_count, 512);
-        assert_eq!(config.service.command_channel_capacity, 512);
+        assert_eq!(config.service.command_channel_capacity, NonZeroUsize::new(512).unwrap());
         assert_eq!(config.batch.small_batch_threshold, 10);
     }
 
     #[test]
     fn test_timer_config_builder() {
         let config = TimerConfig::builder()
-            .command_channel_capacity(1024)
-            .timeout_channel_capacity(2000)
+            .command_channel_capacity(NonZeroUsize::new(1024).unwrap())
+            .timeout_channel_capacity(NonZeroUsize::new(2000).unwrap())
             .small_batch_threshold(20)
             .build()
             .unwrap();
 
-        assert_eq!(config.service.command_channel_capacity, 1024);
-        assert_eq!(config.service.timeout_channel_capacity, 2000);
+        assert_eq!(config.service.command_channel_capacity, NonZeroUsize::new(1024).unwrap());
+        assert_eq!(config.service.timeout_channel_capacity, NonZeroUsize::new(2000).unwrap());
         assert_eq!(config.batch.small_batch_threshold, 20);
     }
 }

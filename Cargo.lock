@@ -322,9 +322,9 @@ checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
 name = "lite-sync"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e1c0c43ed73e7503ec2169bf3936933be7de7057c758c829b537ec6dd9278c6"
+checksum = "a5cbb56b5ac9e9c157f3bf0f4017734c4b77dbdbb3ae343c2f03871e6ca87245"
 dependencies = [
  "smallring",
 ]
@@ -600,9 +600,9 @@ checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
 
 [[package]]
 name = "smallring"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1f9ca2dea8a538d7375a5ae1c2daa7e8ec272043b7f136ec24b4b971a8b5af7"
+checksum = "40d1041d947bb4c4e29fc20269dc212123ea85e8c4d3526a338ddf54045ba985"
 
 [[package]]
 name = "smallvec"

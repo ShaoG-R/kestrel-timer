@@ -436,7 +436,7 @@ impl BatchHandle {
     pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> usize {
         let updates: Vec<_> = self.task_ids
             .into_iter()
-            .zip(delays.into_iter())
+            .zip(delays)
             .collect();
         let mut wheel = self.wheel.lock();
         wheel.postpone_batch(updates)
@@ -490,7 +490,7 @@ impl BatchHandle {
     ) -> usize {
         let updates_with_ids: Vec<_> = self.task_ids
             .into_iter()
-            .zip(updates.into_iter())
+            .zip(updates)
             .map(|(id, (delay, callback))| (id, delay, callback))
             .collect();
         let mut wheel = self.wheel.lock();
@@ -584,7 +584,7 @@ impl BatchHandleWithCompletion {
     pub fn into_handles(self) -> Vec<TimerHandleWithCompletion> {
         self.handles.into_handles()
             .into_iter()
-            .zip(self.completion_rxs.into_iter())
+            .zip(self.completion_rxs)
             .map(|(handle, rx)| {
                 TimerHandleWithCompletion::new(handle, rx)
             })

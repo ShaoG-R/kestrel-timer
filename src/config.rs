@@ -178,7 +178,7 @@ impl WheelConfigBuilder {
         // Validate L1 tick is an integer multiple of L0 tick
         let l0_ms = self.l0_tick_duration.as_millis() as u64;
         let l1_ms = self.l1_tick_duration.as_millis() as u64;
-        if l1_ms % l0_ms != 0 {
+        if !l1_ms.is_multiple_of(l0_ms) {
             return Err(TimerError::InvalidConfiguration {
                 field: "l1_tick_duration".to_string(),
                 reason: format!(
@@ -377,7 +377,7 @@ impl Default for BatchConfig {
 ///     .timeout_channel_capacity(NonZeroUsize::new(2000).unwrap())
 ///     .build();
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TimerConfig {
     /// Timing wheel configuration
     pub wheel: WheelConfig,
@@ -385,16 +385,6 @@ pub struct TimerConfig {
     pub service: ServiceConfig,
     /// Batch processing configuration
     pub batch: BatchConfig,
-}
-
-impl Default for TimerConfig {
-    fn default() -> Self {
-        Self {
-            wheel: WheelConfig::default(),
-            service: ServiceConfig::default(),
-            batch: BatchConfig::default(),
-        }
-    }
 }
 
 impl TimerConfig {
@@ -407,21 +397,11 @@ impl TimerConfig {
 /// Top-level Timer Configuration Builder (顶级定时器配置构建器)
 /// 
 /// 用于构建 TimerConfig 的构建器。
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TimerConfigBuilder {
     wheel_builder: WheelConfigBuilder,
     service_builder: ServiceConfigBuilder,
     batch_config: BatchConfig,
-}
-
-impl Default for TimerConfigBuilder {
-    fn default() -> Self {
-        Self {
-            wheel_builder: WheelConfigBuilder::default(),
-            service_builder: ServiceConfigBuilder::default(),
-            batch_config: BatchConfig::default(),
-        }
-    }
 }
 
 impl TimerConfigBuilder {

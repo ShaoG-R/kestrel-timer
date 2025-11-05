@@ -423,7 +423,7 @@ impl TimerTask {
     pub fn get_interval(&self) -> Option<std::time::Duration> {
         match self.task_type {
             TaskType::Periodic { interval, .. } => Some(interval),
-            TaskType::OneShot { .. } => None,
+            TaskType::OneShot => None,
         }
     }
 
@@ -479,7 +479,7 @@ impl TimerTaskWithCompletionNotifier {
     /// 
     pub fn from_timer_task(task: TimerTask) -> (Self, CompletionReceiver) {
         match task.task_type {
-            TaskType::OneShot { .. } => {
+            TaskType::OneShot => {
                 // Create oneshot notifier and receiver with optimized single Arc allocation
                 // 创建 oneshot 通知器和接收器，使用优化的单个 Arc 分配
                 let (notifier, receiver) = channel();

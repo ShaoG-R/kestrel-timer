@@ -738,7 +738,7 @@ impl Wheel {
         // Check if L1 layer needs to be advanced
         // 处理 L1 层
         // 检查是否需要推进 L1 层
-        if self.l0.current_tick % self.l1_tick_ratio == 0 {
+        if self.l0.current_tick.is_multiple_of(self.l1_tick_ratio) {
             self.l1.current_tick += 1;
             let l1_slot_index = (self.l1.current_tick as usize) & self.l1.slot_mask;
             let l1_slot = &mut self.l1.slots[l1_slot_index];

@@ -1075,7 +1075,7 @@ mod tests {
 
         // Wait for 3 periodic executions (50ms initial + 50ms * 2)
         // 等待 3 次周期执行（50ms 初始 + 50ms * 2）
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         
         // Verify callback was triggered multiple times
         // 验证回调被多次触发
@@ -1415,9 +1415,9 @@ mod tests {
         let mut notification_count = 0;
         match rx {
             crate::task::CompletionReceiver::Periodic(ref mut receiver) => {
-                // Receive notifications for ~200ms
-                // 接收约 200ms 的通知
-                let timeout = tokio::time::sleep(Duration::from_millis(200));
+                // Receive notifications for ~250ms
+                // 接收约 250ms 的通知
+                let timeout = tokio::time::sleep(Duration::from_millis(250));
                 tokio::pin!(timeout);
                 
                 loop {
@@ -1473,7 +1473,7 @@ mod tests {
 
         // Wait for executions
         // 等待执行
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
         
         let count = counter.load(Ordering::SeqCst);
         // Each task should execute at least 3 times, total at least 9

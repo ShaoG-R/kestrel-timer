@@ -343,7 +343,9 @@ impl Wheel {
         slots[slot_index].push(task);
         
         // Insert task location into DeferredMap using handle
+        // In non-debug mode, it is guaranteed that this method will not panic.
         // 使用 handle 将任务位置插入 DeferredMap
+        // 由于 deferred_map::DeferredMap 是我实现的，底层保证非debug模式下不会panic
         self.task_index.insert(handle.into_handle(), location)
             .expect("Handle should be valid for insertion");
     }
@@ -421,7 +423,9 @@ impl Wheel {
             slots[slot_index].push(task);
             
             // Insert task location into DeferredMap using handle
+            // In non-debug mode, it is guaranteed that this method will not panic.
             // 使用 handle 将任务位置插入 DeferredMap
+            // 由于 deferred_map::DeferredMap 是我实现的，底层保证非debug模式下不会panic
             self.task_index.insert(handle.into_handle(), location)
                 .expect("Handle should be valid for insertion");
         }
@@ -686,7 +690,9 @@ impl Wheel {
         task: TimerTaskWithCompletionNotifier,
     ) {
         // Determine which layer the interval should be inserted into
+        // This method is only called by periodic tasks, so the interval is guaranteed to be Some.
         // 确定间隔应该插入到哪一层
+        // 该方法只能由周期性任务调用，所以间隔是 guaranteed 应当保证为 Some.
         let (level, ticks, rounds) = self.determine_layer(task.get_interval().unwrap());
         
         // Use match to reduce branches, and use cached slot mask

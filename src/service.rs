@@ -502,17 +502,17 @@ impl TimerService {
     /// let timer = TimerWheel::with_defaults();
     /// let service = timer.create_service(ServiceConfig::default());
     /// 
-/// let handles = service.allocate_handles(3);
-/// let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
-/// let tasks: Vec<_> = (0..3)
-///     .map(|i| {
-///         let callback = Some(CallbackWrapper::new(move || async move {
-///             println!("Timer {} fired!", i);
-///         }));
-///         TimerTask::new_oneshot(Duration::from_secs(5), callback)
-///     })
-///     .collect();
-/// service.register_batch(handles, tasks).unwrap();
+    /// let handles = service.allocate_handles(3);
+    /// let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|i| {
+    ///         let callback = Some(CallbackWrapper::new(move || async move {
+    ///             println!("Timer {} fired!", i);
+    ///         }));
+    ///         TimerTask::new_oneshot(Duration::from_secs(5), callback)
+    ///     })
+    ///     .collect();
+    /// service.register_batch(handles, tasks).unwrap();
     /// 
     /// // Batch postpone (keep original callbacks)
     /// // 批量延期任务 (保持原始回调)

@@ -33,19 +33,22 @@
 //!     // Create timer manager (创建定时器管理器)
 //!     let timer = TimerWheel::with_defaults();
 //!     
-//!     // Step 1: Create timer task (使用回调创建定时器任务)
+//!     // Step 1: Allocate handle to get task_id (分配 handle 获取 task_id)
+//!     let handle = timer.allocate_handle();
+//!     let task_id = handle.task_id();
+//!     
+//!     // Step 2: Create timer task (创建定时器任务)
 //!     let callback = Some(CallbackWrapper::new(|| async {
 //!         println!("Timer fired after 1 second!");
 //!     }));
 //!     let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-//!     let task_id = task.get_id();
 //!     
-//!     // Step 2: Register timer task and get completion notification (注册定时器任务并获取完成通知)
-//!     let handle = timer.register(task);
+//!     // Step 3: Register timer task and get completion notification (注册定时器任务并获取完成通知)
+//!     let timer_handle = timer.register(handle, task);
 //!     
 //!     // Wait for timer completion (等待定时器完成)
 //!     use kestrel_timer::CompletionReceiver;
-//!     let (rx, _handle) = handle.into_parts();
+//!     let (rx, _handle) = timer_handle.into_parts();
 //!     match rx {
 //!         CompletionReceiver::OneShot(receiver) => {
 //!             receiver.wait().await;
@@ -73,13 +76,34 @@
 //!   - Maximum time span: 64 seconds
 //!
 //! - **Round Mechanism**: Tasks beyond L1 range use round counting
-//! 
+//!
+//! ### Task Indexing with DeferredMap
+//!
+//! Uses `DeferredMap` (a generational arena) for efficient task management:
+//!
+//! - **Two-Step Registration**: 
+//!   1. Allocate handle to get task ID (cheap, no value needed)
+//!   2. Insert task using the handle (with completion notifiers)
+//!
+//! - **Generational Safety**: Each task ID includes:
+//!   - Lower 32 bits: Slot index
+//!   - Upper 32 bits: Generation counter
+//!   - Prevents use-after-free and ABA problems
+//!
+//! - **Memory Efficiency**: Slots use union-based storage
+//!   - Occupied slots: Store task data
+//!   - Vacant slots: Store free-list pointer
+//!
 //! ### Performance Optimization
 //!
 //! - Uses `parking_lot::Mutex` instead of standard library Mutex for better performance
-//!   - Uses `FxHashMap` (rustc-hash) instead of standard HashMap to reduce hash collisions
-//!   - Slot count is power of 2, uses bitwise operations to optimize modulo
-//!   - Task execution in separate tokio tasks to avoid blocking timing wheel advancement
+//! - Uses `DeferredMap` (generational arena) for task indexing:
+//!   - O(1) task lookup, insertion, and removal
+//!   - Generational indices prevent use-after-free bugs
+//!   - Memory-efficient slot reuse with union-based storage
+//!   - Deferred insertion allows getting task ID before inserting task
+//! - Slot count is power of 2, uses bitwise operations to optimize modulo
+//! - Task execution in separate tokio tasks to avoid blocking timing wheel advancement
 //! 
 //! 
 //! 
@@ -101,10 +125,31 @@
 //!
 //! - **轮次机制**: 超出 L1 层范围的任务使用轮次计数处理
 //!
+//! ### 基于 DeferredMap 的任务索引
+//!
+//! 使用 `DeferredMap`（代数竞技场）实现高效任务管理：
+//!
+//! - **两步注册流程**：
+//!   1. 分配 handle 获取任务 ID（轻量操作，无需准备任务值）
+//!   2. 使用 handle 插入任务（携带完成通知器）
+//!
+//! - **代数安全**: 每个任务 ID 包含：
+//!   - 低 32 位：槽位索引
+//!   - 高 32 位：代数计数器
+//!   - 防止释放后使用和 ABA 问题
+//!
+//! - **内存高效**: 槽位使用联合体存储
+//!   - 已占用槽位：存储任务数据
+//!   - 空闲槽位：存储空闲链表指针
+//!
 //! ### 性能优化
 //!
 //! - 使用 `parking_lot::Mutex` 替代标准库的 Mutex，提供更好的性能
-//! - 使用 `FxHashMap`（rustc-hash）替代标准 HashMap，减少哈希冲突
+//! - 使用 `DeferredMap`（代数竞技场）进行任务索引：
+//!   - O(1) 任务查找、插入和删除
+//!   - 代数索引防止释放后使用（use-after-free）错误
+//!   - 基于联合体的槽位存储，内存高效复用
+//!   - 延迟插入允许在插入任务前获取任务 ID
 //! - 槽位数量为 2 的幂次方，使用位运算优化取模操作
 //! - 任务执行在独立的 tokio 任务中，避免阻塞时间轮推进
 //! 
@@ -116,6 +161,9 @@ pub mod wheel;
 pub mod timer;
 mod service;
 
+#[cfg(test)]
+mod tests;
+
 // Re-export public API
 pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletion};
 pub use timer::handle::{TimerHandle, TimerHandleWithCompletion, BatchHandle, BatchHandleWithCompletion};
@@ -124,7 +172,7 @@ pub use timer::TimerWheel;
 pub use service::{TimerService, TaskNotification};
 
 #[cfg(test)]
-mod tests {
+mod integration_tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
@@ -136,6 +184,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
+        let handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
@@ -145,7 +194,7 @@ mod tests {
                 }
             })),
         );
-        timer.register(task);
+        timer.register(handle, task);
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -159,6 +208,7 @@ mod tests {
         // Create 10 timers
         for i in 0..10 {
             let counter_clone = Arc::clone(&counter);
+            let handle = timer.allocate_handle();
             let task = TimerTask::new_oneshot(
                 Duration::from_millis(10 * (i + 1)),
                 Some(CallbackWrapper::new(move || {
@@ -168,7 +218,7 @@ mod tests {
                     }
                 })),
             );
-            timer.register(task);
+            timer.register(handle, task);
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -184,6 +234,7 @@ mod tests {
         let mut handles = Vec::new();
         for _ in 0..5 {
             let counter_clone = Arc::clone(&counter);
+            let alloc_handle = timer.allocate_handle();
             let task = TimerTask::new_oneshot(
                 Duration::from_millis(100),
                 Some(CallbackWrapper::new(move || {
@@ -193,7 +244,7 @@ mod tests {
                     }
                 })),
             );
-            let handle = timer.register(task);
+            let handle = timer.register(alloc_handle, task);
             handles.push(handle);
         }
 
@@ -214,6 +265,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = Arc::clone(&counter);
 
+        let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
@@ -223,7 +275,7 @@ mod tests {
                 }
             })),
         );
-        let handle = timer.register(task);
+        let handle = timer.register(alloc_handle, task);
 
         // Wait for completion notification
         let (rx, _handle) = handle.into_parts();
@@ -243,8 +295,9 @@ mod tests {
     async fn test_notify_only_timer_once() {
         let timer = TimerWheel::with_defaults();
         
+        let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
-        let handle = timer.register(task);
+        let handle = timer.register(alloc_handle, task);
 
         // Wait for completion notification (no callback, only notification)
         let (rx, _handle) = handle.into_parts();
@@ -261,11 +314,14 @@ mod tests {
         let timer = TimerWheel::with_defaults();
         let counter = Arc::new(AtomicU32::new(0));
 
-        // Create batch callbacks
-        let callbacks: Vec<TimerTask> = (0..5)
+        // Step 1: Allocate handles
+        let handles = timer.allocate_handles(5);
+
+        // Step 2: Create batch callbacks
+        let tasks: Vec<_> = (0..5)
             .map(|i| {
                 let counter = Arc::clone(&counter);
-                let delay = Duration::from_millis(50 + i * 10);
+                let delay = Duration::from_millis(50 + i as u64 * 10);
                 let callback = CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter);
                     async move {
@@ -276,7 +332,8 @@ mod tests {
             })
             .collect();
 
-        let batch = timer.register_batch(callbacks);
+        // Step 3: Batch register
+        let batch = timer.register_batch(handles, tasks).expect("register_batch should succeed");
         let (receivers, _batch_handle) = batch.into_parts();
 
         // Wait for all completion notifications
@@ -300,8 +357,9 @@ mod tests {
     async fn test_completion_reason_expired() {
         let timer = TimerWheel::with_defaults();
         
+        let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
-        let handle = timer.register(task);
+        let handle = timer.register(alloc_handle, task);
 
         // Wait for completion notification and verify reason is Expired
         let (rx, _handle) = handle.into_parts();
@@ -318,8 +376,9 @@ mod tests {
     async fn test_completion_reason_cancelled() {
         let timer = TimerWheel::with_defaults();
         
+        let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
-        let handle = timer.register(task);
+        let handle = timer.register(alloc_handle, task);
 
         // Cancel task
         let cancelled = handle.cancel();
@@ -340,12 +399,16 @@ mod tests {
     async fn test_batch_completion_reasons() {
         let timer = TimerWheel::with_defaults();
         
-        // Create 5 tasks, delay 10 seconds
+        // Step 1: Allocate handles
+        let handles = timer.allocate_handles(5);
+        
+        // Step 2: Create 5 tasks with 10 seconds delay
         let tasks: Vec<_> = (0..5)
             .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
             .collect();
         
-        let batch = timer.register_batch(tasks);
+        // Step 3: Batch register
+        let batch = timer.register_batch(handles, tasks).expect("register_batch should succeed");
         let task_ids: Vec<_> = batch.task_ids().to_vec();
         let (mut receivers, _batch_handle) = batch.into_parts();
 

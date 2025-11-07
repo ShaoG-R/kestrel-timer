@@ -20,9 +20,11 @@ exclude = [
 [dependencies]
 tokio = { version = "1.48.0", default-features = false, features = ["test-util", "macros", "rt-multi-thread", "parking_lot"] }
 parking_lot = "0.12.5"
-rustc-hash = "2.1.1"
 futures = "0.3"
+
+# 以下features由本库作者维护
 lite-sync = "0.1.3"
+deferred-map = "0.1.2"
 
 [dev-dependencies]
 criterion = { version = "0.7.0", features = ["async_tokio"] }

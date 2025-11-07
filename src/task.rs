@@ -1,16 +1,10 @@
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use lite_sync::oneshot::{channel, Sender, Receiver};
 use lite_sync::spsc::{self, TryRecvError};
-
-/// Global unique task ID generator
-/// 
-/// 全局唯一任务 ID 生成器
-static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
 /// One-shot task completion state constants
 /// 
@@ -64,17 +58,30 @@ impl lite_sync::oneshot::State for TaskCompletion {
 
 /// Unique identifier for timer tasks
 /// 
+/// Now wraps a DeferredMap key (u64) which includes generation information
+/// for safe reference and prevention of use-after-free.
+/// 
 /// 定时器任务唯一标识符
+/// 
+/// 现在封装 DeferredMap key (u64)，包含代数信息以实现安全引用和防止释放后使用
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TaskId(u64);
 
 impl TaskId {
-    /// Generate a new unique task ID (internal use)
+    /// Create TaskId from DeferredMap key (internal use)
     /// 
-    /// 生成一个新的唯一任务 ID (内部使用)
+    /// 从 DeferredMap key 创建 TaskId (内部使用)
     #[inline]
-    pub(crate) fn new() -> Self {
-        TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
+    pub(crate) fn from_key(key: u64) -> Self {
+        TaskId(key)
+    }
+
+    /// Get the DeferredMap key
+    /// 
+    /// 获取 DeferredMap key
+    #[inline]
+    pub(crate) fn key(&self) -> u64 {
+        self.0
     }
 
     /// Get the numeric value of the task ID
@@ -86,10 +93,33 @@ impl TaskId {
     }
 }
 
-impl Default for TaskId {
+pub struct TaskHandle {
+    handle: deferred_map::Handle,
+}
+
+impl TaskHandle {
+    /// Create a new task handle
+    /// 
+    /// 创建一个新的任务句柄
     #[inline]
-    fn default() -> Self {
-        Self::new()
+    pub(crate) fn new(handle: deferred_map::Handle) -> Self {
+        Self { handle }
+    }
+
+    /// Get the task ID
+    /// 
+    /// 获取任务 ID
+    #[inline]
+    pub fn task_id(&self) -> TaskId {
+        TaskId::from_key(self.handle.key())
+    }
+
+    /// Convert to deferred map handle
+    /// 
+    /// 转换为 deferred map 句柄
+    #[inline]
+    pub(crate) fn into_handle(self) -> deferred_map::Handle {
+        self.handle
     }
 }
 
@@ -243,6 +273,22 @@ pub enum TaskTypeWithCompletionNotifier {
     },
 }
 
+impl TaskTypeWithCompletionNotifier {
+    /// Get the interval for periodic tasks
+    /// 
+    /// Returns `None` for one-shot tasks
+    /// 
+    /// 获取周期任务的间隔时间
+    /// 
+    /// 对于一次性任务返回 `None`
+    #[inline]
+    pub fn get_interval(&self) -> Option<std::time::Duration> {
+        match self {
+            TaskTypeWithCompletionNotifier::Periodic { interval, .. } => Some(*interval),
+            TaskTypeWithCompletionNotifier::OneShot { .. } => None,
+        }
+    }
+}
 
 
 /// Completion notifier for periodic tasks
@@ -300,17 +346,16 @@ pub enum CompletionReceiver {
 /// 1. Create task using `TimerTask::new_oneshot()` or `TimerTask::new_periodic()`
 /// 2. Register task using `TimerWheel::register()` or `TimerService::register()`
 /// 
+/// TaskId is assigned when the task is inserted into the timing wheel.
+/// 
 /// 定时器任务
 /// 
 /// 用户通过两步 API 与定时器交互
 /// 1. 使用 `TimerTask::new_oneshot()` 或 `TimerTask::new_periodic()` 创建任务
 /// 2. 使用 `TimerWheel::register()` 或 `TimerService::register()` 注册任务
+/// 
+/// TaskId 在任务插入到时间轮时分配
 pub struct TimerTask {
-    /// Unique task identifier
-    /// 
-    /// 唯一任务标识符
-    pub(crate) id: TaskId,
-    
     /// Task type (one-shot or periodic)
     /// 
     /// 任务类型（一次性或周期性）
@@ -335,7 +380,7 @@ impl TimerTask {
     /// - `callback`: Callback function, optional
     /// 
     /// # Note
-    /// This is an internal method, users should use `TimerWheel::create_task()` or `TimerService::create_task()` to create tasks.
+    /// TaskId will be assigned when the task is inserted into the timing wheel.
     /// 
     /// 创建一个新的一次性定时器任务
     /// 
@@ -343,10 +388,11 @@ impl TimerTask {
     /// - `delay`: 任务执行前的延迟时间
     /// - `callback`: 回调函数，可选
     /// 
+    /// # 注意
+    /// TaskId 将在任务插入到时间轮时分配
     #[inline]
     pub fn new_oneshot(delay: std::time::Duration, callback: Option<CallbackWrapper>) -> Self {
         Self {
-            id: TaskId::new(),
             task_type: TaskType::OneShot,
             delay,
             callback,
@@ -361,7 +407,7 @@ impl TimerTask {
     /// - `callback`: Callback function, optional
     /// 
     /// # Note
-    /// This is an internal method, users should use `TimerWheel::create_periodic_task()` or `TimerService::create_periodic_task()` to create tasks.
+    /// TaskId will be assigned when the task is inserted into the timing wheel.
     /// 
     /// 创建一个新的周期性定时器任务
     /// 
@@ -370,6 +416,8 @@ impl TimerTask {
     /// - `interval`: 后续执行之间的间隔
     /// - `callback`: 回调函数，可选
     /// 
+    /// # 注意
+    /// TaskId 将在任务插入到时间轮时分配
     #[inline]
     pub fn new_periodic(
         initial_delay: std::time::Duration,
@@ -378,30 +426,10 @@ impl TimerTask {
         buffer_size: Option<NonZeroUsize>,
     ) -> Self {
         Self {
-            id: TaskId::new(),
             task_type: TaskType::Periodic { interval, buffer_size: buffer_size.unwrap_or(NonZeroUsize::new(32).unwrap()) },
             delay: initial_delay,
             callback,
         }
-    }
-
-    /// Get task ID
-    /// 
-    /// 获取任务 ID
-    /// 
-    /// # Examples (示例)
-    /// 
-    /// ```no_run
-    /// use kestrel_timer::TimerTask;
-    /// use std::time::Duration;
-    /// 
-    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), None);
-    /// let task_id = task.get_id();
-    /// println!("Task ID: {:?}", task_id);
-    /// ```
-    #[inline]
-    pub fn get_id(&self) -> TaskId {
-        self.id
     }
     
     /// Get task type
@@ -441,11 +469,6 @@ impl TimerTask {
 /// 1. 使用 `TimerTask::new_oneshot()` 或 `TimerTask::new_periodic()` 创建任务
 /// 2. 使用 `TimerWheel::register()` 或 `TimerService::register()` 注册任务
 pub struct TimerTaskWithCompletionNotifier {
-    /// Unique task identifier
-    /// 
-    /// 唯一任务标识符
-    pub(crate) id: TaskId,
-    
     /// Task type (one-shot or periodic)
     /// 
     /// 任务类型（一次性或周期性）
@@ -466,11 +489,14 @@ impl TimerTaskWithCompletionNotifier {
 
     /// Create a new timer task with completion notifier from a timer task
     /// 
+    /// TaskId will be assigned later when inserted into the timing wheel
+    /// 
     /// 从定时器任务创建一个新的定时器任务完成通知器
+    /// 
+    /// TaskId 将在插入到时间轮时分配
     /// 
     /// # Parameters
     /// - `task`: The timer task to create from
-    /// - `buffer_size`: The buffer size for the periodic task completion notifier
     /// 
     /// # Returns
     /// A tuple containing the new timer task with completion notifier and the completion receiver
@@ -485,7 +511,6 @@ impl TimerTaskWithCompletionNotifier {
                 let (notifier, receiver) = channel();
 
                 (Self {
-                    id: task.id,
                     task_type: TaskTypeWithCompletionNotifier::OneShot { 
                         completion_notifier: notifier 
                     },
@@ -502,7 +527,6 @@ impl TimerTaskWithCompletionNotifier {
                 let receiver = PeriodicCompletionReceiver(rx);
                 
                 (Self {
-                    id: task.id,
                     task_type: TaskTypeWithCompletionNotifier::Periodic { 
                         interval, 
                         completion_notifier: notifier 
@@ -512,25 +536,6 @@ impl TimerTaskWithCompletionNotifier {
                 }, CompletionReceiver::Periodic(receiver))
             },
         }
-    }
-
-    /// Get task ID
-    /// 
-    /// 获取任务 ID
-    /// 
-    /// # Examples (示例)
-    /// 
-    /// ```no_run
-    /// use kestrel_timer::TimerTask;
-    /// use std::time::Duration;
-    /// 
-    /// let task = TimerTask::new_oneshot(Duration::from_secs(1), None);
-    /// let task_id = task.get_id();
-    /// println!("Task ID: {:?}", task_id);
-    /// ```
-    #[inline]
-    pub fn get_id(&self) -> TaskId {
-        self.id
     }
 
     /// Into task type
@@ -550,25 +555,24 @@ impl TimerTaskWithCompletionNotifier {
     /// 对于一次性任务返回 `None`
     #[inline]
     pub fn get_interval(&self) -> Option<std::time::Duration> {
-        match self.task_type {
-            TaskTypeWithCompletionNotifier::Periodic { interval, .. } => Some(interval),
-            TaskTypeWithCompletionNotifier::OneShot { .. } => None,
-        }
+        self.task_type.get_interval()
     }
 }
 
 pub(crate) struct TimerTaskForWheel {
+    pub(crate) task_id: TaskId,
     pub(crate) task: TimerTaskWithCompletionNotifier,
     pub(crate) deadline_tick: u64,
     pub(crate) rounds: u32,
 }
 
 impl TimerTaskForWheel {
-    /// Create a new timer task for wheel
+    /// Create a new timer task for wheel with assigned TaskId
     /// 
-    /// 创建一个新的定时器任务用于时间轮
+    /// 使用分配的 TaskId 创建一个新的定时器任务用于时间轮
     /// 
     /// # Parameters
+    /// - `task_id`: The TaskId assigned by DeferredMap
     /// - `task`: The timer task to create from
     /// - `deadline_tick`: The deadline tick for the task
     /// - `rounds`: The rounds for the task
@@ -579,8 +583,13 @@ impl TimerTaskForWheel {
     /// 返回一个新的定时器任务用于时间轮
     /// 
     #[inline]
-    pub(crate) fn new(task: TimerTaskWithCompletionNotifier, deadline_tick: u64, rounds: u32) -> Self {
-        Self { task, deadline_tick, rounds }
+    pub(crate) fn new_with_id(
+        task_id: TaskId,
+        task: TimerTaskWithCompletionNotifier,
+        deadline_tick: u64,
+        rounds: u32
+    ) -> Self {
+        Self { task_id, task, deadline_tick, rounds }
     }
 
     /// Get task ID
@@ -588,7 +597,7 @@ impl TimerTaskForWheel {
     /// 获取任务 ID
     #[inline]
     pub fn get_id(&self) -> TaskId {
-        self.task.get_id()
+        self.task_id
     }
 
     /// Into task type

@@ -41,7 +41,9 @@
 ### ⚡ 高性能
 
 - **O(1) 时间复杂度**：插入、删除、触发操作均为 O(1)
-- **优化数据结构**：`FxHashMap` + `parking_lot::Mutex`
+- **优化数据结构**：
+  - `DeferredMap`（代数竞技场）进行任务索引，O(1) 操作
+  - `parking_lot::Mutex` 提供高效锁机制
 - **位运算优化**：槽位数量为 2 的幂次方，快速取模
 - **支持大规模**：轻松处理 10,000+ 并发定时器
 
@@ -69,7 +71,7 @@ tokio = { version = "1.48", features = ["full"] }
 ### 基础使用
 
 ```rust
-use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask, CompletionReceiver};
+use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
 #[tokio::main]
@@ -77,21 +79,21 @@ async fn main() {
     // 创建定时器（使用默认配置）
     let timer = TimerWheel::with_defaults();
     
-    // 创建任务 + 注册
+    // 步骤 1: 分配 handle
+    let handle = timer.allocate_handle();
+    let task_id = handle.task_id();
+    
+    // 步骤 2: 创建任务
     let callback = Some(CallbackWrapper::new(|| async {
         println!("定时器触发！");
     }));
     let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-    let handle = timer.register(task);
     
-    // 等待完成
-    let (rx, _handle) = handle.into_parts();
-    match rx {
-        CompletionReceiver::OneShot(receiver) => {
-            receiver.wait().await;
-        },
-        _ => {}
-    }
+    // 步骤 3: 注册任务
+    let timer_handle = timer.register(handle, task).unwrap();
+    
+    // 等待完成或取消
+    // timer_handle.cancel();
 }
 ```
 
@@ -103,7 +105,11 @@ use std::time::Duration;
 
 let timer = TimerWheel::with_defaults();
 
-// 批量创建 + 注册
+// 步骤 1: 批量分配 handles
+let handles = timer.allocate_handles(100);
+let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+
+// 步骤 2: 创建任务
 let tasks: Vec<_> = (0..100)
     .map(|i| {
         let delay = Duration::from_millis(100 + i * 10);
@@ -114,7 +120,8 @@ let tasks: Vec<_> = (0..100)
     })
     .collect();
 
-let batch_handle = timer.register_batch(tasks);
+// 步骤 3: 批量注册
+let batch_handle = timer.register_batch(handles, tasks).unwrap();
 
 // 批量取消
 batch_handle.cancel_all();
@@ -128,12 +135,16 @@ use std::time::Duration;
 
 let timer = TimerWheel::with_defaults();
 
+// 步骤 1: 分配 handle 并获取 task_id
+let handle = timer.allocate_handle();
+let task_id = handle.task_id();
+
+// 步骤 2: 创建并注册任务
 let callback = Some(CallbackWrapper::new(|| async {
     println!("原始回调");
 }));
 let task = TimerTask::new_oneshot(Duration::from_millis(50), callback);
-let task_id = task.get_id();
-let handle = timer.register(task);
+let timer_handle = timer.register(handle, task).unwrap();
 
 // 推迟并保持原回调
 timer.postpone(task_id, Duration::from_millis(150), None);
@@ -155,12 +166,17 @@ use std::time::Duration;
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
-// 批量调度
+// 步骤 1: 分配 handles
+let handles = service.allocate_handles(2);
+
+// 步骤 2: 创建任务
 let tasks: Vec<_> = vec![
     TimerTask::new_oneshot(Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))),
     TimerTask::new_oneshot(Duration::from_millis(200), Some(CallbackWrapper::new(|| async {}))),
 ];
-service.register_batch(tasks).unwrap();
+
+// 步骤 3: 批量注册
+service.register_batch(handles, tasks).unwrap();
 
 // 接收超时通知
 let mut timeout_rx = service.take_receiver().unwrap();
@@ -212,9 +228,27 @@ service.shutdown().await;
 3. L1 任务到期 → 自动降级到 L0 层
 4. L0 任务到期 → 立即触发
 
+### 基于 DeferredMap 的任务索引
+
+使用 `DeferredMap`（代数竞技场）实现高效任务管理：
+
+- **两步注册流程**：
+  - 分配 handle 获取任务 ID（轻量操作，无需准备任务值）
+  - 使用 handle 插入任务（携带完成通知器）
+
+- **代数安全**：每个任务 ID 包含：
+  - 低 32 位：槽位索引
+  - 高 32 位：代数计数器
+  - 防止释放后使用和 ABA 问题
+
+- **内存高效**：基于联合体的槽位存储
+  - 已占用槽位：存储任务数据
+  - 空闲槽位：存储空闲链表指针
+
 ### 性能优化
 
 - **分层架构**：避免单层轮次检查，L0 层无需 rounds 判断
+- **DeferredMap**：O(1) 任务查找、插入和删除，提供代数安全
 - **高效锁机制**：`parking_lot::Mutex` 比标准 Mutex 更快
 - **位运算优化**：槽位数为 2 的幂次方，使用 `& (n-1)` 快速取模
 - **缓存优化**：预计算槽位掩码、tick 时长等常用值
@@ -229,28 +263,33 @@ service.shutdown().await;
 **TimerTask**：
 - `TimerTask::new_oneshot(delay, callback)` - 创建一次性任务
 - `TimerTask::new_periodic(initial_delay, interval, callback, buffer_size)` - 创建周期性任务
-- `get_id()` - 获取任务 ID
 - `get_task_type()` - 获取任务类型
 - `get_interval()` - 获取周期任务的间隔时间
+
+**TaskHandle**（预分配的句柄）：
+- `task_id()` - 从句柄获取任务 ID
 
 **TimerWheel**：
 - `TimerWheel::with_defaults()` - 使用默认配置创建
 - `TimerWheel::new(config)` - 使用自定义配置创建
-- `register(task)` - 注册任务
-- `register_batch(tasks)` - 批量注册
+- `allocate_handle()` - 分配单个 handle
+- `allocate_handles(count)` - 批量分配 handles
+- `register(handle, task)` - 使用 handle 注册任务
+- `register_batch(handles, tasks)` - 批量注册任务
 - `cancel(task_id)` - 取消任务
 - `cancel_batch(task_ids)` - 批量取消
 - `postpone(task_id, delay, callback)` - 推迟任务
 - `postpone_batch(updates)` - 批量推迟
 
-**TimerHandle**：
+**TimerHandle**（注册后返回的句柄）：
 - `cancel()` - 取消定时器
 - `task_id()` - 获取任务 ID
-- `into_parts()` - 获取完成通知接收器和句柄
 
 **TimerService**：
-- `register(task)` - 注册任务
-- `register_batch(tasks)` - 批量注册
+- `allocate_handle()` - 分配单个 handle
+- `allocate_handles(count)` - 批量分配 handles
+- `register(handle, task)` - 使用 handle 注册任务
+- `register_batch(handles, tasks)` - 批量注册任务
 - `take_receiver()` - 获取超时通知接收器
 - `cancel_task(task_id)` - 取消任务
 - `cancel_batch(task_ids)` - 批量取消
@@ -342,15 +381,21 @@ use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
 async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
+    // 先分配 handle
+    let handle = timer.allocate_handle();
+    
+    // 创建任务
     let callback = Some(CallbackWrapper::new(move || async move {
         println!("连接 {} 超时", conn_id);
         close_connection(conn_id).await;
     }));
     let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
-    let handle = timer.register(task);
+    
+    // 注册任务
+    let timer_handle = timer.register(handle, task).unwrap();
     
     // 连接完成时取消超时
-    // handle.cancel();
+    // timer_handle.cancel();
 }
 ```
 
@@ -365,11 +410,15 @@ let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
 for client_id in client_ids {
+    // 分配 handle
+    let handle = service.allocate_handle();
+    
+    // 创建并注册任务
     let callback = Some(CallbackWrapper::new(move || async move {
         println!("客户端 {} 心跳超时", client_id);
     }));
     let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
-    service.register(task).unwrap();
+    service.register(handle, task).unwrap();
 }
 ```
 
@@ -383,6 +432,10 @@ use std::time::Duration;
 async fn set_cache(&self, key: String, value: String, ttl: Duration) {
     self.cache.lock().insert(key.clone(), value);
     
+    // 分配 handle
+    let handle = self.timer.allocate_handle();
+    
+    // 创建带回调的任务
     let cache = Arc::clone(&self.cache);
     let callback = Some(CallbackWrapper::new(move || {
         let cache = Arc::clone(&cache);
@@ -392,7 +445,9 @@ async fn set_cache(&self, key: String, value: String, ttl: Duration) {
         }
     }));
     let task = TimerTask::new_oneshot(ttl, callback);
-    self.timer.register(task);
+    
+    // 注册任务
+    self.timer.register(handle, task).unwrap();
 }
 ```
 
@@ -408,12 +463,17 @@ async fn apply_buff(
     buff_type: BuffType,
     duration: Duration
 ) -> TaskId {
+    // 分配 handle 并获取 task_id
+    let handle = timer.allocate_handle();
+    let task_id = handle.task_id();
+    
+    // 创建并注册任务
     let callback = Some(CallbackWrapper::new(move || async move {
         remove_buff(player_id, buff_type).await;
     }));
     let task = TimerTask::new_oneshot(duration, callback);
-    let task_id = task.get_id();
-    timer.register(task);
+    timer.register(handle, task).unwrap();
+    
     task_id
 }
 
@@ -430,11 +490,16 @@ use std::time::Duration;
 async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
     for retry in 1..=5 {
         let delay = Duration::from_secs(2_u64.pow(retry - 1));
+        
+        // 分配 handle
+        let handle = timer.allocate_handle();
+        
+        // 创建并注册任务
         let callback = Some(CallbackWrapper::new(move || async move {
             operation().await;
         }));
         let task = TimerTask::new_oneshot(delay, callback);
-        timer.register(task);
+        timer.register(handle, task).unwrap();
     }
 }
 ```

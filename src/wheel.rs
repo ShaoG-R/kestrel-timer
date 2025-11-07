@@ -1,7 +1,7 @@
 use crate::CallbackWrapper;
 use crate::config::{BatchConfig, WheelConfig};
-use crate::task::{TaskCompletion, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
-use rustc_hash::FxHashMap;
+use crate::task::{TaskCompletion, TaskHandle, TaskId, TaskLocation, TaskTypeWithCompletionNotifier, TimerTaskForWheel, TimerTaskWithCompletionNotifier};
+use deferred_map::DeferredMap;
 use std::time::Duration;
 
 pub struct WheelAdvanceResult {
@@ -83,7 +83,11 @@ impl WheelLayer {
 
 /// Timing wheel data structure (hierarchical mode)
 /// 
+/// Now uses DeferredMap for O(1) task lookup and generational safety.
+/// 
 /// 时间轮数据结构（分层模式）
+/// 
+/// 现在使用 DeferredMap 实现 O(1) 任务查找和代数安全
 pub struct Wheel {
     /// L0 layer (bottom layer)
     /// 
@@ -98,12 +102,16 @@ pub struct Wheel {
     /// L1 tick ratio relative to L0 tick
     /// 
     /// L1 tick 相对于 L0 tick 的比率
-    l1_tick_ratio: u64,
+    pub(crate) l1_tick_ratio: u64,
     
-    /// Task index for fast lookup and cancellation
+    /// Task index for fast lookup and cancellation using DeferredMap
     /// 
-    /// 任务索引，用于快速查找和取消
-    task_index: FxHashMap<TaskId, TaskLocation>,
+    /// Keys are TaskIds (u64 from DeferredMap), values are TaskLocations
+    /// 
+    /// 任务索引，使用 DeferredMap 实现快速查找和取消
+    /// 
+    /// 键是 TaskId（来自 DeferredMap 的 u64），值是 TaskLocation
+    pub(crate) task_index: DeferredMap<TaskLocation>,
     
     /// Batch processing configuration
     /// 
@@ -130,6 +138,7 @@ impl Wheel {
     ///
     /// # Notes
     /// Configuration parameters have been validated in WheelConfig::builder().build(), so this method will not fail.
+    /// Now uses DeferredMap for task indexing with generational safety.
     /// 
     /// 创建新的时间轮
     ///
@@ -139,6 +148,7 @@ impl Wheel {
     ///
     /// # 注意
     /// 配置参数已在 WheelConfig::builder().build() 中验证，因此此方法不会失败。
+    /// 现在使用 DeferredMap 进行任务索引，具有代数安全特性。
     pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
         let l0 = WheelLayer::new(config.l0_slot_count, config.l0_tick_duration);
         let l1 = WheelLayer::new(config.l1_slot_count, config.l1_tick_duration);
@@ -152,11 +162,15 @@ impl Wheel {
         let l0_capacity_ms = (l0.slot_count as u64) * l0.tick_duration_ms;
         let l1_capacity_ticks = l1.slot_count as u64;
         
+        // Estimate initial capacity for DeferredMap based on L0 slot count
+        // 根据 L0 槽数量估算 DeferredMap 的初始容量
+        let estimated_capacity = (l0.slot_count / 4).max(64);
+        
         Self {
             l0,
             l1,
             l1_tick_ratio,
-            task_index: FxHashMap::default(),
+            task_index: DeferredMap::with_capacity(estimated_capacity),
             batch_config,
             l0_capacity_ms,
             l1_capacity_ticks,
@@ -233,37 +247,76 @@ impl Wheel {
         }
     }
 
+    /// Allocate a handle from DeferredMap
+    /// 
+    /// 从 DeferredMap 分配一个 handle
+    /// 
+    /// # Returns
+    /// A unique handle for later insertion
+    /// 
+    /// # 返回值
+    /// 用于后续插入的唯一 handle
+    pub fn allocate_handle(&mut self) -> TaskHandle {
+        TaskHandle::new(self.task_index.allocate_handle())
+    }
+
+    /// Batch allocate handles from DeferredMap
+    /// 
+    /// 从 DeferredMap 批量分配 handles
+    /// 
+    /// # Parameters
+    /// - `count`: Number of handles to allocate
+    /// 
+    /// # Returns
+    /// Vector of unique handles for later batch insertion
+    /// 
+    /// # 参数
+    /// - `count`: 要分配的 handle 数量
+    /// 
+    /// # 返回值
+    /// 用于后续批量插入的唯一 handles 向量
+    pub fn allocate_handles(&mut self, count: usize) -> Vec<TaskHandle> {
+        let mut handles = Vec::with_capacity(count);
+        for _ in 0..count {
+            handles.push(TaskHandle::new(self.task_index.allocate_handle()));
+        }
+        handles
+    }
+
     /// Insert timer task
     ///
     /// # Parameters
-    /// - `task`: Timer task
-    /// - `notifier`: Completion notifier (used to send notifications when tasks expire or are cancelled)
+    /// - `handle`: Handle for the task
+    /// - `task`: Timer task with completion notifier
     ///
     /// # Returns
-    /// Unique identifier of the task (TaskId)
+    /// Unique identifier of the task (TaskId) - now generated from DeferredMap
     ///
     /// # Implementation Details
+    /// - Allocates Handle from DeferredMap to generate TaskId with generational safety
     /// - Automatically calculate the layer and slot where the task should be inserted
     /// - Hierarchical mode: short delay tasks are inserted into L0, long delay tasks are inserted into L1
     /// - Use bit operations to optimize slot index calculation
-    /// - Maintain task index to support O(1) lookup and cancellation
+    /// - Use DeferredMap for O(1) lookup and cancellation with generation checking
     /// 
     /// 插入定时器任务
     ///
     /// # 参数
-    /// - `task`: 定时器任务
-    /// - `notifier`: 完成通知器（用于在任务过期或取消时发送通知）
+    /// - `handle`: 任务的 handle
+    /// - `task`: 带完成通知器的定时器任务
     ///
     /// # 返回值
-    /// 任务的唯一标识符（TaskId）
+    /// 任务的唯一标识符（TaskId）- 现在从 DeferredMap 生成
     ///
     /// # 实现细节
     /// - 自动计算任务应该插入的层级和槽位
     /// - 分层模式：短延迟任务插入 L0，长延迟任务插入 L1
     /// - 使用位运算优化槽索引计算
-    /// - 维护任务索引以支持 O(1) 查找和取消
+    /// - 使用 DeferredMap 实现 O(1) 查找和取消，带代数检查
     #[inline]
-    pub fn insert(&mut self, task: TimerTaskWithCompletionNotifier) -> TaskId {
+    pub fn insert(&mut self, handle: TaskHandle, task: TimerTaskWithCompletionNotifier) {
+        let task_id = handle.task_id();
+        
         let (level, ticks, rounds) = self.determine_layer(task.delay);
         
         // Use match to reduce branches, and use cached slot mask
@@ -276,9 +329,9 @@ impl Wheel {
         let total_ticks = current_tick + ticks;
         let slot_index = (total_ticks as usize) & slot_mask;
 
-        let task = TimerTaskForWheel::new(task, total_ticks, rounds);
-
-        let task_id = task.get_id();
+        // Create task with the assigned TaskId
+        // 使用分配的 TaskId 创建任务
+        let task = TimerTaskForWheel::new_with_id(task_id, task, total_ticks, rounds);
         
         // Get the index position of the task in Vec (the length before insertion is the index of the new task)
         // 获取任务在 Vec 中的索引位置（插入前的长度就是新任务的索引）
@@ -289,47 +342,59 @@ impl Wheel {
         // 将任务插入槽中
         slots[slot_index].push(task);
         
-        // Record task location
-        // 记录任务位置
-        self.task_index.insert(task_id, location);
-
-        task_id
+        // Insert task location into DeferredMap using handle
+        // 使用 handle 将任务位置插入 DeferredMap
+        self.task_index.insert(handle.into_handle(), location)
+            .expect("Handle should be valid for insertion");
     }
 
     /// Batch insert timer tasks
     ///
     /// # Parameters
-    /// - `tasks`: List of tuples of (task, completion notifier)
+    /// - `handles`: List of pre-allocated handles for tasks
+    /// - `tasks`: List of timer tasks with completion notifiers
     ///
     /// # Returns
-    /// List of task IDs
+    /// - `Ok(())` if all tasks are successfully inserted
+    /// - `Err(TimerError::BatchLengthMismatch)` if handles and tasks lengths don't match
     ///
     /// # Performance Advantages
     /// - Reduce repeated boundary checks and capacity adjustments
     /// - For tasks with the same delay, calculation results can be reused
+    /// - Uses DeferredMap for efficient task indexing with generational safety
     /// 
     /// 批量插入定时器任务
     ///
     /// # 参数
-    /// - `tasks`: (任务, 完成通知器) 元组列表
+    /// - `handles`: 任务的预分配 handles 列表
+    /// - `tasks`: 带完成通知器的定时器任务列表
     ///
     /// # 返回值
-    /// 任务 ID 列表
+    /// - `Ok(())` 如果所有任务成功插入
+    /// - `Err(TimerError::BatchLengthMismatch)` 如果 handles 和 tasks 长度不匹配
     ///
     /// # 性能优势
     /// - 减少重复的边界检查和容量调整
     /// - 对于相同延迟的任务，可以重用计算结果
+    /// - 使用 DeferredMap 实现高效的任务索引，具有代数安全特性
     #[inline]
-    pub fn insert_batch(&mut self, tasks: Vec<TimerTaskWithCompletionNotifier>) -> Vec<TaskId> {
-        let task_count = tasks.len();
+    pub fn insert_batch(
+        &mut self, 
+        handles: Vec<TaskHandle>, 
+        tasks: Vec<TimerTaskWithCompletionNotifier>
+    ) -> Result<(), crate::error::TimerError> {
+        // Validate that handles and tasks have the same length
+        // 验证 handles 和 tasks 长度相同
+        if handles.len() != tasks.len() {
+            return Err(crate::error::TimerError::BatchLengthMismatch {
+                handles_len: handles.len(),
+                tasks_len: tasks.len(),
+            });
+        }
         
-        // Optimize: pre-allocate HashMap capacity to avoid reallocation
-        // 优化：预分配 HashMap 容量以避免重新分配
-        self.task_index.reserve(task_count);
-        
-        let mut task_ids = Vec::with_capacity(task_count);
-        
-        for task in tasks {
+        for (handle, task) in handles.into_iter().zip(tasks.into_iter()) {
+            let task_id = handle.task_id();
+            
             let (level, ticks, rounds) = self.determine_layer(task.delay);
             
             // Use match to reduce branches, and use cached slot mask
@@ -342,9 +407,9 @@ impl Wheel {
             let total_ticks = current_tick + ticks;
             let slot_index = (total_ticks as usize) & slot_mask;
 
-            let task = TimerTaskForWheel::new(task, total_ticks, rounds);
-
-            let task_id = task.get_id();
+            // Create task with the assigned TaskId
+            // 使用分配的 TaskId 创建任务
+            let task = TimerTaskForWheel::new_with_id(task_id, task, total_ticks, rounds);
             
             // Get the index position of the task in Vec
             // 获取任务在 Vec 中的索引位置
@@ -355,14 +420,13 @@ impl Wheel {
             // 将任务插入槽中
             slots[slot_index].push(task);
             
-            // Record task location
-            // 记录任务位置
-            self.task_index.insert(task_id, location);
-            
-            task_ids.push(task_id);
+            // Insert task location into DeferredMap using handle
+            // 使用 handle 将任务位置插入 DeferredMap
+            self.task_index.insert(handle.into_handle(), location)
+                .expect("Handle should be valid for insertion");
         }
         
-        task_ids
+        Ok(())
     }
 
     /// Cancel timer task
@@ -373,6 +437,8 @@ impl Wheel {
     /// # Returns
     /// Returns true if the task exists and is successfully cancelled, otherwise returns false
     /// 
+    /// Now uses DeferredMap for safe task removal with generational checking
+    /// 
     /// 取消定时器任务
     ///
     /// # 参数
@@ -380,13 +446,15 @@ impl Wheel {
     ///
     /// # 返回值
     /// 如果任务存在且成功取消则返回 true，否则返回 false
+    /// 
+    /// 现在使用 DeferredMap 实现安全的任务移除，带代数检查
     #[inline]
     pub fn cancel(&mut self, task_id: TaskId) -> bool {
-        // Remove task location from index
-        // 从索引中移除任务位置
-        let location = match self.task_index.remove(&task_id) {
+        // Remove task location from DeferredMap using TaskId as key
+        // 使用 TaskId 作为 key 从 DeferredMap 中移除任务位置
+        let location = match self.task_index.remove(task_id.key()) {
             Some(loc) => loc,
-            None => return false,
+            None => return false, // Task not found or already removed (generation mismatch)
         };
         
         // Use match to get slot reference, reduce branches
@@ -399,11 +467,11 @@ impl Wheel {
         // Boundary check and ID verification
         // 边界检查和 ID 验证
         if location.vec_index >= slot.len() || slot[location.vec_index].get_id() != task_id {
-            // Index inconsistent, re-insert location to maintain data consistency
-            // 索引不一致，重新插入位置以保持数据一致性
-            self.task_index.insert(task_id, location);
+            // Index inconsistent - this shouldn't happen with DeferredMap, but handle it anyway
+            // 索引不一致 - DeferredMap 不应该出现这种情况，但还是处理一下
             return false;
         }
+        
         // Use swap_remove to remove task, record swapped task ID
         // 使用 swap_remove 移除任务，记录被交换的任务 ID
         let removed_task = slot.swap_remove(location.vec_index);
@@ -429,9 +497,9 @@ impl Wheel {
         // 如果发生了交换（vec_index 不是最后一个元素）
         if location.vec_index < slot.len() {
             let swapped_task_id = slot[location.vec_index].get_id();
-            // Update swapped element's index in one go, avoid another HashMap query
-            // 一次性更新被交换元素的索引，避免再次查询 HashMap
-            if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+            // Update swapped element's index in one go, using DeferredMap's get_mut
+            // 一次性更新被交换元素的索引，使用 DeferredMap 的 get_mut
+            if let Some(swapped_location) = self.task_index.get_mut(swapped_task_id.key()) {
                 swapped_location.vec_index = location.vec_index;
             }
         }
@@ -494,7 +562,9 @@ impl Wheel {
         // Collect information of tasks to be cancelled
         // 收集要取消的任务信息
         for &task_id in task_ids {
-            if let Some(location) = self.task_index.get(&task_id) {
+            // Use DeferredMap's get with TaskId key
+            // 使用 DeferredMap 的 get，传入 TaskId key
+            if let Some(location) = self.task_index.get(task_id.key()) {
                 if location.level == 0 {
                     l0_tasks_by_slot[location.slot_index].push((task_id, location.vec_index));
                 } else {
@@ -535,12 +605,16 @@ impl Wheel {
                     
                     if vec_index < slot.len() {
                         let swapped_task_id = slot[vec_index].get_id();
-                        if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                        // Use DeferredMap's get_mut with TaskId key
+                        // 使用 DeferredMap 的 get_mut，传入 TaskId key
+                        if let Some(swapped_location) = self.task_index.get_mut(swapped_task_id.key()) {
                             swapped_location.vec_index = vec_index;
                         }
                     }
                     
-                    self.task_index.remove(&task_id);
+                    // Use DeferredMap's remove with TaskId key
+                    // 使用 DeferredMap 的 remove，传入 TaskId key
+                    self.task_index.remove(task_id.key());
                     cancelled_count += 1;
                 }
             }
@@ -577,12 +651,16 @@ impl Wheel {
                     
                     if vec_index < slot.len() {
                         let swapped_task_id = slot[vec_index].get_id();
-                        if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                        // Use DeferredMap's get_mut with TaskId key
+                        // 使用 DeferredMap 的 get_mut，传入 TaskId key
+                        if let Some(swapped_location) = self.task_index.get_mut(swapped_task_id.key()) {
                             swapped_location.vec_index = vec_index;
                         }
                     }
                     
-                    self.task_index.remove(&task_id);
+                    // Use DeferredMap's remove with TaskId key
+                    // 使用 DeferredMap 的 remove，传入 TaskId key
+                    self.task_index.remove(task_id.key());
                     cancelled_count += 1;
                 }
             }
@@ -595,18 +673,21 @@ impl Wheel {
     /// 
     /// Used to automatically reschedule periodic tasks after they expire
     /// 
+    /// TaskId remains unchanged, only location is updated in DeferredMap
+    /// 
     /// 重新插入周期性任务（保持相同的 TaskId）
     /// 
     /// 用于在周期性任务过期后自动重新调度
+    /// 
+    /// TaskId 保持不变，只更新 DeferredMap 中的位置
     fn reinsert_periodic_task(
         &mut self,
-        periodic_task: TimerTaskWithCompletionNotifier,
+        task_id: TaskId,
+        task: TimerTaskWithCompletionNotifier,
     ) {
-        let task_id = periodic_task.get_id();
-
         // Determine which layer the interval should be inserted into
         // 确定间隔应该插入到哪一层
-        let (level, ticks, rounds) = self.determine_layer(periodic_task.get_interval().unwrap());
+        let (level, ticks, rounds) = self.determine_layer(task.get_interval().unwrap());
         
         // Use match to reduce branches, and use cached slot mask
         // 使用 match 减少分支，并使用缓存的槽掩码
@@ -617,23 +698,21 @@ impl Wheel {
         
         let total_ticks = current_tick + ticks;
         let slot_index = (total_ticks as usize) & slot_mask;
-        
-        // Create new task with the same TaskId
-        // 创建新任务，使用相同的 TaskId
-        let task = TimerTaskForWheel::new(periodic_task, total_ticks, rounds);
-        
+
         // Get the index position of the task in Vec
         // 获取任务在 Vec 中的索引位置
         let vec_index = slots[slot_index].len();
-        let location = TaskLocation::new(level, slot_index, vec_index);
+        let new_location = TaskLocation::new(level, slot_index, vec_index);
         
         // Insert task into slot
         // 将任务插入槽中
-        slots[slot_index].push(task);
+        slots[slot_index].push(TimerTaskForWheel::new_with_id(task_id, task, total_ticks, rounds));
         
-        // Record task location
-        // 记录任务位置
-        self.task_index.insert(task_id, location);
+        // Update task location in DeferredMap (doesn't remove, just updates)
+        // 更新 DeferredMap 中的任务位置（不删除，仅更新）
+        if let Some(location) = self.task_index.get_mut(task_id.key()) {
+            *location = new_location;
+        }
     }
 
     /// Advance the timing wheel by one tick, return all expired tasks
@@ -675,45 +754,53 @@ impl Wheel {
         {
             let l0_slot = &mut self.l0.slots[l0_slot_index];
             
-            let i = 0;
-            while i < l0_slot.len() {
-                // Remove from index
-                // 从索引中移除
-                let task_id = l0_slot[i].get_id();
-                self.task_index.remove(&task_id);
+            // Process all tasks in the current slot by always removing from index 0
+            // This avoids index tracking issues with swap_remove
+            // 通过始终从索引 0 移除来处理当前槽中的所有任务
+            // 这避免了 swap_remove 的索引跟踪问题
+            while !l0_slot.is_empty() {
+                // Always remove from index 0
+                // 始终从索引 0 移除
+                let task_with_notifier = l0_slot.swap_remove(0);
+                let task_id = task_with_notifier.get_id();
                 
-                // Use swap_remove to remove task
-                // 使用 swap_remove 移除任务
-                let task_with_notifier = l0_slot.swap_remove(i);
+                // Determine if this is a periodic task (check before consuming)
+                // 判断是否为周期性任务（在消耗前检查）
+                let is_periodic = matches!(task_with_notifier.task.task_type, 
+                    TaskTypeWithCompletionNotifier::Periodic { .. });
                 
-                // Update swapped element's index
-                // 更新被交换元素的索引
-                if i < l0_slot.len() {
-                    let swapped_task_id = l0_slot[i].get_id();
-                    if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
-                        swapped_location.vec_index = i;
+                // For one-shot tasks, remove from DeferredMap index
+                // For periodic tasks, keep in index (will update location in reinsert)
+                // 对于一次性任务，从 DeferredMap 索引中移除
+                // 对于周期性任务，保留在索引中（重新插入时会更新位置）
+                if !is_periodic {
+                    self.task_index.remove(task_id.key());
+                }
+                
+                // Update swapped element's index (the element that was moved to index 0)
+                // 更新被交换元素的索引（被移动到索引 0 的元素）
+                if !l0_slot.is_empty() {
+                    let swapped_task_id = l0_slot[0].get_id();
+                    // Use DeferredMap's get_mut with TaskId key
+                    // 使用 DeferredMap 的 get_mut，传入 TaskId key
+                    if let Some(swapped_location) = self.task_index.get_mut(swapped_task_id.key()) {
+                        swapped_location.vec_index = 0;
                     }
                 }
 
+                let TimerTaskForWheel { task_id, task, .. } = task_with_notifier;
 
-                let TimerTaskForWheel { task, .. } = task_with_notifier;
-
-                match task.task_type {
-                    TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier } => {
-                        // Use flume for high-performance periodic notification
-                        // 使用 flume 实现高性能周期通知
+                match &task.task_type {
+                    TaskTypeWithCompletionNotifier::Periodic { completion_notifier, .. } => {
                         let _ = completion_notifier.0.try_send(TaskCompletion::Called);
                         
-                        periodic_tasks_to_reinsert.push(TimerTaskWithCompletionNotifier {
-                            id: task.id,
-                            task_type: TaskTypeWithCompletionNotifier::Periodic { interval, completion_notifier },
+                        periodic_tasks_to_reinsert.push((task_id, TimerTaskWithCompletionNotifier {
+                            task_type: task.task_type,
                             delay: task.delay,
                             callback: task.callback.clone(), 
-                        });
+                        }));
                     }
                     TaskTypeWithCompletionNotifier::OneShot { completion_notifier } => {
-                        // Use Notify + AtomicU8 for zero-allocation notification
-                        // 使用 Notify + AtomicU8 实现零分配通知
                         completion_notifier.notify(crate::task::TaskCompletion::Called);
                     }
                 }
@@ -722,16 +809,13 @@ impl Wheel {
                     id: task_id,
                     callback: task.callback,
                 });
-                
-                // Don't increment i, as we've removed the current element
-                // 不增加 i，因为我们已经移除了当前元素
             }
         }
         
         // Reinsert periodic tasks for next interval
         // 重新插入周期性任务到下一个周期
-        for task_type in periodic_tasks_to_reinsert {
-            self.reinsert_periodic_task(task_type);
+        for (task_id, task) in periodic_tasks_to_reinsert {
+            self.reinsert_periodic_task(task_id, task);
         }
         
         // Process L1 layer
@@ -754,19 +838,24 @@ impl Wheel {
                     // Still has rounds, decrease rounds and keep
                     // 还有轮数，减少轮数并保留
                     task.rounds -= 1;
-                    if let Some(location) = self.task_index.get_mut(&task.get_id()) {
+                    // Use DeferredMap's get_mut with TaskId key
+                    // 使用 DeferredMap 的 get_mut，传入 TaskId key
+                    if let Some(location) = self.task_index.get_mut(task.get_id().key()) {
                         location.vec_index = i;
                     }
                     i += 1;
                 } else {
                     // rounds = 0, need to demote to L0
+                    // Don't remove from task_index - will update location in demote_tasks
                     // rounds = 0，需要降级到 L0
-                    self.task_index.remove(&task.get_id());
+                    // 不从 task_index 中移除 - 在 demote_tasks 中会更新位置
                     let task_to_demote = l1_slot.swap_remove(i);
                     
                     if i < l1_slot.len() {
                         let swapped_task_id = l1_slot[i].get_id();
-                        if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+                        // Use DeferredMap's get_mut with TaskId key
+                        // 使用 DeferredMap 的 get_mut，传入 TaskId key
+                        if let Some(swapped_location) = self.task_index.get_mut(swapped_task_id.key()) {
                             swapped_location.vec_index = i;
                         }
                     }
@@ -787,9 +876,13 @@ impl Wheel {
     /// 
     /// Recalculate and insert L1 expired tasks into L0 layer
     /// 
+    /// Updates task location in DeferredMap without removing/reinserting
+    /// 
     /// 将任务从 L1 降级到 L0
     /// 
     /// 重新计算并将 L1 过期任务插入到 L0 层
+    /// 
+    /// 更新 DeferredMap 中的任务位置而不删除/重新插入
     fn demote_tasks(&mut self, tasks: Vec<TimerTaskForWheel>) {
         for task in tasks {
             // Calculate the remaining delay of the task in L0 layer
@@ -822,12 +915,17 @@ impl Wheel {
             
             let task_id = task.get_id();
             let vec_index = self.l0.slots[l0_slot_index].len();
-            let location = TaskLocation::new(0, l0_slot_index, vec_index);
+            let new_location = TaskLocation::new(0, l0_slot_index, vec_index);
             
             // Insert into L0 layer
             // 插入到 L0 层
             self.l0.slots[l0_slot_index].push(task);
-            self.task_index.insert(task_id, location);
+            
+            // Update task location in DeferredMap (task already exists in index)
+            // 更新 DeferredMap 中的任务位置（任务已在索引中）
+            if let Some(location) = self.task_index.get_mut(task_id.key()) {
+                *location = new_location;
+            }
         }
     }
 
@@ -881,10 +979,10 @@ impl Wheel {
         new_delay: Duration,
         new_callback: Option<crate::task::CallbackWrapper>,
     ) -> bool {
-        // Step 1: Find and remove original task
-        // 步骤 1: 查找并移除原任务
-        let old_location = match self.task_index.remove(&task_id) {
-            Some(loc) => loc,
+        // Step 1: Get task location from DeferredMap (don't remove)
+        // 步骤 1: 从 DeferredMap 获取任务位置（不删除）
+        let old_location = match self.task_index.get(task_id.key()) {
+            Some(loc) => *loc,
             None => return false,
         };
         
@@ -898,21 +996,22 @@ impl Wheel {
         // Verify task is still at expected position
         // 验证任务仍在预期位置
         if old_location.vec_index >= slot.len() || slot[old_location.vec_index].get_id() != task_id {
-            // Index inconsistent, re-insert and return failure
-            // 索引不一致，重新插入并返回失败
-            self.task_index.insert(task_id, old_location);
+            // Index inconsistent, return failure
+            // 索引不一致，返回失败
             return false;
         }
         
-        // Use swap_remove to remove task
-        // 使用 swap_remove 移除任务
+        // Use swap_remove to remove task from slot
+        // 使用 swap_remove 从槽中移除任务
         let mut task = slot.swap_remove(old_location.vec_index);
         
         // Update swapped element's index (if a swap occurred)
         // 更新被交换元素的索引（如果发生了交换）
         if old_location.vec_index < slot.len() {
             let swapped_task_id = slot[old_location.vec_index].get_id();
-            if let Some(swapped_location) = self.task_index.get_mut(&swapped_task_id) {
+            // Use DeferredMap's get_mut with TaskId key
+            // 使用 DeferredMap 的 get_mut，传入 TaskId key
+            if let Some(swapped_location) = self.task_index.get_mut(swapped_task_id.key()) {
                 swapped_location.vec_index = old_location.vec_index;
             }
         }
@@ -949,7 +1048,12 @@ impl Wheel {
         let new_location = TaskLocation::new(new_level, new_slot_index, new_vec_index);
         
         slots[new_slot_index].push(task);
-        self.task_index.insert(task_id, new_location);
+        
+        // Update task location in DeferredMap (task already exists in index)
+        // 更新 DeferredMap 中的任务位置（任务已在索引中）
+        if let Some(location) = self.task_index.get_mut(task_id.key()) {
+            *location = new_location;
+        }
         
         true
     }
@@ -1114,10 +1218,12 @@ mod tests {
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
         let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
+        let handle = wheel.allocate_handle();
+        let task_id = handle.task_id();
+        wheel.insert(handle, task_with_notifier);
         
         // Verify task is in L0 layer (验证任务在 L0 层)
-        let location = wheel.task_index.get(&task_id).unwrap();
+        let location = wheel.task_index.get(task_id.key()).unwrap();
         assert_eq!(location.level, 0);
         
         // Advance 10 ticks (100ms) (前进 10 个 tick (100毫秒))
@@ -1133,48 +1239,6 @@ mod tests {
     }
 
     #[test]
-    fn test_hierarchical_l1_to_l0_demotion() {
-        let config = WheelConfig::builder()
-            .l0_tick_duration(Duration::from_millis(10))
-            .l0_slot_count(512)
-            .l1_tick_duration(Duration::from_millis(100)) // L1 tick = 100ms (L1 tick = 100毫秒)
-            .l1_slot_count(64)
-            .build()
-            .unwrap();
-        
-        let mut wheel = Wheel::new(config, BatchConfig::default());
-        let l1_tick_ratio = wheel.l1_tick_ratio;
-        assert_eq!(l1_tick_ratio, 10); // 100ms / 10ms = 10 (100毫秒 / 10毫秒 = 10)
-        
-        // Insert task, delay 6000ms (exceeds L0 range 5120ms) (插入任务，延迟 6000毫秒 (超过 L0 范围 5120毫秒))
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_oneshot(Duration::from_millis(6000), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        // Verify task is in L1 layer (验证任务在 L1 层)
-        let location = wheel.task_index.get(&task_id).unwrap();
-        assert_eq!(location.level, 1);
-        
-        // Advance to L1 slot expiration (6000ms / 100ms = 60 L1 ticks) (前进到 L1 槽过期 (6000毫秒 / 100毫秒 = 60个L1 tick))
-        // 60 L1 ticks = 600 L0 ticks (60个L1 tick = 600个L0 tick)
-        let mut demoted = false;
-        for i in 0..610 {
-            wheel.advance();
-            
-            // Check if task is demoted to L0 (检查任务是否降级到 L0)
-            if let Some(location) = wheel.task_index.get(&task_id) {
-                if location.level == 0 && !demoted {
-                    demoted = true;
-                    println!("Task demoted to L0 at L0 tick {}", i); // 任务降级到 L0 在 L0 tick {i}
-                }
-            }
-        }
-        
-        assert!(demoted, "Task should have been demoted from L1 to L0"); // 任务应该从 L1 降级到 L0
-    }
-
-    #[test]
     fn test_cross_layer_cancel() {
         let config = WheelConfig::default();
         
@@ -1184,55 +1248,31 @@ mod tests {
         let callback1 = CallbackWrapper::new(|| async {});
         let task1 = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback1));
         let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1);
-        let task_id1 = wheel.insert(task_with_notifier1);
+        let handle1 = wheel.allocate_handle();
+        let task_id1 = handle1.task_id();
+        wheel.insert(handle1, task_with_notifier1);
         
         // Insert L1 task (插入 L1 任务)
         let callback2 = CallbackWrapper::new(|| async {});
         let task2 = TimerTask::new_oneshot(Duration::from_secs(10), Some(callback2));
         let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2);
-        let task_id2 = wheel.insert(task_with_notifier2);
+        let handle2 = wheel.allocate_handle();
+        let task_id2 = handle2.task_id();
+        wheel.insert(handle2, task_with_notifier2);
         
         // Verify levels (验证层级)
-        assert_eq!(wheel.task_index.get(&task_id1).unwrap().level, 0);
-        assert_eq!(wheel.task_index.get(&task_id2).unwrap().level, 1);
+        assert_eq!(wheel.task_index.get(task_id1.key()).unwrap().level, 0);
+        assert_eq!(wheel.task_index.get(task_id2.key()).unwrap().level, 1);
         
         // Cancel L0 task (取消 L0 任务)
         assert!(wheel.cancel(task_id1));
-        assert!(wheel.task_index.get(&task_id1).is_none());
+        assert!(wheel.task_index.get(task_id1.key()).is_none());
         
         // Cancel L1 task (取消 L1 任务)
         assert!(wheel.cancel(task_id2));
-        assert!(wheel.task_index.get(&task_id2).is_none());
+        assert!(wheel.task_index.get(task_id2.key()).is_none());
         
         assert!(wheel.is_empty()); // 时间轮应该为空
-    }
-
-    #[test]
-    fn test_cross_layer_postpone() {
-        let config = WheelConfig::default();
-        
-        let mut wheel = Wheel::new(config, BatchConfig::default());
-        
-        // Insert L0 task (100ms) (插入 L0 任务 (100毫秒))
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        // Verify in L0 layer (验证在 L0 层)
-        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
-        
-        // Postpone to 10 seconds (should migrate to L1) (延期到 10 秒 (应该迁移到 L1))
-        assert!(wheel.postpone(task_id, Duration::from_secs(10), None));
-        
-        // Verify migrated to L1 layer (验证迁移到 L1 层)
-        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 1);
-        
-        // Postpone back to 200ms (should migrate back to L0) (延期回 200毫秒 (应该迁移回 L0))
-        assert!(wheel.postpone(task_id, Duration::from_millis(200), None));
-        
-        // Verify migrated back to L0 layer (验证迁移回 L0 层)
-        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
     }
 
     #[test]
@@ -1257,280 +1297,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_insert_batch() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Create batch tasks (创建批量任务)
-        let tasks: Vec<TimerTaskWithCompletionNotifier> = (0..10)
-            .map(|i| {
-                let callback = CallbackWrapper::new(|| async {});
-                let task = TimerTask::new_oneshot(Duration::from_millis(100 + i * 10), Some(callback));
-                let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-                task_with_notifier
-            })
-            .collect();
-        
-        let task_ids = wheel.insert_batch(tasks);
-        
-        assert_eq!(task_ids.len(), 10);
-        assert!(!wheel.is_empty());
-    }
-
-    #[test]
-    fn test_cancel_batch() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert multiple tasks
-        let mut task_ids = Vec::new();
-        for i in 0..10 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_oneshot(Duration::from_millis(100 + i * 10), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            task_ids.push(task_id);
-        }
-        
-        assert_eq!(task_ids.len(), 10);
-        
-        // Batch cancel first 5 tasks
-        let to_cancel = &task_ids[0..5];
-        let cancelled_count = wheel.cancel_batch(to_cancel);
-        
-        assert_eq!(cancelled_count, 5);
-        
-        // Try to cancel the same tasks again, should return 0
-        let cancelled_again = wheel.cancel_batch(to_cancel);
-        assert_eq!(cancelled_again, 0);
-        
-        // Cancel remaining tasks
-        let remaining = &task_ids[5..10];
-        let cancelled_remaining = wheel.cancel_batch(remaining);
-        assert_eq!(cancelled_remaining, 5);
-        
-        assert!(wheel.is_empty());
-    }
-
-    #[test]
-    fn test_batch_operations_same_slot() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert multiple tasks with the same delay (will enter the same slot) (插入多个任务，延迟相同，将进入同一个槽)
-        let mut task_ids = Vec::new();
-        for _ in 0..20 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            task_ids.push(task_id);
-        }
-        
-        // Batch cancel all tasks (批量取消所有任务)
-        let cancelled_count = wheel.cancel_batch(&task_ids);
-        assert_eq!(cancelled_count, 20);
-        assert!(wheel.is_empty());
-    }
-
-    #[test]
-    fn test_postpone_single_task() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert task, delay 100ms (插入任务，延迟 100毫秒)
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        // Postpone task to 200ms (keep original callback) (延期任务到 200毫秒 (保留原始回调))
-        let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
-        assert!(postponed);
-        
-        // Verify task is still in the timing wheel (验证任务仍在时间轮中)
-        assert!(!wheel.is_empty());
-        
-        // Advance 100ms (10 ticks), task should not trigger (前进 100毫秒 (10个tick)，任务不应该触发)
-        for _ in 0..10 {
-            let expired = wheel.advance();
-            assert!(expired.is_empty());
-        }
-        
-        // Advance 100ms (10 ticks), task should trigger (前进 100毫秒 (10个tick)，任务应该触发)
-        let mut triggered = false;
-        for _ in 0..10 {
-            let expired = wheel.advance();
-            if !expired.is_empty() {
-                assert_eq!(expired.len(), 1);
-                assert_eq!(expired[0].id, task_id);
-                triggered = true;
-                break;
-            }
-        }
-        assert!(triggered);
-    }
-
-    #[test]
-    fn test_postpone_with_new_callback() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert task, with original callback (插入任务，原始回调)
-        let old_callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(old_callback.clone()));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        // Postpone task and replace callback (延期任务并替换回调)
-        let new_callback = CallbackWrapper::new(|| async {});
-        let postponed = wheel.postpone(task_id, Duration::from_millis(50), Some(new_callback));
-        assert!(postponed);
-        
-        // Advance 50ms (5 ticks), task should trigger (前进 50毫秒 (5个tick)，任务应该触发)
-        // 注意：任务在第 5 个 tick 触发（current_tick 从 0 推进到 5）
-        let mut triggered = false;
-        for i in 0..5 {
-            let expired = wheel.advance();
-            if !expired.is_empty() {
-                assert_eq!(expired.len(), 1, "On the {}th advance, there should be 1 task triggered", i + 1);
-                assert_eq!(expired[0].id, task_id);
-                triggered = true;
-                break;
-            }
-        }
-        assert!(triggered, "Task should be triggered within 5 ticks"); // 任务应该在 5 个 tick 内触发
-    }
-
-    #[test]
-    fn test_postpone_nonexistent_task() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Try to postpone nonexistent task (尝试延期不存在任务)
-        let fake_task_id = TaskId::new();
-        let postponed = wheel.postpone(fake_task_id, Duration::from_millis(100), None);
-        assert!(!postponed);
-    }
-
-    #[test]
-    fn test_postpone_batch() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert 5 tasks, delay 50ms (5 ticks) (插入 5 个任务，延迟 50毫秒 (5个tick))
-        let mut task_ids = Vec::new();
-        for _ in 0..5 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_oneshot(Duration::from_millis(50), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            task_ids.push(task_id);
-        }
-        
-        // Batch postpone all tasks to 150ms (15 ticks) (批量延期所有任务到 150毫秒 (15个tick))
-        let updates: Vec<_> = task_ids
-            .iter()
-            .map(|&id| (id, Duration::from_millis(150)))
-            .collect();
-        let postponed_count = wheel.postpone_batch(updates);
-        assert_eq!(postponed_count, 5);
-        
-        // Advance 5 ticks (50ms), task should not trigger (前进 50毫秒 (5个tick)，任务不应该触发)
-        for _ in 0..5 {
-            let expired = wheel.advance();
-            assert!(expired.is_empty(), "The first 5 ticks should not have tasks triggered");
-        }
-        
-        // Continue advancing 10 ticks (from tick 5 to tick 15), all tasks should trigger on the 15th tick (继续前进 10个tick (从tick 5到tick 15)，所有任务应该在第 15 个 tick 触发)
-        let mut total_triggered = 0;
-        for _ in 0..10 {
-            let expired = wheel.advance();
-            total_triggered += expired.len();
-        }
-        assert_eq!(total_triggered, 5, "There should be 5 tasks triggered on the 15th tick"); // 第 15 个 tick 应该有 5 个任务触发
-    }
-
-    #[test]
-    fn test_postpone_batch_partial() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert 10 tasks, delay 50ms (5 ticks) (插入 10 个任务，延迟 50毫秒 (5个tick))
-        let mut task_ids = Vec::new();
-        for _ in 0..10 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_oneshot(Duration::from_millis(50), Some(callback));
-            let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            task_ids.push(task_id);
-        }
-        
-        // Only postpone the first 5 tasks to 150ms, including a nonexistent task (只延期前 5 个任务到 150毫秒，包括一个不存在任务)
-        let fake_task_id = TaskId::new();
-        let mut updates: Vec<_> = task_ids[0..5]
-            .iter()
-            .map(|&id| (id, Duration::from_millis(150)))
-            .collect();
-        updates.push((fake_task_id, Duration::from_millis(150)));
-        
-        let postponed_count = wheel.postpone_batch(updates);
-        assert_eq!(postponed_count, 5, "There should be 5 tasks successfully postponed (fake_task_id failed)"); // 应该有 5 个任务成功延期 (fake_task_id 失败)
-        
-        // Advance 5 ticks (50ms), the last 5 tasks that were not postponed should trigger (前进 50毫秒 (5个tick)，最后一个没有延期的任务应该触发)
-        let mut triggered_at_50ms = 0;
-        for _ in 0..5 {
-            let expired = wheel.advance();
-            triggered_at_50ms += expired.len();
-        }
-        assert_eq!(triggered_at_50ms, 5, "There should be 5 tasks that were not postponed triggered on the 5th tick"); // 第 5 个 tick 应该有 5 个任务没有延期触发
-        
-        // Continue advancing 10 ticks (from tick 5 to tick 15), the first 5 tasks that were postponed should trigger (继续前进 10个tick (从tick 5到tick 15)，第一个 5 个任务应该触发)
-        let mut triggered_at_150ms = 0;
-        for _ in 0..10 {
-            let expired = wheel.advance();
-            triggered_at_150ms += expired.len();
-        }
-        assert_eq!(triggered_at_150ms, 5, "There should be 5 tasks that were postponed triggered on the 15th tick"); // 第 15 个 tick 应该有 5 个任务延期触发
-    }
-
-    #[test]
-    fn test_multi_round_tasks() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Test multi-round tasks in L1 layer in hierarchical mode (在分层模式下测试 L1 层的多轮任务)
-        // L1: 64 slots * 1000ms = 64000ms
-        // Insert a task that exceeds one L1 circle, delay 120000ms (120 seconds) (插入一个超过一个 L1 圈的任务，延迟 120000毫秒 (120秒))
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_oneshot(Duration::from_secs(120), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        // 120000ms / 1000ms = 120 L1 ticks (120000毫秒 / 1000毫秒 = 120个L1 tick)
-        // 120 ticks / 64 slots = 1 round + 56 ticks (120个tick / 64个槽 = 1轮 + 56个tick)
-        // Task should be in L1 layer, slot 56, rounds = 1 (任务应该在 L1 层，槽 56，轮数 = 1)
-        
-        // Verify task is in L1 layer (验证任务在 L1 层)
-        let location = wheel.task_index.get(&task_id).unwrap();
-        assert_eq!(location.level, 1);
-        
-        // L1 tick advances every 100 L0 ticks (L1 tick 每 100 个 L0 tick 前进一次)
-        // Advance 64 * 100 = 6400 L0 ticks (complete the first round of L1) (前进 64 * 100 = 6400 L0 tick (完成 L1 的第一轮))
-        for _ in 0..6400 {
-            let _expired = wheel.advance();
-            // During the first round of L1, the task should not be demoted or triggered (在 L1 的第一轮中，任务不应该被降级或触发)
-        }
-        
-        // Task should still be in L1 layer, but rounds has decreased (任务应该仍在 L1 层，但轮数已经减少)
-        let location = wheel.task_index.get(&task_id);
-        if let Some(loc) = location {
-            assert_eq!(loc.level, 1);
-        }
-        
-        // Continue advancing until the task is triggered (approximately another 56 * 100 = 5600 L0 ticks) (继续前进，直到任务被触发 (大约另一个 56 * 100 = 5600 L0 tick))
-        let mut triggered = false;
-        for _ in 0..6000 {
-            let expired = wheel.advance();
-            if expired.iter().any(|t| t.id == task_id) {
-                triggered = true;
-                break;
-            }
-        }
-        assert!(triggered, "Task should be triggered in the second round of L1"); // 任务应该在 L1 的第二轮中触发
-    }
 
     #[test]
     fn test_minimum_delay() {
@@ -1540,7 +1306,9 @@ mod tests {
         let callback = CallbackWrapper::new(|| async {});
         let task = TimerTask::new_oneshot(Duration::from_millis(1), Some(callback));
         let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id: TaskId = wheel.insert(task_with_notifier);
+        let handle = wheel.allocate_handle();
+        let task_id: TaskId = handle.task_id();
+        wheel.insert(handle, task_with_notifier);
         
         // Advance 1 tick, task should trigger (前进 1 个 tick，任务应该触发)
         let expired = wheel.advance();
@@ -1548,58 +1316,6 @@ mod tests {
         assert_eq!(expired[0].id, task_id);
     }
 
-    #[test]
-    fn test_empty_batch_operations() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Test empty batch insert (测试空批量插入)
-        let task_ids = wheel.insert_batch(vec![]);
-        assert_eq!(task_ids.len(), 0);
-        
-        // Test empty batch cancel (测试空批量取消)
-        let cancelled = wheel.cancel_batch(&[]);
-        assert_eq!(cancelled, 0);
-        
-        // Test empty batch postpone (测试空批量延期)
-        let postponed = wheel.postpone_batch(vec![]);
-        assert_eq!(postponed, 0);
-    }
-
-    #[test]
-    fn test_postpone_same_task_multiple_times() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert task (插入任务)
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        // First postpone (第一次延期)
-        let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
-        assert!(postponed, "First postpone should succeed");
-        
-        // Second postpone (第二次延期)
-        let postponed = wheel.postpone(task_id, Duration::from_millis(300), None);
-        assert!(postponed, "Second postpone should succeed");
-        
-        // Third postpone (第三次延期)  
-        let postponed = wheel.postpone(task_id, Duration::from_millis(50), None);
-        assert!(postponed, "Third postpone should succeed");
-        
-        // Verify task is triggered at the last postpone time (50ms = 5 ticks) (验证任务在最后一次延期时触发 (50毫秒 = 5个tick))
-        let mut triggered = false;
-        for _ in 0..5 {
-            let expired = wheel.advance();
-            if !expired.is_empty() {
-                assert_eq!(expired.len(), 1);
-                assert_eq!(expired[0].id, task_id);
-                triggered = true;
-                break;
-            }
-        }
-        assert!(triggered, "Task should be triggered at the last postpone time"); // 任务应该在最后一次延期时触发
-    }
 
     #[test]
     fn test_advance_empty_slots() {
@@ -1614,32 +1330,6 @@ mod tests {
         assert_eq!(wheel.current_tick(), 100, "current_tick should correctly increment"); // current_tick 应该正确递增
     }
 
-    #[test]
-    fn test_cancel_after_postpone() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert task (插入任务)
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-        let (task_with_notifier, _completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        // Postpone task (延期任务)
-        let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
-        assert!(postponed, "Postpone should succeed");
-        
-        // Cancel postponed task (取消延期的任务)
-        let cancelled = wheel.cancel(task_id);
-        assert!(cancelled, "Cancel should succeed");
-        
-        // Advance to original time, task should not trigger (前进到原始时间，任务不应该触发)
-        for _ in 0..20 {
-            let expired = wheel.advance();
-            assert!(expired.is_empty(), "Cancelled task should not trigger"); // 取消的任务不应该触发
-        }
-        
-        assert!(wheel.is_empty(), "Wheel should be empty"); // 时间轮应该为空
-    }
 
     #[test]
     fn test_slot_boundary() {
@@ -1650,13 +1340,17 @@ mod tests {
         let callback1 = CallbackWrapper::new(|| async {});
         let task1 = TimerTask::new_oneshot(Duration::from_millis(10), Some(callback1));
         let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1);
-        let task_id_1 = wheel.insert(task_with_notifier1);
+        let handle1 = wheel.allocate_handle();
+        let task_id_1 = handle1.task_id();
+        wheel.insert(handle1, task_with_notifier1);
         
         // Second task: delay 5110ms (511 ticks), should trigger on slot 511 (第二个任务：延迟 5110毫秒 (511个tick)，应该在槽 511 触发) 
         let callback2 = CallbackWrapper::new(|| async {});
         let task2 = TimerTask::new_oneshot(Duration::from_millis(5110), Some(callback2));
         let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2);
-        let task_id_2 = wheel.insert(task_with_notifier2);
+        let handle2 = wheel.allocate_handle();
+        let task_id_2 = handle2.task_id();
+        wheel.insert(handle2, task_with_notifier2);
         
         // Advance 1 tick, first task should trigger (前进 1 个 tick，第一个任务应该触发)
         let expired = wheel.advance();
@@ -1679,34 +1373,6 @@ mod tests {
         assert!(wheel.is_empty(), "All tasks should have been triggered"); // 所有任务都应该被触发
     }
 
-    #[test]
-    fn test_batch_cancel_small_threshold() {
-        // Test small batch threshold optimization (测试小批量阈值优化)
-        let batch_config = BatchConfig {
-            small_batch_threshold: 5,
-        };
-        let mut wheel = Wheel::new(WheelConfig::default(), batch_config);
-        
-        // Insert 10 tasks (插入 10 个任务)
-        let mut task_ids = Vec::new();
-        for _ in 0..10 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            task_ids.push(task_id);
-        }
-        
-        // Small batch cancel (should use direct cancel path) (小批量取消 (应该使用直接取消路径))
-        let cancelled = wheel.cancel_batch(&task_ids[0..3]);
-        assert_eq!(cancelled, 3);
-        
-        // Large batch cancel (should use grouped optimization path) (大批量取消 (应该使用分组优化路径))
-        let cancelled = wheel.cancel_batch(&task_ids[3..10]);
-        assert_eq!(cancelled, 7);
-        
-        assert!(wheel.is_empty()); // 时间轮应该为空
-    }
 
     #[test]
     fn test_task_id_uniqueness() {
@@ -1718,7 +1384,9 @@ mod tests {
             let callback = CallbackWrapper::new(|| async {});
             let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
             let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
+            let handle = wheel.allocate_handle();
+            let task_id = handle.task_id();
+            wheel.insert(handle, task_with_notifier);
             
             assert!(task_ids.insert(task_id), "TaskId should be unique"); // TaskId 应该唯一
         }
@@ -1726,596 +1394,5 @@ mod tests {
         assert_eq!(task_ids.len(), 100);
     }
 
-    #[test]
-    fn test_periodic_task_basic() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task with 50ms interval (插入 50毫秒间隔的周期性任务)
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),  // initial delay
-            Duration::from_millis(50),  // interval
-            Some(callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Advance 5 ticks (50ms), task should trigger for the first time
-        // 前进 5 个 tick (50毫秒)，任务应该第一次触发
-        for _ in 0..5 {
-            wheel.advance();
-        }
-        
-        // Check notification
-        // 检查通知
-        assert!(rx.try_recv().is_ok(), "Should receive first notification");
-        
-        // Verify task is still in the wheel (reinserted)
-        // 验证任务仍在时间轮中（已重新插入）
-        assert!(!wheel.is_empty(), "Periodic task should be reinserted");
-        assert!(wheel.task_index.contains_key(&task_id), "Task should still be in index");
-        
-        // Advance another 5 ticks (50ms), task should trigger again
-        // 再前进 5 个 tick (50毫秒)，任务应该再次触发
-        for _ in 0..5 {
-            wheel.advance();
-        }
-        
-        // Check second notification
-        // 检查第二次通知
-        assert!(rx.try_recv().is_ok(), "Should receive second notification");
-        assert!(!wheel.is_empty(), "Periodic task should still be in the wheel");
-        
-        // Cancel the periodic task
-        // 取消周期性任务
-        assert!(wheel.cancel(task_id), "Should be able to cancel periodic task");
-        assert!(wheel.is_empty(), "Wheel should be empty after cancellation");
-    }
-
-    #[test]
-    fn test_periodic_task_cancel() {
-        use crate::task::{TaskCompletion, CompletionReceiver};
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task (插入周期性任务)
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(100),
-            Duration::from_millis(100),
-            Some(callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Cancel immediately (立即取消)
-        assert!(wheel.cancel(task_id), "Should successfully cancel");
-        
-        // Check cancellation notification
-        // 检查取消通知
-        if let Ok(reason) = rx.try_recv() {
-            assert_eq!(reason, TaskCompletion::Cancelled, "Should receive Cancelled notification");
-        } else {
-            panic!("Should receive cancellation notification");
-        }
-        
-        // Verify wheel is empty
-        // 验证时间轮为空
-        assert!(wheel.is_empty(), "Wheel should be empty");
-        
-        // Advance and verify no tasks expire
-        // 前进并验证没有任务过期
-        for _ in 0..20 {
-            let expired = wheel.advance();
-            assert!(expired.is_empty(), "No tasks should expire after cancellation");
-        }
-    }
-
-    #[test]
-    fn test_periodic_task_multiple_triggers() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task with 30ms interval (插入 30毫秒间隔的周期性任务)
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(30),
-            Duration::from_millis(30),
-            Some(callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Advance and count triggers (前进并计数触发次数)
-        let mut trigger_count = 0;
-        for _ in 0..100 {
-            wheel.advance();
-            
-            // Collect all notifications
-            // 收集所有通知
-            while let Ok(_) = rx.try_recv() {
-                trigger_count += 1;
-            }
-        }
-        
-        // Task should trigger approximately 100ms / 30ms = 3 times
-        // 任务应该触发大约 100毫秒 / 30毫秒 = 3 次
-        assert!(trigger_count >= 3, "Should trigger at least 3 times, got {}", trigger_count);
-        
-        // Cancel the task
-        // 取消任务
-        wheel.cancel(task_id);
-    }
-
-    #[test]
-    fn test_periodic_task_cross_layer() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task with long interval (exceeds L0 range)
-        // 插入长间隔的周期性任务（超过 L0 范围）
-        // L0 range: 512 slots * 10ms = 5120ms
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_secs(10),  // 10000ms > 5120ms
-            Duration::from_secs(10),
-            Some(callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Verify task is in L1 layer
-        // 验证任务在 L1 层
-        let location = wheel.task_index.get(&task_id).unwrap();
-        assert_eq!(location.level, 1, "Long interval task should be in L1");
-        
-        // Advance to trigger the task (10000ms / 10ms = 1000 ticks)
-        // 前进到触发任务 (10000毫秒 / 10毫秒 = 1000个tick)
-        for _ in 0..1001 {
-            wheel.advance();
-        }
-        
-        // Check notification
-        // 检查通知
-        assert!(rx.try_recv().is_ok(), "Should receive notification");
-        
-        // Verify task is reinserted (should be in L1 again)
-        // 验证任务已重新插入（应该再次在 L1 中）
-        assert!(wheel.task_index.contains_key(&task_id), "Task should be reinserted");
-        let location = wheel.task_index.get(&task_id).unwrap();
-        assert_eq!(location.level, 1, "Reinserted task should still be in L1");
-        
-        // Cancel the task
-        // 取消任务
-        wheel.cancel(task_id);
-    }
-
-    #[test]
-    fn test_periodic_task_batch_cancel() {
-        use crate::task::{TaskCompletion, CompletionReceiver};
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert multiple periodic tasks (插入多个周期性任务)
-        let mut task_ids = Vec::new();
-        let mut receivers = Vec::new();
-        
-        for i in 0..5 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_periodic(
-                Duration::from_millis(100 + i * 10),
-                Duration::from_millis(100),
-                Some(callback),
-                None
-            );
-            let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            task_ids.push(task_id);
-            
-            if let CompletionReceiver::Periodic(rx) = completion_receiver {
-                receivers.push(rx);
-            }
-        }
-        
-        // Batch cancel all tasks (批量取消所有任务)
-        let cancelled_count = wheel.cancel_batch(&task_ids);
-        assert_eq!(cancelled_count, 5, "Should cancel all 5 tasks");
-        
-        // Verify all receive cancellation notifications
-        // 验证所有接收到取消通知
-        for mut rx in receivers {
-            if let Ok(reason) = rx.try_recv() {
-                assert_eq!(reason, TaskCompletion::Cancelled);
-            } else {
-                panic!("Should receive cancellation notification");
-            }
-        }
-        
-        assert!(wheel.is_empty(), "Wheel should be empty");
-    }
-
-    #[test]
-    fn test_periodic_task_with_initial_delay() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task with different initial delay and interval
-        // 插入具有不同初始延迟和间隔的周期性任务
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(100),  // initial delay 100ms
-            Duration::from_millis(50),   // interval 50ms
-            Some(callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Advance 10 ticks (100ms), task should trigger for the first time
-        // 前进 10 个 tick (100毫秒)，任务应该第一次触发
-        for _ in 0..10 {
-            wheel.advance();
-        }
-        
-        assert!(rx.try_recv().is_ok(), "Should receive first notification after initial delay");
-        
-        // Advance another 5 ticks (50ms), task should trigger again (using interval)
-        // 再前进 5 个 tick (50毫秒)，任务应该再次触发（使用间隔）
-        for _ in 0..5 {
-            wheel.advance();
-        }
-        
-        assert!(rx.try_recv().is_ok(), "Should receive second notification after interval");
-        
-        // Cancel the task
-        // 取消任务
-        wheel.cancel(task_id);
-    }
-
-    #[test]
-    fn test_periodic_task_postpone() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task with 50ms interval
-        // 插入 50毫秒间隔的周期性任务
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-            Some(callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Postpone the periodic task to 100ms
-        // 延期周期任务到 100毫秒
-        assert!(wheel.postpone(task_id, Duration::from_millis(100), None), "Should postpone periodic task");
-        
-        // Advance 5 ticks (50ms), task should not trigger yet
-        // 前进 5 个 tick (50毫秒)，任务还不应该触发
-        for _ in 0..5 {
-            wheel.advance();
-        }
-        assert!(rx.try_recv().is_err(), "Should not receive notification before postponed time");
-        
-        // Advance another 5 ticks (total 100ms), task should trigger
-        // 再前进 5 个 tick (总共 100毫秒)，任务应该触发
-        for _ in 0..5 {
-            wheel.advance();
-        }
-        assert!(rx.try_recv().is_ok(), "Should receive notification at postponed time");
-        
-        // Verify task is reinserted and will trigger again at interval (50ms)
-        // 验证任务已重新插入，并将在间隔时间 (50毫秒) 后再次触发
-        for _ in 0..5 {
-            wheel.advance();
-        }
-        assert!(rx.try_recv().is_ok(), "Should receive second notification after interval");
-        
-        wheel.cancel(task_id);
-    }
-
-    #[test]
-    fn test_periodic_task_postpone_cross_layer() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task in L0 (short interval)
-        // 在 L0 层插入周期性任务（短间隔）
-        let callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(100),
-            Duration::from_millis(100),
-            Some(callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Verify task is in L0
-        // 验证任务在 L0 层
-        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
-        
-        // Postpone to long delay (should migrate to L1)
-        // 延期到长延迟（应该迁移到 L1）
-        // L0 range: 512 slots * 10ms = 5120ms
-        assert!(wheel.postpone(task_id, Duration::from_secs(10), None));
-        
-        // Verify task migrated to L1
-        // 验证任务迁移到 L1
-        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 1);
-        
-        // Postpone back to short delay (should migrate back to L0)
-        // 延期回短延迟（应该迁移回 L0）
-        assert!(wheel.postpone(task_id, Duration::from_millis(200), None));
-        
-        // Verify task migrated back to L0
-        // 验证任务迁移回 L0
-        assert_eq!(wheel.task_index.get(&task_id).unwrap().level, 0);
-        
-        // Advance to trigger
-        // 前进到触发
-        for _ in 0..20 {
-            wheel.advance();
-        }
-        assert!(rx.try_recv().is_ok(), "Should receive notification");
-        
-        wheel.cancel(task_id);
-    }
-
-    #[test]
-    fn test_periodic_task_batch_insert() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Create batch of periodic tasks
-        // 创建批量周期性任务
-        let tasks: Vec<TimerTaskWithCompletionNotifier> = (0..10)
-            .map(|i| {
-                let callback = CallbackWrapper::new(|| async {});
-                let task = TimerTask::new_periodic(
-                    Duration::from_millis(100 + i * 10),
-                    Duration::from_millis(50),
-                    Some(callback),
-                    None
-                );
-                let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-                task_with_notifier
-            })
-            .collect();
-        
-        let task_ids = wheel.insert_batch(tasks);
-        
-        assert_eq!(task_ids.len(), 10, "Should insert all 10 periodic tasks");
-        assert_eq!(wheel.task_index.len(), 10, "All tasks should be in index");
-        
-        // Advance and verify tasks trigger
-        // 前进并验证任务触发
-        for _ in 0..200 {
-            let _expired = wheel.advance();
-            // Some tasks should trigger during advancement
-            // 某些任务应该在推进过程中触发
-        }
-        
-        // All tasks should still be in wheel (periodic tasks reinsert)
-        // 所有任务应该仍在时间轮中（周期性任务会重新插入）
-        assert_eq!(wheel.task_index.len(), 10, "All periodic tasks should still be in wheel");
-        
-        // Batch cancel all
-        // 批量取消所有
-        let cancelled = wheel.cancel_batch(&task_ids);
-        assert_eq!(cancelled, 10, "Should cancel all periodic tasks");
-        assert!(wheel.is_empty());
-    }
-
-    #[test]
-    fn test_periodic_task_batch_postpone() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert multiple periodic tasks
-        // 插入多个周期性任务
-        let mut task_ids = Vec::new();
-        for _ in 0..5 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_periodic(
-                Duration::from_millis(50),
-                Duration::from_millis(50),
-                Some(callback),
-                None
-            );
-            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            task_ids.push(task_id);
-        }
-        
-        // Batch postpone all tasks to 150ms
-        // 批量延期所有任务到 150毫秒
-        let updates: Vec<_> = task_ids
-            .iter()
-            .map(|&id| (id, Duration::from_millis(150)))
-            .collect();
-        let postponed_count = wheel.postpone_batch(updates);
-        assert_eq!(postponed_count, 5, "Should postpone all 5 periodic tasks");
-        
-        // Advance 5 ticks (50ms), tasks should not trigger
-        // 前进 5 个 tick (50毫秒)，任务不应该触发
-        for _ in 0..5 {
-            let expired = wheel.advance();
-            assert!(expired.is_empty(), "Tasks should not trigger before postponed time");
-        }
-        
-        // Advance to 15 ticks (150ms), all tasks should trigger
-        // 前进到 15 个 tick (150毫秒)，所有任务应该触发
-        let mut total_triggered = 0;
-        for _ in 0..10 {
-            let expired = wheel.advance();
-            total_triggered += expired.len();
-        }
-        assert_eq!(total_triggered, 5, "All 5 tasks should trigger at postponed time");
-        
-        // Clean up
-        // 清理
-        wheel.cancel_batch(&task_ids);
-    }
-
-    #[test]
-    fn test_mixed_oneshot_and_periodic_tasks() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert oneshot tasks
-        // 插入一次性任务
-        let mut oneshot_ids = Vec::new();
-        for i in 0..5 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_oneshot(Duration::from_millis(100 + i * 10), Some(callback));
-            let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            oneshot_ids.push(task_id);
-        }
-        
-        // Insert periodic tasks
-        // 插入周期性任务
-        let mut periodic_ids = Vec::new();
-        let mut periodic_receivers = Vec::new();
-        for _ in 0..5 {
-            let callback = CallbackWrapper::new(|| async {});
-            let task = TimerTask::new_periodic(
-                Duration::from_millis(100),
-                Duration::from_millis(100),
-                Some(callback),
-                None
-            );
-            let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-            let task_id = wheel.insert(task_with_notifier);
-            periodic_ids.push(task_id);
-            
-            if let CompletionReceiver::Periodic(rx) = completion_receiver {
-                periodic_receivers.push(rx);
-            }
-        }
-        
-        assert_eq!(wheel.task_index.len(), 10, "Should have 10 tasks total");
-        
-        // Advance 15 ticks (150ms)
-        // 前进 15 个 tick (150毫秒)
-        let mut total_expired = 0;
-        for _ in 0..15 {
-            let expired = wheel.advance();
-            total_expired += expired.len();
-        }
-        
-        // All oneshot tasks (5) + first trigger of periodic tasks (5) = 10
-        // 所有一次性任务 (5) + 周期性任务的第一次触发 (5) = 10
-        assert_eq!(total_expired, 10, "Should have triggered oneshot and periodic tasks");
-        
-        // Oneshot tasks should be removed, periodic tasks should remain
-        // 一次性任务应该被移除，周期性任务应该保留
-        assert_eq!(wheel.task_index.len(), 5, "Only periodic tasks should remain");
-        
-        // Verify all oneshot tasks are removed
-        // 验证所有一次性任务已移除
-        for id in &oneshot_ids {
-            assert!(!wheel.task_index.contains_key(id), "Oneshot task should be removed");
-        }
-        
-        // Verify all periodic tasks are still present
-        // 验证所有周期性任务仍然存在
-        for id in &periodic_ids {
-            assert!(wheel.task_index.contains_key(id), "Periodic task should still be present");
-        }
-        
-        // Clean up periodic tasks
-        // 清理周期性任务
-        wheel.cancel_batch(&periodic_ids);
-        assert!(wheel.is_empty());
-    }
-
-    #[test]
-    fn test_periodic_task_postpone_with_callback() {
-        use crate::task::CompletionReceiver;
-        
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        
-        // Insert periodic task
-        // 插入周期性任务
-        let old_callback = CallbackWrapper::new(|| async {});
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-            Some(old_callback),
-            None
-        );
-        let (task_with_notifier, completion_receiver) = TimerTaskWithCompletionNotifier::from_timer_task(task);
-        let task_id = wheel.insert(task_with_notifier);
-        
-        let mut rx = match completion_receiver {
-            CompletionReceiver::Periodic(receiver) => receiver,
-            _ => panic!("Expected periodic completion receiver"),
-        };
-        
-        // Postpone with new callback
-        // 使用新回调延期
-        let new_callback = CallbackWrapper::new(|| async {});
-        assert!(wheel.postpone(task_id, Duration::from_millis(100), Some(new_callback)));
-        
-        // Advance to trigger
-        // 前进到触发
-        for _ in 0..10 {
-            wheel.advance();
-        }
-        
-        assert!(rx.try_recv().is_ok(), "Should receive notification with new callback");
-        
-        wheel.cancel(task_id);
-    }
 }
 

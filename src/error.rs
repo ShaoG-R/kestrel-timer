@@ -25,6 +25,14 @@ pub enum TimerError {
     /// 
     /// 注册失败，内部通道已满或已关闭
     RegisterFailed,
+    
+    /// Batch operation failed: handles and tasks length mismatch
+    /// 
+    /// 批量操作失败：handles 和 tasks 长度不匹配
+    BatchLengthMismatch {
+        handles_len: usize,
+        tasks_len: usize,
+    },
 }
 
 impl fmt::Display for TimerError {
@@ -38,6 +46,10 @@ impl fmt::Display for TimerError {
             }
             TimerError::RegisterFailed => {
                 write!(f, "Registration failed: internal channel is full or closed (注册失败: 内部通道已满或已关闭)")
+            }
+            TimerError::BatchLengthMismatch { handles_len, tasks_len } => {
+                write!(f, "Batch operation failed: handles length ({}) does not match tasks length ({}) (批量操作失败: handles 长度 ({}) 与 tasks 长度 ({}) 不匹配)", 
+                    handles_len, tasks_len, handles_len, tasks_len)
             }
         }
     }

@@ -41,7 +41,8 @@ impl TimerHandle {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-    /// let handle = timer.register(task);
+    /// let allocated_handle = timer.allocate_handle();
+    /// let handle = timer.register(allocated_handle, task);
     /// 
     /// // Cancel the timer
     /// let success = handle.cancel();
@@ -82,7 +83,8 @@ impl TimerHandle {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-    /// let handle = timer.register(task);
+    /// let allocated_handle = timer.allocate_handle();
+    /// let handle = timer.register(allocated_handle, task);
     /// 
     /// // Postpone to 5 seconds
     /// let success = handle.postpone(Duration::from_secs(5), None);
@@ -137,7 +139,8 @@ impl TimerHandleWithCompletion {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-    /// let handle = timer.register(task);
+    /// let allocated_handle = timer.allocate_handle();
+    /// let handle = timer.register(allocated_handle, task);
     /// 
     /// // Cancel the timer
     /// let success = handle.cancel();
@@ -176,7 +179,8 @@ impl TimerHandleWithCompletion {
     /// let timer = TimerWheel::with_defaults();
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-    /// let handle = timer.register(task);
+    /// let allocated_handle = timer.allocate_handle();
+    /// let handle = timer.register(allocated_handle, task);
     /// 
     /// // Postpone to 5 seconds
     /// let success = handle.postpone(Duration::from_secs(5), None);
@@ -207,7 +211,8 @@ impl TimerHandleWithCompletion {
     ///     println!("Timer fired!");
     /// }));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-    /// let handle = timer.register(task);
+    /// let allocated_handle = timer.allocate_handle();
+    /// let handle = timer.register(allocated_handle, task);
     /// 
     /// // Split into receiver and handle
     /// // 拆分为接收器和句柄
@@ -266,10 +271,11 @@ impl BatchHandle {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let tasks: Vec<TimerTask> = (0..10)
+    /// let handles = timer.allocate_handles(10);
+    /// let tasks: Vec<_> = (0..10)
     ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// let cancelled = batch.cancel_all();
     /// println!("Canceled {} timers", cancelled);
@@ -297,10 +303,11 @@ impl BatchHandle {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let tasks: Vec<TimerTask> = (0..3)
+    /// let handles = timer.allocate_handles(3);
+    /// let tasks: Vec<_> = (0..3)
     ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// // Convert to individual handles
     /// // 转换为单个句柄
@@ -370,10 +377,11 @@ impl BatchHandle {
     /// # async fn main() {
     /// # use kestrel_timer::TimerTask;
     /// let timer = TimerWheel::with_defaults();
+    /// let handles = timer.allocate_handles(10);
     /// let tasks: Vec<_> = (0..10)
     ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let batch_with_completion = timer.register_batch(tasks);
+    /// let batch_with_completion = timer.register_batch(handles, tasks).unwrap();
     /// let (rxs, batch) = batch_with_completion.into_parts();
     /// 
     /// // Postpone all timers to 5 seconds
@@ -415,11 +423,11 @@ impl BatchHandle {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(3);
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch_with_completion = timer.register_batch(tasks);
+    /// let batch_with_completion = timer.register_batch(handles, tasks).unwrap();
     /// let (rxs, batch) = batch_with_completion.into_parts();
     /// 
     /// // Postpone each timer with different delays
@@ -466,11 +474,11 @@ impl BatchHandle {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(3);
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch_with_completion = timer.register_batch(tasks);
+    /// let batch_with_completion = timer.register_batch(handles, tasks).unwrap();
     /// let (rxs, batch) = batch_with_completion.into_parts();
     /// 
     /// // Postpone each timer with different delays and callbacks
@@ -534,11 +542,11 @@ impl BatchHandleWithCompletion {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..10)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(10);
+    /// let tasks: Vec<_> = (0..10)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// let cancelled = batch.cancel_all();
     /// println!("Canceled {} timers", cancelled);
@@ -565,11 +573,11 @@ impl BatchHandleWithCompletion {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(3);
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// // Convert to individual handles
     /// // 转换为单个句柄
@@ -627,11 +635,11 @@ impl BatchHandleWithCompletion {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(3);
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// // Split into receivers and handle
     /// // 拆分为接收器和句柄
@@ -680,11 +688,11 @@ impl BatchHandleWithCompletion {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..10)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(10);
+    /// let tasks: Vec<_> = (0..10)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// // Postpone all timers to 5 seconds
     /// let postponed = batch.postpone_all(Duration::from_secs(5));
@@ -720,11 +728,11 @@ impl BatchHandleWithCompletion {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(3);
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// // Postpone each timer with different delays
     /// let new_delays = vec![
@@ -765,11 +773,11 @@ impl BatchHandleWithCompletion {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// let delays: Vec<Duration> = (0..3)
-    ///     .map(|_| Duration::from_secs(1))
+    /// let handles = timer.allocate_handles(3);
+    /// let tasks: Vec<_> = (0..3)
+    ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-    /// let batch = timer.register_batch(tasks);
+    /// let batch = timer.register_batch(handles, tasks).unwrap();
     /// 
     /// // Postpone each timer with different delays and callbacks
     /// let updates = vec![
@@ -802,11 +810,11 @@ impl BatchHandleWithCompletion {
 /// # #[tokio::main]
 /// # async fn main() {
 /// let timer = TimerWheel::with_defaults();
-/// let delays: Vec<Duration> = (0..3)
-///     .map(|_| Duration::from_secs(1))
+/// let handles = timer.allocate_handles(3);
+/// let tasks: Vec<_> = (0..3)
+///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
 ///     .collect();
-/// let tasks: Vec<_> = delays.into_iter().map(|d| TimerTask::new_oneshot(d, None)).collect();
-/// let batch = timer.register_batch(tasks);
+/// let batch = timer.register_batch(handles, tasks).unwrap();
 /// 
 /// // Iterate directly, each element is an independent TimerHandleWithCompletion
 /// // 直接迭代，每个元素是一个独立的 TimerHandleWithCompletion

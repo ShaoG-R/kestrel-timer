@@ -43,7 +43,9 @@
 ### ⚡ High Performance
 
 - **O(1) time complexity**: Insert, delete, and trigger operations are all O(1)
-- **Optimized data structures**: `FxHashMap` + `parking_lot::Mutex`
+- **Optimized data structures**: 
+  - `DeferredMap` (generational arena) for task indexing with O(1) operations
+  - `parking_lot::Mutex` for efficient locking
 - **Bitwise optimization**: Slot count is power of 2 for fast modulo operations
 - **Large-scale support**: Easily handles 10,000+ concurrent timers
 
@@ -71,7 +73,7 @@ tokio = { version = "1.48", features = ["full"] }
 ### Basic Usage
 
 ```rust
-use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask, CompletionReceiver};
+use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
 #[tokio::main]
@@ -79,21 +81,21 @@ async fn main() {
     // Create timer with default config
     let timer = TimerWheel::with_defaults();
     
-    // Create task + register
+    // Step 1: Allocate handle
+    let handle = timer.allocate_handle();
+    let task_id = handle.task_id();
+    
+    // Step 2: Create task
     let callback = Some(CallbackWrapper::new(|| async {
         println!("Timer fired!");
     }));
     let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
-    let handle = timer.register(task);
     
-    // Wait for completion
-    let (rx, _handle) = handle.into_parts();
-    match rx {
-        CompletionReceiver::OneShot(receiver) => {
-            receiver.wait().await;
-        },
-        _ => {}
-    }
+    // Step 3: Register task
+    let timer_handle = timer.register(handle, task).unwrap();
+    
+    // Wait for completion or cancel
+    // timer_handle.cancel();
 }
 ```
 
@@ -105,7 +107,11 @@ use std::time::Duration;
 
 let timer = TimerWheel::with_defaults();
 
-// Batch create + register
+// Step 1: Batch allocate handles
+let handles = timer.allocate_handles(100);
+let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+
+// Step 2: Create tasks
 let tasks: Vec<_> = (0..100)
     .map(|i| {
         let delay = Duration::from_millis(100 + i * 10);
@@ -116,7 +122,8 @@ let tasks: Vec<_> = (0..100)
     })
     .collect();
 
-let batch_handle = timer.register_batch(tasks);
+// Step 3: Batch register
+let batch_handle = timer.register_batch(handles, tasks).unwrap();
 
 // Batch cancel
 batch_handle.cancel_all();
@@ -130,12 +137,16 @@ use std::time::Duration;
 
 let timer = TimerWheel::with_defaults();
 
+// Step 1: Allocate handle and get task_id
+let handle = timer.allocate_handle();
+let task_id = handle.task_id();
+
+// Step 2: Create and register task
 let callback = Some(CallbackWrapper::new(|| async {
     println!("Original callback");
 }));
 let task = TimerTask::new_oneshot(Duration::from_millis(50), callback);
-let task_id = task.get_id();
-let handle = timer.register(task);
+let timer_handle = timer.register(handle, task).unwrap();
 
 // Postpone and keep original callback
 timer.postpone(task_id, Duration::from_millis(150), None);
@@ -157,12 +168,17 @@ use std::time::Duration;
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
-// Batch schedule
+// Step 1: Allocate handles
+let handles = service.allocate_handles(2);
+
+// Step 2: Create tasks
 let tasks: Vec<_> = vec![
     TimerTask::new_oneshot(Duration::from_millis(100), Some(CallbackWrapper::new(|| async {}))),
     TimerTask::new_oneshot(Duration::from_millis(200), Some(CallbackWrapper::new(|| async {}))),
 ];
-service.register_batch(tasks).unwrap();
+
+// Step 3: Batch register
+service.register_batch(handles, tasks).unwrap();
 
 // Receive timeout notifications
 let mut timeout_rx = service.take_receiver().unwrap();
@@ -214,9 +230,27 @@ service.shutdown().await;
 3. L1 task due → Automatically demote to L0 layer
 4. L0 task due → Trigger immediately
 
+### Task Indexing with DeferredMap
+
+Uses `DeferredMap` (a generational arena) for efficient task management:
+
+- **Two-Step Registration**: 
+  - Allocate handle to get task ID (cheap, no value needed)
+  - Insert task using the handle (with completion notifiers)
+
+- **Generational Safety**: Each task ID includes:
+  - Lower 32 bits: Slot index
+  - Upper 32 bits: Generation counter
+  - Prevents use-after-free and ABA problems
+
+- **Memory Efficiency**: Union-based slot storage
+  - Occupied slots: Store task data
+  - Vacant slots: Store free-list pointer
+
 ### Performance Optimizations
 
 - **Hierarchical architecture**: Avoids single-layer round checks, L0 layer requires no rounds checking
+- **DeferredMap**: O(1) task lookup, insertion, and removal with generational safety
 - **Efficient locking**: `parking_lot::Mutex` is faster than standard Mutex
 - **Bitwise optimization**: Slot count is power of 2, uses `& (n-1)` for fast modulo
 - **Cache optimization**: Pre-compute slot masks, tick durations, and other frequently used values
@@ -231,28 +265,33 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 **TimerTask**:
 - `TimerTask::new_oneshot(delay, callback)` - Create one-shot task
 - `TimerTask::new_periodic(initial_delay, interval, callback, buffer_size)` - Create periodic task
-- `get_id()` - Get task ID
 - `get_task_type()` - Get task type
 - `get_interval()` - Get interval for periodic tasks
+
+**TaskHandle** (Pre-allocated handle):
+- `task_id()` - Get task ID from handle
 
 **TimerWheel**:
 - `TimerWheel::with_defaults()` - Create with default config
 - `TimerWheel::new(config)` - Create with custom config
-- `register(task)` - Register task
-- `register_batch(tasks)` - Batch register
+- `allocate_handle()` - Allocate single handle
+- `allocate_handles(count)` - Batch allocate handles
+- `register(handle, task)` - Register task with handle
+- `register_batch(handles, tasks)` - Batch register tasks
 - `cancel(task_id)` - Cancel task
 - `cancel_batch(task_ids)` - Batch cancel
 - `postpone(task_id, delay, callback)` - Postpone task
 - `postpone_batch(updates)` - Batch postpone
 
-**TimerHandle**:
+**TimerHandle** (Returned after registration):
 - `cancel()` - Cancel timer
 - `task_id()` - Get task ID
-- `into_parts()` - Get completion receiver and handle
 
 **TimerService**:
-- `register(task)` - Register task
-- `register_batch(tasks)` - Batch register
+- `allocate_handle()` - Allocate single handle
+- `allocate_handles(count)` - Batch allocate handles
+- `register(handle, task)` - Register task with handle
+- `register_batch(handles, tasks)` - Batch register tasks
 - `take_receiver()` - Get timeout notification receiver
 - `cancel_task(task_id)` - Cancel task
 - `cancel_batch(task_ids)` - Batch cancel
@@ -344,15 +383,21 @@ use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
 async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
+    // Allocate handle first
+    let handle = timer.allocate_handle();
+    
+    // Create task
     let callback = Some(CallbackWrapper::new(move || async move {
         println!("Connection {} timed out", conn_id);
         close_connection(conn_id).await;
     }));
     let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
-    let handle = timer.register(task);
+    
+    // Register task
+    let timer_handle = timer.register(handle, task).unwrap();
     
     // Cancel timeout when connection completes
-    // handle.cancel();
+    // timer_handle.cancel();
 }
 ```
 
@@ -367,11 +412,15 @@ let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
 for client_id in client_ids {
+    // Allocate handle
+    let handle = service.allocate_handle();
+    
+    // Create and register task
     let callback = Some(CallbackWrapper::new(move || async move {
         println!("Client {} heartbeat timeout", client_id);
     }));
     let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
-    service.register(task).unwrap();
+    service.register(handle, task).unwrap();
 }
 ```
 
@@ -385,6 +434,10 @@ use std::time::Duration;
 async fn set_cache(&self, key: String, value: String, ttl: Duration) {
     self.cache.lock().insert(key.clone(), value);
     
+    // Allocate handle
+    let handle = self.timer.allocate_handle();
+    
+    // Create task with callback
     let cache = Arc::clone(&self.cache);
     let callback = Some(CallbackWrapper::new(move || {
         let cache = Arc::clone(&cache);
@@ -394,7 +447,9 @@ async fn set_cache(&self, key: String, value: String, ttl: Duration) {
         }
     }));
     let task = TimerTask::new_oneshot(ttl, callback);
-    self.timer.register(task);
+    
+    // Register task
+    self.timer.register(handle, task).unwrap();
 }
 ```
 
@@ -410,12 +465,17 @@ async fn apply_buff(
     buff_type: BuffType,
     duration: Duration
 ) -> TaskId {
+    // Allocate handle and get task_id
+    let handle = timer.allocate_handle();
+    let task_id = handle.task_id();
+    
+    // Create and register task
     let callback = Some(CallbackWrapper::new(move || async move {
         remove_buff(player_id, buff_type).await;
     }));
     let task = TimerTask::new_oneshot(duration, callback);
-    let task_id = task.get_id();
-    timer.register(task);
+    timer.register(handle, task).unwrap();
+    
     task_id
 }
 
@@ -432,11 +492,16 @@ use std::time::Duration;
 async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
     for retry in 1..=5 {
         let delay = Duration::from_secs(2_u64.pow(retry - 1));
+        
+        // Allocate handle
+        let handle = timer.allocate_handle();
+        
+        // Create and register task
         let callback = Some(CallbackWrapper::new(move || async move {
             operation().await;
         }));
         let task = TimerTask::new_oneshot(delay, callback);
-        timer.register(task);
+        timer.register(handle, task).unwrap();
     }
 }
 ```

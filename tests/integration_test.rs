@@ -33,7 +33,8 @@ async fn test_large_scale_timers() {
                     }
                 })),
             );
-            timer_clone.register(task)
+            let handle = timer_clone.allocate_handle();
+            timer_clone.register(handle, task)
         };
         futures.push(future);
     }
@@ -71,7 +72,8 @@ async fn test_timer_precision() {
             }
         })),
     );
-    let handle = timer.register(task);
+    let allocated_handle = timer.allocate_handle();
+    let handle = timer.register(allocated_handle, task);
 
     // Use completion_receiver to wait for timer completion, instead of fixed sleep time
     // This can avoid race conditions
@@ -128,7 +130,8 @@ async fn test_concurrent_operations() {
                         }
                     })),
                 );
-                timer_clone.register(task)
+                let handle = timer_clone.allocate_handle();
+                timer_clone.register(handle, task)
             };
             
             all_futures.push(future);
@@ -170,7 +173,8 @@ async fn test_timer_with_different_delays() {
                 }
             })),
         );
-        let handle = timer.register(task);
+        let allocated_handle = timer.allocate_handle();
+        let handle = timer.register(allocated_handle, task);
         
         handles.push(handle);
     }
@@ -214,7 +218,8 @@ async fn test_memory_efficiency() {
                 Duration::from_secs(10),
                 None,
             );
-            timer_clone.register(task)
+            let handle = timer_clone.allocate_handle();
+            timer_clone.register(handle, task)
         };
         create_futures.push(future);
     }
@@ -243,6 +248,9 @@ async fn test_batch_schedule() {
     const BATCH_SIZE: usize = 100;
     let start = Instant::now();
     
+    // Allocate handles first (先分配 handles)
+    let handles = timer.allocate_handles(BATCH_SIZE);
+    
     // Create batch tasks (创建批量任务)
     let tasks: Vec<_> = (0..BATCH_SIZE)
         .map(|i| {
@@ -260,7 +268,7 @@ async fn test_batch_schedule() {
     
     // Batch schedule
     // 批量调度
-    let batch = timer.register_batch(tasks);
+    let batch = timer.register_batch(handles, tasks).unwrap();
     
     println!("Batch scheduling of {} timers took: {:?}", BATCH_SIZE, start.elapsed());
     assert_eq!(batch.len(), BATCH_SIZE);
@@ -278,15 +286,18 @@ async fn test_batch_schedule() {
 async fn test_batch_cancel() {
     // Test batch canceling timers
     // 测试批量取消定时器
-    let timer = Arc::new(TimerWheel::with_defaults());
+    let timer = TimerWheel::with_defaults();
     const TIMER_COUNT: usize = 500;
+    
+    // Allocate handles first (先分配 handles)
+    let handles = timer.allocate_handles(TIMER_COUNT);
     
     // Create batch timers (创建批量定时器)
     let tasks: Vec<_> = (0..TIMER_COUNT)
         .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
         .collect();
     
-    let batch = timer.register_batch(tasks);
+    let batch = timer.register_batch(handles, tasks).unwrap();
     assert_eq!(batch.len(), TIMER_COUNT);
     
     // Batch cancel (using BatchHandle's cancel_all method)
@@ -305,12 +316,15 @@ async fn test_batch_cancel_partial() {
     // 测试部分批量取消
     let timer = TimerWheel::with_defaults();
     
+    // Allocate handles first (先分配 handles)
+    let allocated_handles = timer.allocate_handles(10);
+    
     // Create 10 timers (创建 10 个定时器)
     let tasks: Vec<_> = (0..10)
         .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
         .collect();
     
-    let batch = timer.register_batch(tasks);
+    let batch = timer.register_batch(allocated_handles, tasks).unwrap();
     
     // Convert to individual handles (转换为单个句柄)
     let mut handles = batch.into_handles();
@@ -350,12 +364,15 @@ async fn test_batch_cancel_no_wait() {
     // 测试批量取消而不等待结果
     let timer = TimerWheel::with_defaults();
     
+    // Allocate handles first (先分配 handles)
+    let allocated_handles = timer.allocate_handles(100);
+    
     // Create 100 timers (创建 100 个定时器)
     let tasks: Vec<_> = (0..100)
         .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
         .collect();
     
-    let batch = timer.register_batch(tasks);
+    let batch = timer.register_batch(allocated_handles, tasks).unwrap();
     
     // Batch cancel (using BatchHandle's cancel_all method, now synchronous)
     // 批量取消（使用 BatchHandle 的 cancel_all 方法，现在同步操作）
@@ -379,6 +396,8 @@ async fn test_postpone_single_timer() {
     let counter_clone = Arc::clone(&counter);
 
     // Create task, original callback adds 1
+    let allocated_handle = timer.allocate_handle();
+    let task_id = allocated_handle.task_id();
     let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
@@ -388,8 +407,7 @@ async fn test_postpone_single_timer() {
             }
         })),
     );
-    let task_id = task.get_id();
-    let handle = timer.register(task);
+    let handle = timer.register(allocated_handle, task);
 
     // Postpone task to 150ms
     // 推迟任务到 150ms
@@ -429,6 +447,8 @@ async fn test_postpone_with_new_callback() {
     let counter_clone2 = Arc::clone(&counter); // 新回调增加 10
 
     // Create task, original callback adds 1 (创建任务，原始回调增加 1)
+    let allocated_handle = timer.allocate_handle();
+    let task_id = allocated_handle.task_id();
     let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
@@ -438,8 +458,7 @@ async fn test_postpone_with_new_callback() {
             }
         })),
     );
-    let task_id = task.get_id();
-    let handle = timer.register(task);
+    let handle = timer.register(allocated_handle, task);
 
     // Postpone task and replace callback, new callback adds 10
     // 推迟任务并替换回调，新回调增加 10
@@ -486,6 +505,8 @@ async fn test_batch_postpone() {
     let mut task_ids = Vec::new();
     for _ in 0..BATCH_SIZE {
         let counter_clone = Arc::clone(&counter);
+        let allocated_handle = timer.allocate_handle();
+        let task_id = allocated_handle.task_id();
         let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
@@ -495,8 +516,8 @@ async fn test_batch_postpone() {
                 }
             })),
         );
-        task_ids.push((task.get_id(), Duration::from_millis(150)));
-        timer.register(task);
+        task_ids.push((task_id, Duration::from_millis(150)));
+        timer.register(allocated_handle, task);
     }
 
     // Batch postpone
@@ -531,12 +552,14 @@ async fn test_postpone_batch_with_callbacks() {
     // 创建批量任务（初始回调为空）
     let mut task_ids = Vec::new();
     for _ in 0..BATCH_SIZE {
+        let allocated_handle = timer.allocate_handle();
+        let task_id = allocated_handle.task_id();
         let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             None,
         );
-        task_ids.push(task.get_id());
-        timer.register(task);
+        task_ids.push(task_id);
+        timer.register(allocated_handle, task);
     }
 
     // Batch postpone and replace callbacks
@@ -580,6 +603,8 @@ async fn test_postpone_multiple_times() {
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter); // 原始回调增加 1
 
+    let allocated_handle = timer.allocate_handle();
+    let task_id = allocated_handle.task_id();
     let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
@@ -589,8 +614,7 @@ async fn test_postpone_multiple_times() {
             }
         })),
     );
-    let task_id = task.get_id();
-    let handle = timer.register(task);
+    let handle = timer.register(allocated_handle, task);
 
     // First postpone to 100ms
     // 第一次推迟到 100ms
@@ -635,6 +659,8 @@ async fn test_postpone_with_service() {
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter); // 原始回调增加 1
 
+    let allocated_handle = service.allocate_handle();
+    let task_id = allocated_handle.task_id();
     let task = TimerTask::new_oneshot(
         Duration::from_millis(50),
         Some(CallbackWrapper::new(move || {
@@ -644,8 +670,7 @@ async fn test_postpone_with_service() {
             }
         })),
     );
-    let task_id = task.get_id();
-    service.register(task).unwrap();
+    service.register(allocated_handle, task).unwrap();
 
     // Postpone task
     // 推迟任务
@@ -702,8 +727,8 @@ async fn test_single_wheel_multiple_services() {
                         }
                     })),
                 );
-                
-                if let Ok(_) = service.register(task) {
+                let handle = service.allocate_handle();
+                if let Ok(_) = service.register(handle, task) {
                     // Successfully registered (成功注册)
                 }
             }
@@ -770,17 +795,18 @@ async fn test_multiple_services_concurrent_operations() {
                     Some(CallbackWrapper::new(move || {
                         let counter = Arc::clone(&counter_inner);
                         async move {
-                            counter.fetch_add(1, Ordering::SeqCst);
-                        }
-                    })),
-                );
-                let task_id = task.get_id();
-                task_ids.push(task_id);
-                
-                if let Ok(_) = service.register(task) {
-                    // Successfully registered
-                    // 成功注册
-                }
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+            );
+            let handle = service.allocate_handle();
+            let task_id = handle.task_id();
+            task_ids.push(task_id);
+            
+            if let Ok(_) = service.register(handle, task) {
+                // Successfully registered
+                // 成功注册
+            }
             }
             
             // Perform different operations based on service index
@@ -869,12 +895,13 @@ async fn test_service_isolation() {
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter);
                 async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        task_ids_1.push(task.get_id());
-        service1.register(task).unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        })),
+    );
+    let handle = service1.allocate_handle();
+    task_ids_1.push(handle.task_id());
+    service1.register(handle, task).unwrap();
     }
     
     // Service 2 registers 100 timers
@@ -886,11 +913,12 @@ async fn test_service_isolation() {
             Some(CallbackWrapper::new(move || {
                 let counter = Arc::clone(&counter);
                 async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        service2.register(task).unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        })),
+    );
+    let handle = service2.allocate_handle();
+    service2.register(handle, task).unwrap();
     }
     
     // Cancel all tasks of service1

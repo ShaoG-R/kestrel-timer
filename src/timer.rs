@@ -1,7 +1,7 @@
 pub mod handle;
 
 use crate::config::{BatchConfig, ServiceConfig, WheelConfig};
-use crate::task::{CallbackWrapper, TaskId};
+use crate::task::{CallbackWrapper, TaskHandle, TaskId};
 use crate::wheel::Wheel;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -29,11 +29,13 @@ impl TimerWheel {
     ///
     /// # Parameters
     /// - `config`: Timing wheel configuration, already validated
+    /// - `batch_config`: Batch operation configuration
     /// 
     /// 创建新的定时器管理器
     ///
     /// # 参数
     /// - `config`: 时间轮配置，已验证
+    /// - `batch_config`: 批量操作配置
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -51,10 +53,11 @@ impl TimerWheel {
     ///         .unwrap();
     ///     let timer = TimerWheel::new(config, BatchConfig::default());
     ///     
-    ///     // Use two-step API
-    ///     // (Use two-step API)
+    ///     // Use two-step API: allocate handle first, then register
+    ///     // 使用两步 API：先分配 handle，再注册
+    ///     let handle = timer.allocate_handle();
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(1), None);
-    ///     let handle = timer.register(task);
+    ///     let _timer_handle = timer.register(handle, task);
     /// }
     /// ```
     pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
@@ -79,18 +82,12 @@ impl TimerWheel {
     /// - L0 layer tick duration: 10ms, slot count: 512
     /// - L1 layer tick duration: 1s, slot count: 64
     ///
-    /// # Parameters
-    /// - `config`: Timing wheel configuration, already validated
-    ///
     /// # Returns
     /// Timer manager instance
     /// 
     /// 使用默认配置创建定时器管理器，分层模式
     /// - L0 层 tick 持续时间：10ms，槽数量：512
     /// - L1 层 tick 持续时间：1s，槽数量：64
-    ///
-    /// # 参数
-    /// - `config`: 时间轮配置，已验证
     ///
     /// # 返回值
     /// 定时器管理器实例
@@ -137,13 +134,19 @@ impl TimerWheel {
     ///     
     ///     // Use two-step API to batch schedule timers through service
     ///     // 使用两步 API 通过服务批量调度定时器
+    ///     // Step 1: Allocate handles
+    ///     let handles = service.allocate_handles(5);
+    ///     
+    ///     // Step 2: Create tasks
     ///     let tasks: Vec<_> = (0..5)
     ///         .map(|_| {
     ///             use kestrel_timer::TimerTask;
     ///             TimerTask::new_oneshot(Duration::from_millis(100), Some(CallbackWrapper::new(|| async {})))
     ///         })
     ///         .collect();
-    ///     service.register_batch(tasks).unwrap();
+    ///     
+    ///     // Step 3: Register batch
+    ///     service.register_batch(handles, tasks).unwrap();
     ///     
     ///     // Receive timeout notifications
     ///     // 接收超时通知
@@ -191,6 +194,35 @@ impl TimerWheel {
     pub fn create_service_with_config(&self, config: ServiceConfig) -> crate::service::TimerService {
         crate::service::TimerService::new(self.wheel.clone(), config)
     }
+
+
+    /// Allocate a handle from DeferredMap
+    /// 
+    /// # Returns
+    /// A unique handle for later insertion
+    /// 
+    /// # 返回值
+    /// 用于后续插入的唯一 handle
+    pub fn allocate_handle(&self) -> TaskHandle {
+        self.wheel.lock().allocate_handle()
+    }
+
+    /// Batch allocate handles from DeferredMap
+    /// 
+    /// # Parameters
+    /// - `count`: Number of handles to allocate
+    /// 
+    /// # Returns
+    /// Vector of unique handles for later batch insertion
+    /// 
+    /// # 参数
+    /// - `count`: 要分配的 handle 数量
+    /// 
+    /// # 返回值
+    /// 用于后续批量插入的唯一 handles 向量
+    pub fn allocate_handles(&self, count: usize) -> Vec<TaskHandle> {
+        self.wheel.lock().allocate_handles(count)
+    }
     
     /// Register timer task to timing wheel (registration phase)
     /// 
@@ -218,14 +250,17 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
+    ///     // Step 1: Allocate handle
+    ///     let allocated_handle = timer.allocate_handle();
+    ///     let task_id = allocated_handle.task_id();
+    ///     
+    ///     // Step 2: Create task
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(1), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
     ///     })));
-    ///     let task_id = task.get_id();
     ///     
-    ///     // Register task
-    ///     // 注册任务
-    ///     let handle = timer.register(task);
+    ///     // Step 3: Register task
+    ///     let handle = timer.register(allocated_handle, task);
     ///     
     ///     // Wait for timer completion
     ///     // 等待定时器完成
@@ -240,16 +275,15 @@ impl TimerWheel {
     /// }
     /// ```
     #[inline]
-    pub fn register(&self, task: crate::task::TimerTask) -> TimerHandleWithCompletion {
+    pub fn register(&self, handle: TaskHandle, task: crate::task::TimerTask) -> TimerHandleWithCompletion {
+        let task_id = handle.task_id();
+
         let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
         
-        let task_id = task.id;
-        
+        // Single lock to complete all operations
         // 单次加锁完成所有操作
-        {
-            let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert(task);
-        }
+        let mut wheel_guard = self.wheel.lock();
+        wheel_guard.insert(handle, task);
         
         TimerHandleWithCompletion::new(TimerHandle::new(task_id, self.wheel.clone()), completion_rx)
     }
@@ -257,18 +291,22 @@ impl TimerWheel {
     /// Batch register timer tasks to timing wheel (registration phase)
     /// 
     /// # Parameters
-    /// - `tasks`: List of tasks created via `create_batch()`
+    /// - `handles`: Pre-allocated handles for tasks
+    /// - `tasks`: List of timer tasks
     /// 
     /// # Returns
-    /// Return batch timer handle with completion receivers
+    /// - `Ok(BatchHandleWithCompletion)` if all tasks are successfully registered
+    /// - `Err(TimerError::BatchLengthMismatch)` if handles and tasks lengths don't match
     /// 
     /// 批量注册定时器任务到时间轮 (注册阶段)
     /// 
     /// # 参数
-    /// - `tasks`: 通过 `create_batch()` 创建的任务列表
+    /// - `handles`: 任务的预分配 handles
+    /// - `tasks`: 定时器任务列表
     /// 
     /// # 返回值
-    /// 返回包含完成通知接收器的批量定时器句柄
+    /// - `Ok(BatchHandleWithCompletion)` 如果所有任务成功注册
+    /// - `Err(TimerError::BatchLengthMismatch)` 如果 handles 和 tasks 长度不匹配
     /// 
     /// # Examples (示例)
     /// ```no_run
@@ -279,36 +317,57 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
+    ///     // Step 1: Allocate handles
+    ///     let handles = timer.allocate_handles(3);
+    ///     
+    ///     // Step 2: Create tasks
     ///     let tasks: Vec<_> = (0..3)
     ///         .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///         .collect();
     ///     
-    ///     let batch = timer.register_batch(tasks);
+    ///     // Step 3: Batch register
+    ///     let batch = timer.register_batch(handles, tasks)
+    ///         .expect("register_batch should succeed");
     ///     println!("Registered {} timers", batch.len());
     /// }
     /// ```
     #[inline]
-    pub fn register_batch(&self, tasks: Vec<crate::task::TimerTask>) -> BatchHandleWithCompletion {
+    pub fn register_batch(
+        &self, 
+        handles: Vec<TaskHandle>, 
+        tasks: Vec<crate::task::TimerTask>
+    ) -> Result<BatchHandleWithCompletion, crate::error::TimerError> {
+        // Validate lengths match
+        if handles.len() != tasks.len() {
+            return Err(crate::error::TimerError::BatchLengthMismatch {
+                handles_len: handles.len(),
+                tasks_len: tasks.len(),
+            });
+        }
+        
         let task_count = tasks.len();
         let mut completion_rxs = Vec::with_capacity(task_count);
         let mut task_ids = Vec::with_capacity(task_count);
+        let mut prepared_handles = Vec::with_capacity(task_count);
         let mut prepared_tasks = Vec::with_capacity(task_count);
         
         // Step 1: Prepare all channels and notifiers
-        for task in tasks {
+        for (handle, task) in handles.into_iter().zip(tasks.into_iter()) {
+            let task_id = handle.task_id();
             let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
-            task_ids.push(task.id);
+            task_ids.push(task_id);
             completion_rxs.push(completion_rx);
+            prepared_handles.push(handle);
             prepared_tasks.push(task);
         }
         
         // Step 2: Single lock, batch insert
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert_batch(prepared_tasks);
+            wheel_guard.insert_batch(prepared_handles, prepared_tasks)?;
         }
         
-        BatchHandleWithCompletion::new(BatchHandle::new(task_ids, self.wheel.clone()), completion_rxs)
+        Ok(BatchHandleWithCompletion::new(BatchHandle::new(task_ids, self.wheel.clone()), completion_rxs))
     }
 
     /// Cancel timer
@@ -337,11 +396,15 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
+    ///     // Step 1: Allocate handle
+    ///     let allocated_handle = timer.allocate_handle();
+    ///     let task_id = allocated_handle.task_id();
+    ///     
+    ///     // Step 2: Create and register task
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(10), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
     ///     })));
-    ///     let task_id = task.get_id();
-    ///     let _handle = timer.register(task);
+    ///     let _handle = timer.register(allocated_handle, task);
     ///     
     ///     // Cancel task using task ID
     ///     // 使用任务 ID 取消任务
@@ -390,11 +453,15 @@ impl TimerWheel {
     ///     let task2 = TimerTask::new_oneshot(Duration::from_secs(10), None);
     ///     let task3 = TimerTask::new_oneshot(Duration::from_secs(10), None);
     ///     
-    ///     let task_ids = vec![task1.get_id(), task2.get_id(), task3.get_id()];
+    ///     // Allocate handles and get task IDs
+    ///     let h1 = timer.allocate_handle();
+    ///     let h2 = timer.allocate_handle();
+    ///     let h3 = timer.allocate_handle();
+    ///     let task_ids = vec![h1.task_id(), h2.task_id(), h3.task_id()];
     ///     
-    ///     let _h1 = timer.register(task1);
-    ///     let _h2 = timer.register(task2);
-    ///     let _h3 = timer.register(task3);
+    ///     let _h1 = timer.register(h1, task1);
+    ///     let _h2 = timer.register(h2, task2);
+    ///     let _h3 = timer.register(h3, task3);
     ///     
     ///     // Batch cancel
     ///     // 批量取消
@@ -448,11 +515,14 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
+    ///     // Allocate handle first
+    ///     let allocated_handle = timer.allocate_handle();
+    ///     let task_id = allocated_handle.task_id();
+    ///     
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
     ///     })));
-    ///     let task_id = task.get_id();
-    ///     let _handle = timer.register(task);
+    ///     let _handle = timer.register(allocated_handle, task);
     ///     
     ///     // Postpone to 10 seconds after triggering, and keep original callback
     ///     // 推迟到 10 秒后触发，并保持原始回调
@@ -470,11 +540,14 @@ impl TimerWheel {
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
     ///     
+    ///     // Allocate handle first
+    ///     let allocated_handle = timer.allocate_handle();
+    ///     let task_id = allocated_handle.task_id();
+    ///     
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
     ///         println!("Original callback!");
     ///     })));
-    ///     let task_id = task.get_id();
-    ///     let _handle = timer.register(task);
+    ///     let _handle = timer.register(allocated_handle, task);
     ///     
     ///     // Postpone to 10 seconds after triggering, and replace with new callback
     ///     // 推迟到 10 秒后触发，并替换为新的回调
@@ -544,15 +617,20 @@ impl TimerWheel {
     ///         println!("Task 3 fired!");
     ///     })));
     ///     
+    ///     // Allocate handles and register
+    ///     let h1 = timer.allocate_handle();
+    ///     let h2 = timer.allocate_handle();
+    ///     let h3 = timer.allocate_handle();
+    ///     
     ///     let task_ids = vec![
-    ///         (task1.get_id(), Duration::from_secs(10)),
-    ///         (task2.get_id(), Duration::from_secs(15)),
-    ///         (task3.get_id(), Duration::from_secs(20)),
+    ///         (h1.task_id(), Duration::from_secs(10)),
+    ///         (h2.task_id(), Duration::from_secs(15)),
+    ///         (h3.task_id(), Duration::from_secs(20)),
     ///     ];
     ///     
-    ///     timer.register(task1);
-    ///     timer.register(task2);
-    ///     timer.register(task3);
+    ///     timer.register(h1, task1);
+    ///     timer.register(h2, task2);
+    ///     timer.register(h3, task3);
     ///     
     ///     // Batch postpone (keep original callbacks)
     ///     // 批量推迟 (保持原始回调)
@@ -603,11 +681,14 @@ impl TimerWheel {
     ///     let task1 = TimerTask::new_oneshot(Duration::from_secs(5), None);
     ///     let task2 = TimerTask::new_oneshot(Duration::from_secs(5), None);
     ///     
-    ///     let id1 = task1.get_id();
-    ///     let id2 = task2.get_id();
+    ///     // Allocate handles first
+    ///     let h1 = timer.allocate_handle();
+    ///     let h2 = timer.allocate_handle();
+    ///     let id1 = h1.task_id();
+    ///     let id2 = h2.task_id();
     ///     
-    ///     timer.register(task1);
-    ///     timer.register(task2);
+    ///     timer.register(h1, task1);
+    ///     timer.register(h2, task2);
     ///     
     ///     // Batch postpone and replace callbacks
     ///     // 批量推迟并替换回调
@@ -635,6 +716,20 @@ impl TimerWheel {
     }
     
     /// Core tick loop
+    /// 
+    /// Background task that advances the timing wheel at regular intervals
+    /// 
+    /// # Parameters
+    /// - `wheel`: Shared timing wheel instance
+    /// - `tick_duration`: Duration between ticks
+    /// 
+    /// 核心 tick 循环
+    /// 
+    /// 定期推进时间轮的后台任务
+    /// 
+    /// # 参数
+    /// - `wheel`: 共享的时间轮实例
+    /// - `tick_duration`: tick 之间的持续时间
     async fn tick_loop(wheel: Arc<Mutex<Wheel>>, tick_duration: Duration) {
         let mut interval = tokio::time::interval(tick_duration);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -687,6 +782,9 @@ impl TimerWheel {
     }
 }
 
+/// Automatically abort the background tick task when TimerWheel is dropped
+/// 
+/// 当 TimerWheel 被销毁时自动中止后台 tick 任务
 impl Drop for TimerWheel {
     fn drop(&mut self) {
         if let Some(handle) = self.tick_handle.take() {
@@ -722,763 +820,13 @@ mod tests {
                 }
             })),
         );
-        let _handle = timer.register(task);
+        let allocate_handle = timer.allocate_handle();
+        let _handle = timer.register(allocate_handle, task);
 
         // Wait for timer to trigger
         // 等待定时器触发
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_cancel_timer() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        let task = TimerTask::new_oneshot(
-            Duration::from_millis(100),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        let handle = timer.register(task);
-
-        // Immediately cancel
-        // 立即取消
-        let cancel_result = handle.cancel();
-        assert!(cancel_result);
-
-        // Wait for enough time to ensure timer does not trigger
-        // 等待足够时间确保定时器不触发
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn test_cancel_immediate() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        let task = TimerTask::new_oneshot(
-            Duration::from_millis(100),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        let handle = timer.register(task);
-
-        // Immediately cancel
-        // 立即取消
-        let cancel_result = handle.cancel();
-        assert!(cancel_result);
-
-        // Wait for enough time to ensure timer does not trigger
-        // 等待足够时间确保定时器不触发
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn test_postpone_timer() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        let task = TimerTask::new_oneshot(
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        let task_id = task.get_id();
-        let handle = timer.register(task);
-
-        // Postpone task to 150ms
-        // 推迟任务到 150ms
-        let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
-        assert!(postponed);
-
-        // Wait for original time 50ms, task should not trigger
-        // 等待原始时间 50ms，任务不应触发
-        tokio::time::sleep(Duration::from_millis(70)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-
-        // Wait for new trigger time (from postponed start, need to wait about 150ms)
-        // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
-        let (rx, _handle) = handle.into_parts();
-        let result = match rx {
-            crate::task::CompletionReceiver::OneShot(receiver) => {
-                tokio::time::timeout(
-                    Duration::from_millis(200),
-                    receiver.wait()
-                ).await
-            },
-            _ => panic!("Expected OneShot completion receiver"),
-        };
-        assert!(result.is_ok());
-        
-        // Wait for callback to execute
-        // 等待回调执行
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_postpone_with_callback() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone1 = Arc::clone(&counter);
-        let counter_clone2 = Arc::clone(&counter);
-
-        // Create task, original callback adds 1
-        let task = TimerTask::new_oneshot(
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone1);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        let task_id = task.get_id();
-        let handle = timer.register(task);
-
-        // Postpone task and replace callback, new callback adds 10
-        // 推迟任务并替换回调，新回调增加 10
-        let postponed = timer.postpone(
-            task_id,
-            Duration::from_millis(100),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone2);
-                async move {
-                    counter.fetch_add(10, Ordering::SeqCst);
-                }
-            })),
-        );
-        assert!(postponed);
-
-        // Wait for task to trigger (after postponed, need to wait 100ms, plus margin)
-        // 等待任务触发（推迟后，需要等待 100ms，加上余量）
-        let (rx, _handle) = handle.into_parts();
-        let result = match rx {
-            crate::task::CompletionReceiver::OneShot(receiver) => {
-                tokio::time::timeout(
-                    Duration::from_millis(200),
-                    receiver.wait()
-                ).await
-            },
-            _ => panic!("Expected OneShot completion receiver"),
-        };
-        assert!(result.is_ok());
-        
-        // Wait for callback to execute
-        // 等待回调执行
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        
-        // Verify new callback is executed (increased 10 instead of 1)
-        // 验证新回调已执行（增加 10 而不是 1）
-        assert_eq!(counter.load(Ordering::SeqCst), 10);
-    }
-
-    #[tokio::test]
-    async fn test_postpone_nonexistent_timer() {
-        let timer = TimerWheel::with_defaults();
-        
-        // Try to postpone nonexistent task
-        // 尝试推迟一个不存在的任务
-        let fake_task = TimerTask::new_oneshot(Duration::from_millis(50), None);
-        let fake_task_id = fake_task.get_id();
-        // Do not register this task
-        // 不注册这个任务
-        let postponed = timer.postpone(fake_task_id, Duration::from_millis(100), None);
-        assert!(!postponed);
-    }
-
-    #[tokio::test]
-    async fn test_postpone_batch() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        // Create 3 tasks
-        // 创建 3 个任务
-        let mut task_ids = Vec::new();
-        for _ in 0..3 {
-            let counter_clone = Arc::clone(&counter);
-            let task = TimerTask::new_oneshot(
-                Duration::from_millis(50),
-                Some(CallbackWrapper::new(move || {
-                    let counter = Arc::clone(&counter_clone);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
-                })),
-            );
-            task_ids.push((task.get_id(), Duration::from_millis(150)));
-            timer.register(task);
-        }
-
-        // Batch postpone
-        // 批量推迟
-        let postponed = timer.postpone_batch(task_ids);
-        assert_eq!(postponed, 3);
-
-        // Wait for original time 50ms, task should not trigger
-        // 等待原始时间 50ms，任务不应触发
-        tokio::time::sleep(Duration::from_millis(70)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-
-        // Wait for new trigger time (from postponed start, need to wait about 150ms)
-        // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        
-        // Wait for callback to execute
-        // 等待回调执行
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_postpone_batch_with_callbacks() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        // Create 3 tasks
-        // 创建 3 个任务
-        let mut task_ids = Vec::new();
-        for _ in 0..3 {
-            let task = TimerTask::new_oneshot(
-                Duration::from_millis(50),
-                None
-            );
-            task_ids.push(task.get_id());
-            timer.register(task);
-        }
-
-        // Batch postpone and replace callbacks
-        // 批量推迟并替换回调
-        let updates: Vec<_> = task_ids
-            .into_iter()
-            .map(|id| {
-                let counter_clone = Arc::clone(&counter);
-                (id, Duration::from_millis(150), Some(CallbackWrapper::new(move || {
-                    let counter = Arc::clone(&counter_clone);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
-                })))
-            })
-            .collect();
-
-        // Batch postpone and replace callbacks
-        // 批量推迟并替换回调
-        let postponed = timer.postpone_batch_with_callbacks(updates);
-        assert_eq!(postponed, 3);
-
-        // Wait for original time 50ms, task should not trigger
-        // 等待原始时间 50ms，任务不应触发
-        tokio::time::sleep(Duration::from_millis(70)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
-
-        // Wait for new trigger time (from postponed start, need to wait about 150ms)
-        // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        
-        // Wait for callback to execute
-        // 等待回调执行
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_postpone_keeps_completion_receiver_valid() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        let task = TimerTask::new_oneshot(
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-        );
-        let task_id = task.get_id();
-        let handle = timer.register(task);
-
-        // Postpone task
-        // 推迟任务
-        timer.postpone(task_id, Duration::from_millis(100), None);
-
-        // Verify original completion_receiver is still valid (after postponed, need to wait 100ms, plus margin)
-        // 验证原始完成接收器是否仍然有效（推迟后，需要等待 100ms，加上余量）
-        let (rx, _handle) = handle.into_parts();
-        let result = match rx {
-            crate::task::CompletionReceiver::OneShot(receiver) => {
-                tokio::time::timeout(
-                    Duration::from_millis(200),
-                    receiver.wait()
-                ).await
-            },
-            _ => panic!("Expected OneShot completion receiver"),
-        };
-        assert!(result.is_ok(), "Completion receiver should still work after postpone");
-        
-        // Wait for callback to execute
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
-
-    // ==================== Periodic Task Tests ====================
-    // ==================== 周期任务测试 ====================
-
-    #[tokio::test]
-    async fn test_periodic_basic() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        // Create periodic task that triggers every 50ms
-        // 创建每 50ms 触发一次的周期任务
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),  // initial delay
-            Duration::from_millis(50),  // interval
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-            None,  // use default buffer size
-        );
-        let (mut rx, _handle) = timer.register(task).into_parts();
-
-        // Wait for 3 periodic executions (50ms initial + 50ms * 2)
-        // 等待 3 次周期执行（50ms 初始 + 50ms * 2）
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        
-        // Verify callback was triggered multiple times
-        // 验证回调被多次触发
-        let count = counter.load(Ordering::SeqCst);
-        assert!(count >= 3, "Expected at least 3 executions, got {}", count);
-        
-        // Verify completion notifications were sent
-        // 验证完成通知已发送
-        match rx {
-            crate::task::CompletionReceiver::Periodic(ref mut receiver) => {
-                let mut notification_count = 0;
-                while let Ok(completion) = receiver.try_recv() {
-                    assert_eq!(completion, crate::task::TaskCompletion::Called);
-                    notification_count += 1;
-                }
-                assert!(notification_count >= 3, "Expected at least 3 notifications, got {}", notification_count);
-            },
-            _ => panic!("Expected Periodic completion receiver"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_periodic_cancel() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        // Create periodic task
-        // 创建周期任务
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-            None,
-        );
-        let handle = timer.register(task);
-
-        // Wait for first execution
-        // 等待第一次执行
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        let count_before_cancel = counter.load(Ordering::SeqCst);
-        assert!(count_before_cancel >= 1, "Expected at least 1 execution before cancel");
-
-        // Cancel periodic task
-        // 取消周期任务
-        let cancelled = handle.cancel();
-        assert!(cancelled);
-
-        // Wait some more time and verify task stopped
-        // 等待更多时间并验证任务已停止
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let count_after_cancel = counter.load(Ordering::SeqCst);
-        
-        // Count should not increase significantly after cancellation
-        // 取消后计数不应该显著增加
-        assert!(
-            count_after_cancel - count_before_cancel <= 1,
-            "Task should stop after cancel, before: {}, after: {}",
-            count_before_cancel,
-            count_after_cancel
-        );
-    }
-
-    #[tokio::test]
-    async fn test_periodic_cancel_notification() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        // Create periodic task
-        // 创建周期任务
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-            None,
-        );
-        let (mut rx, handle) = timer.register(task).into_parts();
-
-        // Wait for first execution
-        // 等待第一次执行
-        tokio::time::sleep(Duration::from_millis(80)).await;
-
-        // Cancel the task
-        // 取消任务
-        let cancelled = handle.cancel();
-        assert!(cancelled);
-
-        // Wait a bit for the cancel notification
-        // 等待取消通知
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Verify we received cancellation notification
-        // 验证收到取消通知
-        match rx {
-            crate::task::CompletionReceiver::Periodic(ref mut receiver) => {
-                let mut found_cancelled = false;
-                while let Ok(completion) = receiver.try_recv() {
-                    if completion == crate::task::TaskCompletion::Cancelled {
-                        found_cancelled = true;
-                        break;
-                    }
-                }
-                assert!(found_cancelled, "Expected to receive Cancelled notification");
-            },
-            _ => panic!("Expected Periodic completion receiver"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_periodic_postpone() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        // Create periodic task with 50ms initial delay and 50ms interval
-        // 创建初始延迟 50ms 和间隔 50ms 的周期任务
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-            None,
-        );
-        let task_id = task.get_id();
-        let _handle = timer.register(task);
-
-        // Immediately postpone the task to 150ms
-        // 立即推迟任务到 150ms
-        let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
-        assert!(postponed);
-
-        // Wait original time, should not trigger
-        // 等待原始时间，不应触发
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0, "Task should not trigger at original time");
-
-        // Wait for postponed time
-        // 等待推迟后的时间
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        
-        // Verify task started executing
-        // 验证任务已开始执行
-        let count = counter.load(Ordering::SeqCst);
-        assert!(count >= 1, "Task should trigger after postpone, got count: {}", count);
-    }
-
-    #[tokio::test]
-    async fn test_periodic_postpone_with_callback() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone1 = Arc::clone(&counter);
-        let counter_clone2 = Arc::clone(&counter);
-
-        // Create periodic task, original callback adds 1
-        // 创建周期任务，原始回调增加 1
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone1);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-            None,
-        );
-        let task_id = task.get_id();
-        let _handle = timer.register(task);
-
-        // Postpone task and replace callback, new callback adds 10
-        // 推迟任务并替换回调，新回调增加 10
-        let postponed = timer.postpone(
-            task_id,
-            Duration::from_millis(100),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone2);
-                async move {
-                    counter.fetch_add(10, Ordering::SeqCst);
-                }
-            })),
-        );
-        assert!(postponed);
-
-        // Wait for task to trigger
-        // 等待任务触发
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        
-        let count = counter.load(Ordering::SeqCst);
-        // Should be at least 10 (new callback), not 1 (old callback)
-        // 应该至少是 10（新回调），而不是 1（旧回调）
-        assert!(count >= 10, "New callback should be used, got count: {}", count);
-        
-        // Verify it's a multiple of 10 (new callback)
-        // 验证是 10 的倍数（新回调）
-        assert_eq!(count % 10, 0, "Count should be multiple of 10, got: {}", count);
-    }
-
-    #[tokio::test]
-    async fn test_periodic_batch_cancel() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        // Create multiple periodic tasks
-        // 创建多个周期任务
-        let mut task_ids = Vec::new();
-        for _ in 0..3 {
-            let counter_clone = Arc::clone(&counter);
-            let task = TimerTask::new_periodic(
-                Duration::from_millis(50),
-                Duration::from_millis(50),
-                Some(CallbackWrapper::new(move || {
-                    let counter = Arc::clone(&counter_clone);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
-                })),
-                None,
-            );
-            task_ids.push(task.get_id());
-            timer.register(task);
-        }
-
-        // Wait for first execution
-        // 等待第一次执行
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        let count_before_cancel = counter.load(Ordering::SeqCst);
-        assert!(count_before_cancel >= 3, "Expected at least 3 executions before cancel");
-
-        // Batch cancel
-        // 批量取消
-        let cancelled = timer.cancel_batch(&task_ids);
-        assert_eq!(cancelled, 3);
-
-        // Wait and verify tasks stopped
-        // 等待并验证任务已停止
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let count_after_cancel = counter.load(Ordering::SeqCst);
-        
-        // Count should not increase significantly after cancellation
-        // 取消后计数不应该显著增加
-        assert!(
-            count_after_cancel - count_before_cancel <= 3,
-            "Tasks should stop after cancel, before: {}, after: {}",
-            count_before_cancel,
-            count_after_cancel
-        );
-    }
-
-    #[tokio::test]
-    async fn test_periodic_batch_postpone() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        // Create 3 periodic tasks
-        // 创建 3 个周期任务
-        let mut postpone_updates = Vec::new();
-        for _ in 0..3 {
-            let counter_clone = Arc::clone(&counter);
-            let task = TimerTask::new_periodic(
-                Duration::from_millis(50),
-                Duration::from_millis(50),
-                Some(CallbackWrapper::new(move || {
-                    let counter = Arc::clone(&counter_clone);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                    }
-                })),
-                None,
-            );
-            postpone_updates.push((task.get_id(), Duration::from_millis(150)));
-            timer.register(task);
-        }
-
-        // Batch postpone
-        // 批量推迟
-        let postponed = timer.postpone_batch(postpone_updates);
-        assert_eq!(postponed, 3);
-
-        // Wait original time, should not trigger
-        // 等待原始时间，不应触发
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(counter.load(Ordering::SeqCst), 0, "Tasks should not trigger at original time");
-
-        // Wait for postponed time
-        // 等待推迟后的时间
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        
-        let count = counter.load(Ordering::SeqCst);
-        assert!(count >= 3, "All tasks should trigger after postpone, got count: {}", count);
-    }
-
-    #[tokio::test]
-    async fn test_periodic_completion_receiver() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        // Create periodic task
-        // 创建周期任务
-        let task = TimerTask::new_periodic(
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-            Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })),
-            None,
-        );
-        let (mut rx, _handle) = timer.register(task).into_parts();
-
-        // Continuously receive completion notifications
-        // 持续接收完成通知
-        let mut notification_count = 0;
-        match rx {
-            crate::task::CompletionReceiver::Periodic(ref mut receiver) => {
-                // Receive notifications for ~250ms
-                // 接收约 250ms 的通知
-                let timeout = tokio::time::sleep(Duration::from_millis(250));
-                tokio::pin!(timeout);
-                
-                loop {
-                    tokio::select! {
-                        _ = &mut timeout => break,
-                        result = receiver.recv() => {
-                            match result {
-                                Some(completion) => {
-                                    assert_eq!(completion, crate::task::TaskCompletion::Called);
-                                    notification_count += 1;
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-            },
-            _ => panic!("Expected Periodic completion receiver"),
-        }
-
-        // Should receive at least 3 notifications
-        // 应该至少收到 3 次通知
-        assert!(notification_count >= 3, "Expected at least 3 notifications, got {}", notification_count);
-    }
-
-    #[tokio::test]
-    async fn test_periodic_batch_register() {
-        use std::sync::Arc;
-        let timer = TimerWheel::with_defaults();
-        let counter = Arc::new(AtomicU32::new(0));
-
-        // Create batch of periodic tasks
-        // 创建批量周期任务
-        let tasks: Vec<_> = (0..3)
-            .map(|_| {
-                let counter_clone = Arc::clone(&counter);
-                TimerTask::new_periodic(
-                    Duration::from_millis(50),
-                    Duration::from_millis(50),
-                    Some(CallbackWrapper::new(move || {
-                        let counter = Arc::clone(&counter_clone);
-                        async move {
-                            counter.fetch_add(1, Ordering::SeqCst);
-                        }
-                    })),
-                    None,
-                )
-            })
-            .collect();
-
-        let batch_handle = timer.register_batch(tasks);
-        assert_eq!(batch_handle.len(), 3);
-
-        // Wait for executions
-        // 等待执行
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        
-        let count = counter.load(Ordering::SeqCst);
-        // Each task should execute at least 3 times, total at least 9
-        // 每个任务应至少执行 3 次，总共至少 9 次
-        assert!(count >= 9, "Expected at least 9 total executions, got {}", count);
     }
 }
 

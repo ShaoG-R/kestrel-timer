@@ -26,11 +26,12 @@ fn bench_schedule_single(c: &mut Criterion) {
                 // 测量阶段：只测量 create_task + register 的性能
                 let start = std::time::Instant::now();
                 
+                let handle = service.allocate_handle();
                 let task = TimerTask::new_oneshot(
                     Duration::from_millis(100),
                     None
                 );
-                service.register(task).unwrap();
+                service.register(handle, task).unwrap();
                 
                 total_duration += start.elapsed();
             }
@@ -60,6 +61,7 @@ fn bench_schedule_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
+                    let handles = service.allocate_handles(size);
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
@@ -68,7 +70,7 @@ fn bench_schedule_batch(c: &mut Criterion) {
                     // 测量阶段：只测量 create_batch + register_batch 的性能
                     let start = std::time::Instant::now();
                     
-                    let _batch = service.register_batch(tasks).unwrap();
+                    let _batch = service.register_batch(handles, tasks).unwrap();
                     
                     total_duration += start.elapsed();
                 }
@@ -98,12 +100,13 @@ fn bench_cancel_single(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service(ServiceConfig::default());
                 
+                let handle = service.allocate_handle();
+                let task_id = handle.task_id();
                 let task = TimerTask::new_oneshot(
                     Duration::from_millis(100),
                     None
                 );
-                let task_id = task.get_id();
-                service.register(task).unwrap();
+                service.register(handle, task).unwrap();
                 
                 // Measurement stage: only measure cancel_task performance
                 // 测量阶段：只测量 cancel_task 的性能
@@ -139,11 +142,12 @@ fn bench_cancel_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
+                    let handles = service.allocate_handles(size);
+                    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let task_ids: Vec<_> = tasks.iter().map(|t| t.get_id()).collect();
-                    service.register_batch(tasks).unwrap();
+                    service.register_batch(handles, tasks).unwrap();
                     
                     // Measurement stage: only measure cancel_batch performance
                     // 测量阶段：只测量 cancel_batch 的性能
@@ -190,10 +194,11 @@ fn bench_concurrent_schedule(c: &mut Criterion) {
                     for _ in 0..concurrent_ops {
                         let service_clone = Arc::clone(&service);
                         let fut = async move {
+                            let task_handles = service_clone.allocate_handles(10);
                             let tasks: Vec<TimerTask> = (0..10)
                                 .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                                 .collect();
-                            service_clone.register_batch(tasks).unwrap();
+                            service_clone.register_batch(task_handles, tasks).unwrap();
                         };
                         handles.push(fut);
                     }
@@ -230,11 +235,12 @@ fn bench_high_frequency_cancel(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service(ServiceConfig::default());
                 
+                let handles = service.allocate_handles(1000);
+                let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
                 let tasks: Vec<TimerTask> = (0..1000)
                     .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                     .collect();
-                let batch = service.register_batch(tasks).unwrap();
-                let task_ids: Vec<_> = batch.task_ids().to_vec();
+                service.register_batch(handles, tasks).unwrap();
                 
                 // Measurement stage: only measure cancel_batch performance
                 // 测量阶段：只测量 cancel_batch 的性能
@@ -277,11 +283,12 @@ fn bench_mixed_operations(c: &mut Criterion) {
                 // 交替执行调度和取消操作
                 for _ in 0..50 {
                     // 调度10个任务
+                    let handles = service.allocate_handles(10);
+                    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
                     let tasks: Vec<TimerTask> = (0..10)
                         .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let batch = service.register_batch(tasks).unwrap();
-                    let task_ids: Vec<_> = batch.task_ids().to_vec();
+                    service.register_batch(handles, tasks).unwrap();
                     
                     // Use batch cancel for first 5 tasks
                     // 使用批量取消前5个任务
@@ -322,8 +329,9 @@ fn bench_schedule_notify(c: &mut Criterion) {
                 // 测量阶段：只测量仅通知定时器的创建和注册性能
                 let start = std::time::Instant::now();
                 
+                let handle = service.allocate_handle();
                 let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
-                service.register(task).unwrap();
+                service.register(handle, task).unwrap();
                 
                 total_duration += start.elapsed();
             }
@@ -349,14 +357,11 @@ fn bench_schedule_notify(c: &mut Criterion) {
                     // 测量阶段：测量批量通知调度的性能
                     let start = std::time::Instant::now();
                     
-                    let mut tasks = Vec::new();
-                    let mut task_ids = Vec::new();
-                    for _ in 0..size {
-                        let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
-                        task_ids.push(task.get_id());
-                        tasks.push(task);
-                    }
-                    service.register_batch(tasks).unwrap();
+                    let handles = service.allocate_handles(size);
+                    let tasks: Vec<TimerTask> = (0..size)
+                        .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
+                        .collect();
+                    service.register_batch(handles, tasks).unwrap();
                     
                     total_duration += start.elapsed();
                 }
@@ -391,6 +396,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                 // 测量阶段：只测量 create_task + register 的性能
                 let start = std::time::Instant::now();
                 
+                let handle = service.allocate_handle();
                 let counter_clone = Arc::clone(&counter);
                 let callback = CallbackWrapper::new(move || {
                     let counter = Arc::clone(&counter_clone);
@@ -399,7 +405,7 @@ fn bench_schedule_with_callback(c: &mut Criterion) {
                     }
                 });
                 let task = TimerTask::new_oneshot(Duration::from_millis(100), Some(callback));
-                service.register(task).unwrap();
+                service.register(handle, task).unwrap();
                 
                 total_duration += start.elapsed();
             }
@@ -429,12 +435,13 @@ fn bench_postpone_single(c: &mut Criterion) {
                 let timer = TimerWheel::with_defaults();
                 let service = timer.create_service(ServiceConfig::default());
                 
+                let handle = service.allocate_handle();
+                let task_id = handle.task_id();
                 let task = TimerTask::new_oneshot(
                     Duration::from_millis(100),
                     None
                 );
-                let task_id = task.get_id();
-                service.register(task).unwrap();
+                service.register(handle, task).unwrap();
                 
                 // Measurement stage: only measure postpone_task performance
                 // 测量阶段：只测量 postpone_task 的性能
@@ -470,11 +477,12 @@ fn bench_postpone_batch(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
+                    let handles = service.allocate_handles(size);
+                    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let batch = service.register_batch(tasks).unwrap();
-                    let task_ids: Vec<_> = batch.task_ids().to_vec();
+                    service.register_batch(handles, tasks).unwrap();
                     
                     // Preparation stage: prepare postpone parameters
                     // 准备推迟参数
@@ -517,12 +525,13 @@ fn bench_postpone_with_callback(c: &mut Criterion) {
                 let service = timer.create_service(ServiceConfig::default());
                 let counter = Arc::new(AtomicU32::new(0));
                 
+                let handle = service.allocate_handle();
+                let task_id = handle.task_id();
                 let task = TimerTask::new_oneshot(
                     Duration::from_millis(100),
                     None
                 );
-                let task_id = task.get_id();
-                service.register(task).unwrap();
+                service.register(handle, task).unwrap();
                 
                 // Measurement stage: only measure postpone_task_with_callback performance
                 // 测量阶段：只测量 postpone_task_with_callback 的性能
@@ -570,11 +579,12 @@ fn bench_postpone_batch_with_callbacks(c: &mut Criterion) {
                     let service = timer.create_service(ServiceConfig::default());
                     let counter = Arc::new(AtomicU32::new(0));
                     
+                    let handles = service.allocate_handles(size);
+                    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let batch = service.register_batch(tasks).unwrap();
-                    let task_ids: Vec<_> = batch.task_ids().to_vec();
+                    service.register_batch(handles, tasks).unwrap();
                     
                     // Preparation stage: prepare postpone parameters (include new callback)
                     // 准备推迟参数（包含新回调）
@@ -633,11 +643,12 @@ fn bench_mixed_operations_with_postpone(c: &mut Criterion) {
                 for _ in 0..30 {
                     // Schedule 15 tasks
                     // 调度15个任务
+                    let handles = service.allocate_handles(15);
+                    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
                     let tasks: Vec<TimerTask> = (0..15)
                         .map(|_| TimerTask::new_oneshot(Duration::from_millis(100), None))
                         .collect();
-                    let batch = service.register_batch(tasks).unwrap();
-                    let task_ids: Vec<_> = batch.task_ids().to_vec();
+                    service.register_batch(handles, tasks).unwrap();
                     
                     // Postpone first 5 tasks
                     // 推迟前5个任务
@@ -685,6 +696,7 @@ fn bench_periodic_register_comparison(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
+                    let handles = service.allocate_handles(size);
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_periodic(
                             Duration::from_millis(100),
@@ -698,7 +710,7 @@ fn bench_periodic_register_comparison(c: &mut Criterion) {
                     // 测量阶段：只测量 register_batch 的性能
                     let start = std::time::Instant::now();
                     
-                    let _batch = service.register_batch(tasks).unwrap();
+                    let _batch = service.register_batch(handles, tasks).unwrap();
                     
                     total_duration += start.elapsed();
                 }
@@ -761,6 +773,8 @@ fn bench_periodic_cancel_comparison(c: &mut Criterion) {
                     let timer = TimerWheel::with_defaults();
                     let service = timer.create_service(ServiceConfig::default());
                     
+                    let handles = service.allocate_handles(size);
+                    let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| TimerTask::new_periodic(
                             Duration::from_millis(100),
@@ -769,8 +783,7 @@ fn bench_periodic_cancel_comparison(c: &mut Criterion) {
                             None
                         ))
                         .collect();
-                    let batch = service.register_batch(tasks).unwrap();
-                    let task_ids: Vec<_> = batch.task_ids().to_vec();
+                    service.register_batch(handles, tasks).unwrap();
                     
                     // Measurement stage: only measure cancel_batch performance
                     // 测量阶段：只测量 cancel_batch 的性能
@@ -839,13 +852,14 @@ fn bench_periodic_single_register_comparison(c: &mut Criterion) {
                 
                 let start = std::time::Instant::now();
                 
+                let handle = service.allocate_handle();
                 let task = TimerTask::new_periodic(
                     Duration::from_millis(100),
                     Duration::from_secs(1),
                     None,
                     None
                 );
-                service.register(task).unwrap();
+                service.register(handle, task).unwrap();
                 
                 total_duration += start.elapsed();
             }
@@ -899,6 +913,7 @@ fn bench_periodic_with_callback_comparison(c: &mut Criterion) {
                     let service = timer.create_service(ServiceConfig::default());
                     let counter = Arc::new(AtomicU32::new(0));
                     
+                    let handles = service.allocate_handles(size);
                     let tasks: Vec<TimerTask> = (0..size)
                         .map(|_| {
                             let counter = Arc::clone(&counter);
@@ -918,7 +933,7 @@ fn bench_periodic_with_callback_comparison(c: &mut Criterion) {
                     
                     let start = std::time::Instant::now();
                     
-                    let _batch = service.register_batch(tasks).unwrap();
+                    let _batch = service.register_batch(handles, tasks).unwrap();
                     
                     total_duration += start.elapsed();
                 }

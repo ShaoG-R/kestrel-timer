@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use lite_sync::oneshot::{channel, Sender, Receiver};
+use lite_sync::oneshot::lite::{channel, Sender, Receiver, State};
 use lite_sync::spsc::{self, TryRecvError};
 
 /// One-shot task completion state constants
@@ -30,7 +30,7 @@ pub enum TaskCompletion {
     Cancelled,
 }
 
-impl lite_sync::oneshot::State for TaskCompletion {
+impl State for TaskCompletion {
     #[inline]
     fn to_u8(&self) -> u8 {
         match self {

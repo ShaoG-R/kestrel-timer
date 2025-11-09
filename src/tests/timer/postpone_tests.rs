@@ -146,3 +146,4 @@ async fn test_postpone_keeps_completion_receiver_valid() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
+

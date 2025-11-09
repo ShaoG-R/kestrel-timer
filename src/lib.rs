@@ -172,6 +172,7 @@ pub use timer::TimerWheel;
 pub use timer::handle::{
     BatchHandle, BatchHandleWithCompletion, TimerHandle, TimerHandleWithCompletion,
 };
+pub use lite_sync::spsc;
 
 #[cfg(test)]
 mod integration_tests {

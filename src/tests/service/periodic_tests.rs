@@ -228,3 +228,4 @@ async fn test_periodic_task_batch_register() {
     let cancelled = service.cancel_batch(&task_ids);
     assert_eq!(cancelled, 3, "Should cancel all 3 tasks");
 }
+

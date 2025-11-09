@@ -1,5 +1,5 @@
-use crate::timer::TimerWheel;
 use crate::task::{CallbackWrapper, TimerTask};
+use crate::timer::TimerWheel;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -61,5 +61,3 @@ async fn test_cancel_immediate() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(counter.load(Ordering::SeqCst), 0);
 }
-
-

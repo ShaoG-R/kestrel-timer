@@ -1,6 +1,6 @@
-use crate::{TimerWheel, TimerTask, TaskNotification};
 use crate::config::ServiceConfig;
 use crate::task::{CallbackWrapper, TaskId};
+use crate::{TaskNotification, TimerTask, TimerWheel};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -23,7 +23,7 @@ async fn test_postpone() {
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
-            })),
+        })),
     );
     service.register(handle, task).unwrap();
 
@@ -38,7 +38,7 @@ async fn test_postpone() {
             async move {
                 counter.fetch_add(10, Ordering::SeqCst);
             }
-        }))
+        })),
     );
     assert!(postponed, "Task should be postponed successfully");
 
@@ -51,11 +51,11 @@ async fn test_postpone() {
         .expect("Should receive Some value");
 
     assert_eq!(received_task_id, TaskNotification::OneShot(task_id));
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
-    
+
     // Verify new callback is executed (increased 10 instead of 1)
     // 验证新回调已执行（增加 10 而不是 1）
     assert_eq!(counter.load(Ordering::SeqCst), 10);
@@ -91,13 +91,13 @@ async fn test_postpone_batch() {
         let task_id = handle.task_id();
         let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
-        Some(CallbackWrapper::new(move || {
-            let counter = Arc::clone(&counter_clone);
-            async move {
-                counter.fetch_add(1, Ordering::SeqCst);
-            }
-        })),
-    );
+            Some(CallbackWrapper::new(move || {
+                let counter = Arc::clone(&counter_clone);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            })),
+        );
         task_ids.push((task_id, Duration::from_millis(150), None));
         service.register(handle, task).unwrap();
     }
@@ -116,7 +116,7 @@ async fn test_postpone_batch() {
     // 接收所有超时通知
     let mut received_count = 0;
     let rx = service.take_receiver().unwrap();
-    
+
     while received_count < 3 {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Some(_task_id)) => {
@@ -128,7 +128,7 @@ async fn test_postpone_batch() {
     }
 
     assert_eq!(received_count, 3);
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -147,10 +147,7 @@ async fn test_postpone_batch_with_callbacks() {
     for _ in 0..3 {
         let handle = service.allocate_handle();
         let task_id = handle.task_id();
-        let task = TimerTask::new_oneshot(
-            Duration::from_millis(50),
-            None,
-        );
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         task_ids.push(task_id);
         service.register(handle, task).unwrap();
     }
@@ -161,12 +158,16 @@ async fn test_postpone_batch_with_callbacks() {
         .into_iter()
         .map(|id| {
             let counter_clone = Arc::clone(&counter);
-            (id, Duration::from_millis(150), Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-                })))
+            (
+                id,
+                Duration::from_millis(150),
+                Some(CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+            )
         })
         .collect();
 
@@ -182,7 +183,7 @@ async fn test_postpone_batch_with_callbacks() {
     // 接收所有超时通知
     let mut received_count = 0;
     let rx = service.take_receiver().unwrap();
-    
+
     while received_count < 3 {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Some(_task_id)) => {
@@ -194,7 +195,7 @@ async fn test_postpone_batch_with_callbacks() {
     }
 
     assert_eq!(received_count, 3);
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -246,8 +247,12 @@ async fn test_postpone_keeps_timeout_notification_valid() {
         .expect("Should receive timeout notification")
         .expect("Should receive Some value");
 
-    assert_eq!(received_task_id, TaskNotification::OneShot(task_id), "Timeout notification should still work after postpone");
-    
+    assert_eq!(
+        received_task_id,
+        TaskNotification::OneShot(task_id),
+        "Timeout notification should still work after postpone"
+    );
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -292,13 +297,17 @@ async fn test_postpone_batch_without_callbacks() {
     // Wait for original time 50ms, task should not trigger
     // 等待原始时间 50ms，任务应该不触发
     tokio::time::sleep(Duration::from_millis(70)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 0, "Callbacks should not fire yet");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        0,
+        "Callbacks should not fire yet"
+    );
 
     // Receive all timeout notifications
     // 接收所有超时通知
     let mut received_count = 0;
     let rx = service.take_receiver().unwrap();
-    
+
     while received_count < 3 {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Some(_task_id)) => {
@@ -310,11 +319,13 @@ async fn test_postpone_batch_without_callbacks() {
     }
 
     assert_eq!(received_count, 3, "Should receive 3 timeout notifications");
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 3, "All callbacks should execute");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        3,
+        "All callbacks should execute"
+    );
 }
-
-

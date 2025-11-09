@@ -3,23 +3,23 @@ pub mod handle;
 use crate::config::{BatchConfig, ServiceConfig, WheelConfig};
 use crate::task::{CallbackWrapper, TaskHandle, TaskId};
 use crate::wheel::Wheel;
+use handle::{BatchHandle, BatchHandleWithCompletion, TimerHandle, TimerHandleWithCompletion};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use handle::{TimerHandle, TimerHandleWithCompletion, BatchHandle, BatchHandleWithCompletion};
 
 /// Timing Wheel Timer Manager
-/// 
+///
 /// 时间轮定时器管理器
 pub struct TimerWheel {
     /// Timing wheel instance, wrapped in Arc<Mutex> for multi-threaded access
-    /// 
+    ///
     /// 时间轮实例，包装在 Arc<Mutex> 中以支持多线程访问
     wheel: Arc<Mutex<Wheel>>,
-    
+
     /// Background tick loop task handle
-    /// 
+    ///
     /// 后台 tick 循环任务句柄
     tick_handle: Option<JoinHandle<()>>,
 }
@@ -30,7 +30,7 @@ impl TimerWheel {
     /// # Parameters
     /// - `config`: Timing wheel configuration, already validated
     /// - `batch_config`: Batch operation configuration
-    /// 
+    ///
     /// 创建新的定时器管理器
     ///
     /// # 参数
@@ -84,7 +84,7 @@ impl TimerWheel {
     ///
     /// # Returns
     /// Timer manager instance
-    /// 
+    ///
     /// 使用默认配置创建定时器管理器，分层模式
     /// - L0 层 tick 持续时间：10ms，槽数量：512
     /// - L1 层 tick 持续时间：1s，槽数量：64
@@ -125,7 +125,7 @@ impl TimerWheel {
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerService, CallbackWrapper, config::ServiceConfig};
     /// use std::time::Duration;
-    /// 
+    ///
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -159,7 +159,7 @@ impl TimerWheel {
     pub fn create_service(&self, service_config: ServiceConfig) -> crate::service::TimerService {
         crate::service::TimerService::new(self.wheel.clone(), service_config)
     }
-    
+
     /// Create TimerService bound to this timing wheel with custom configuration
     ///
     /// # Parameters
@@ -191,16 +191,18 @@ impl TimerWheel {
     ///     let service = timer.create_service_with_config(config);
     /// }
     /// ```
-    pub fn create_service_with_config(&self, config: ServiceConfig) -> crate::service::TimerService {
+    pub fn create_service_with_config(
+        &self,
+        config: ServiceConfig,
+    ) -> crate::service::TimerService {
         crate::service::TimerService::new(self.wheel.clone(), config)
     }
 
-
     /// Allocate a handle from DeferredMap
-    /// 
+    ///
     /// # Returns
     /// A unique handle for later insertion
-    /// 
+    ///
     /// # 返回值
     /// 用于后续插入的唯一 handle
     pub fn allocate_handle(&self) -> TaskHandle {
@@ -208,44 +210,44 @@ impl TimerWheel {
     }
 
     /// Batch allocate handles from DeferredMap
-    /// 
+    ///
     /// # Parameters
     /// - `count`: Number of handles to allocate
-    /// 
+    ///
     /// # Returns
     /// Vector of unique handles for later batch insertion
-    /// 
+    ///
     /// # 参数
     /// - `count`: 要分配的 handle 数量
-    /// 
+    ///
     /// # 返回值
     /// 用于后续批量插入的唯一 handles 向量
     pub fn allocate_handles(&self, count: usize) -> Vec<TaskHandle> {
         self.wheel.lock().allocate_handles(count)
     }
-    
+
     /// Register timer task to timing wheel (registration phase)
-    /// 
+    ///
     /// # Parameters
     /// - `task`: Task created via `create_task()`
-    /// 
+    ///
     /// # Returns
     /// Return timer handle with completion receiver that can be used to cancel timer and receive completion notifications
-    /// 
+    ///
     /// 注册定时器任务到时间轮 (注册阶段)
-    /// 
+    ///
     /// # 参数
     /// - `task`: 通过 `create_task()` 创建的任务
-    /// 
+    ///
     /// # 返回值
     /// 返回包含完成通知接收器的定时器句柄，可用于取消定时器和接收完成通知
-    /// 
+    ///
     /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
-    /// 
+    ///
     /// use std::time::Duration;
-    /// 
+    ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
@@ -275,44 +277,49 @@ impl TimerWheel {
     /// }
     /// ```
     #[inline]
-    pub fn register(&self, handle: TaskHandle, task: crate::task::TimerTask) -> TimerHandleWithCompletion {
+    pub fn register(
+        &self,
+        handle: TaskHandle,
+        task: crate::task::TimerTask,
+    ) -> TimerHandleWithCompletion {
         let task_id = handle.task_id();
 
-        let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
-        
+        let (task, completion_rx) =
+            crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
+
         // Single lock to complete all operations
         // 单次加锁完成所有操作
         let mut wheel_guard = self.wheel.lock();
         wheel_guard.insert(handle, task);
-        
+
         TimerHandleWithCompletion::new(TimerHandle::new(task_id, self.wheel.clone()), completion_rx)
     }
-    
+
     /// Batch register timer tasks to timing wheel (registration phase)
-    /// 
+    ///
     /// # Parameters
     /// - `handles`: Pre-allocated handles for tasks
     /// - `tasks`: List of timer tasks
-    /// 
+    ///
     /// # Returns
     /// - `Ok(BatchHandleWithCompletion)` if all tasks are successfully registered
     /// - `Err(TimerError::BatchLengthMismatch)` if handles and tasks lengths don't match
-    /// 
+    ///
     /// 批量注册定时器任务到时间轮 (注册阶段)
-    /// 
+    ///
     /// # 参数
     /// - `handles`: 任务的预分配 handles
     /// - `tasks`: 定时器任务列表
-    /// 
+    ///
     /// # 返回值
     /// - `Ok(BatchHandleWithCompletion)` 如果所有任务成功注册
     /// - `Err(TimerError::BatchLengthMismatch)` 如果 handles 和 tasks 长度不匹配
-    /// 
+    ///
     /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask};
     /// use std::time::Duration;
-    /// 
+    ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let timer = TimerWheel::with_defaults();
@@ -333,9 +340,9 @@ impl TimerWheel {
     /// ```
     #[inline]
     pub fn register_batch(
-        &self, 
-        handles: Vec<TaskHandle>, 
-        tasks: Vec<crate::task::TimerTask>
+        &self,
+        handles: Vec<TaskHandle>,
+        tasks: Vec<crate::task::TimerTask>,
     ) -> Result<BatchHandleWithCompletion, crate::error::TimerError> {
         // Validate lengths match
         if handles.len() != tasks.len() {
@@ -344,30 +351,34 @@ impl TimerWheel {
                 tasks_len: tasks.len(),
             });
         }
-        
+
         let task_count = tasks.len();
         let mut completion_rxs = Vec::with_capacity(task_count);
         let mut task_ids = Vec::with_capacity(task_count);
         let mut prepared_handles = Vec::with_capacity(task_count);
         let mut prepared_tasks = Vec::with_capacity(task_count);
-        
+
         // Step 1: Prepare all channels and notifiers
         for (handle, task) in handles.into_iter().zip(tasks.into_iter()) {
             let task_id = handle.task_id();
-            let (task, completion_rx) = crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
+            let (task, completion_rx) =
+                crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
             task_ids.push(task_id);
             completion_rxs.push(completion_rx);
             prepared_handles.push(handle);
             prepared_tasks.push(task);
         }
-        
+
         // Step 2: Single lock, batch insert
         {
             let mut wheel_guard = self.wheel.lock();
             wheel_guard.insert_batch(prepared_handles, prepared_tasks)?;
         }
-        
-        Ok(BatchHandleWithCompletion::new(BatchHandle::new(task_ids, self.wheel.clone()), completion_rxs))
+
+        Ok(BatchHandleWithCompletion::new(
+            BatchHandle::new(task_ids, self.wheel.clone()),
+            completion_rxs,
+        ))
     }
 
     /// Cancel timer
@@ -377,7 +388,7 @@ impl TimerWheel {
     ///
     /// # Returns
     /// Returns true if task exists and is successfully cancelled, otherwise false
-    /// 
+    ///
     /// 取消定时器
     ///
     /// # 参数
@@ -385,11 +396,11 @@ impl TimerWheel {
     ///
     /// # 返回值
     /// 如果任务存在且成功取消则返回 true，否则返回 false
-    /// 
+    ///
     /// # Examples (示例)
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
-    /// 
+    ///
     /// use std::time::Duration;
     ///
     /// #[tokio::main]
@@ -509,7 +520,7 @@ impl TimerWheel {
     /// ```no_run
     /// use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
     /// use std::time::Duration;
-    /// 
+    ///
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -714,19 +725,19 @@ impl TimerWheel {
         let mut wheel = self.wheel.lock();
         wheel.postpone_batch_with_callbacks(updates.to_vec())
     }
-    
+
     /// Core tick loop
-    /// 
+    ///
     /// Background task that advances the timing wheel at regular intervals
-    /// 
+    ///
     /// # Parameters
     /// - `wheel`: Shared timing wheel instance
     /// - `tick_duration`: Duration between ticks
-    /// 
+    ///
     /// 核心 tick 循环
-    /// 
+    ///
     /// 定期推进时间轮的后台任务
-    /// 
+    ///
     /// # 参数
     /// - `wheel`: 共享的时间轮实例
     /// - `tick_duration`: tick 之间的持续时间
@@ -759,18 +770,18 @@ impl TimerWheel {
     }
 
     /// Graceful shutdown of TimerWheel
-    /// 
+    ///
     /// 优雅关闭 TimerWheel
-    /// 
+    ///
     /// # Examples (示例)
     /// ```no_run
     /// # use kestrel_timer::TimerWheel;
     /// # #[tokio::main]
     /// # async fn main() {
     /// let timer = TimerWheel::with_defaults();
-    /// 
+    ///
     /// // Use timer... (使用定时器...)
-    /// 
+    ///
     /// timer.shutdown().await;
     /// # }
     /// ```
@@ -783,7 +794,7 @@ impl TimerWheel {
 }
 
 /// Automatically abort the background tick task when TimerWheel is dropped
-/// 
+///
 /// 当 TimerWheel 被销毁时自动中止后台 tick 任务
 impl Drop for TimerWheel {
     fn drop(&mut self) {
@@ -796,9 +807,9 @@ impl Drop for TimerWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use crate::task::TimerTask;
-    
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     #[tokio::test]
     async fn test_timer_creation() {
         let _timer = TimerWheel::with_defaults();
@@ -829,4 +840,3 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
-

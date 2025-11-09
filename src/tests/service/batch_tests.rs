@@ -1,6 +1,6 @@
-use crate::{TimerWheel, TimerTask};
 use crate::config::ServiceConfig;
 use crate::task::CallbackWrapper;
+use crate::{TimerTask, TimerWheel};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -17,12 +17,15 @@ async fn test_schedule_once_batch_direct() {
     let tasks: Vec<_> = (0..3)
         .map(|_| {
             let counter = Arc::clone(&counter);
-            TimerTask::new_oneshot(Duration::from_millis(50), Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })))
+            TimerTask::new_oneshot(
+                Duration::from_millis(50),
+                Some(CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+            )
         })
         .collect();
 
@@ -32,7 +35,7 @@ async fn test_schedule_once_batch_direct() {
     // 接收所有超时通知
     let mut received_count = 0;
     let rx = service.take_receiver().unwrap();
-    
+
     while received_count < 3 {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Some(_task_id)) => {
@@ -44,10 +47,9 @@ async fn test_schedule_once_batch_direct() {
     }
 
     assert_eq!(received_count, 3);
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(counter.load(Ordering::SeqCst), 3);
 }
-

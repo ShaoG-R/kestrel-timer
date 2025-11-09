@@ -9,18 +9,18 @@
 //! - **Async Support**: Based on tokio async runtime
 //! - **Thread-Safe**: Uses parking_lot for high-performance locking mechanism
 //!
-//! 
+//!
 //! # 高性能异步定时器库
-//! 
+//!
 //! 基于分层时间轮算法的高性能异步定时器库，支持 tokio 运行时
-//! 
+//!
 //! ## 特性
-//! 
+//!
 //! - **高性能**: 使用时间轮算法，插入和删除操作均为 O(1)
 //! - **大规模支持**: 高效管理 10000+ 并发定时器
 //! - **异步支持**: 基于 tokio 异步运行时
 //! - **线程安全**: 使用 parking_lot 提供高性能的锁机制
-//! 
+//!
 //! ## Quick Start (快速开始)
 //!
 //! ```no_run
@@ -81,7 +81,7 @@
 //!
 //! Uses `DeferredMap` (a generational arena) for efficient task management:
 //!
-//! - **Two-Step Registration**: 
+//! - **Two-Step Registration**:
 //!   1. Allocate handle to get task ID (cheap, no value needed)
 //!   2. Insert task using the handle (with completion notifiers)
 //!
@@ -104,9 +104,9 @@
 //!   - Deferred insertion allows getting task ID before inserting task
 //! - Slot count is power of 2, uses bitwise operations to optimize modulo
 //! - Task execution in separate tokio tasks to avoid blocking timing wheel advancement
-//! 
-//! 
-//! 
+//!
+//!
+//!
 //! ## 中文架构说明
 //!
 //! ### 时间轮算法
@@ -152,30 +152,32 @@
 //!   - 延迟插入允许在插入任务前获取任务 ID
 //! - 槽位数量为 2 的幂次方，使用位运算优化取模操作
 //! - 任务执行在独立的 tokio 任务中，避免阻塞时间轮推进
-//! 
+//!
 
 pub mod config;
 pub mod error;
-pub mod task;
-pub mod wheel;
-pub mod timer;
 mod service;
+pub mod task;
+pub mod timer;
+pub mod wheel;
 
 #[cfg(test)]
 mod tests;
 
 // Re-export public API
-pub use task::{CallbackWrapper, TaskId, TimerTask, TaskCompletion};
-pub use timer::handle::{TimerHandle, TimerHandleWithCompletion, BatchHandle, BatchHandleWithCompletion};
+pub use service::{TaskNotification, TimerService};
 pub use task::CompletionReceiver;
+pub use task::{CallbackWrapper, TaskCompletion, TaskId, TimerTask};
 pub use timer::TimerWheel;
-pub use service::{TimerService, TaskNotification};
+pub use timer::handle::{
+    BatchHandle, BatchHandleWithCompletion, TimerHandle, TimerHandleWithCompletion,
+};
 
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
     #[tokio::test]
@@ -188,7 +190,7 @@ mod integration_tests {
         let task = TimerTask::new_oneshot(
             Duration::from_millis(50),
             Some(CallbackWrapper::new(move || {
-                let counter =  Arc::clone(&counter_clone);
+                let counter = Arc::clone(&counter_clone);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
@@ -282,7 +284,7 @@ mod integration_tests {
         match rx {
             task::CompletionReceiver::OneShot(receiver) => {
                 receiver.wait().await;
-            },
+            }
             _ => panic!("Expected OneShot completion receiver"),
         }
 
@@ -294,7 +296,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_notify_only_timer_once() {
         let timer = TimerWheel::with_defaults();
-        
+
         let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let handle = timer.register(alloc_handle, task);
@@ -304,7 +306,7 @@ mod integration_tests {
         match rx {
             task::CompletionReceiver::OneShot(receiver) => {
                 receiver.wait().await;
-            },
+            }
             _ => panic!("Expected OneShot completion receiver"),
         }
     }
@@ -333,7 +335,9 @@ mod integration_tests {
             .collect();
 
         // Step 3: Batch register
-        let batch = timer.register_batch(handles, tasks).expect("register_batch should succeed");
+        let batch = timer
+            .register_batch(handles, tasks)
+            .expect("register_batch should succeed");
         let (receivers, _batch_handle) = batch.into_parts();
 
         // Wait for all completion notifications
@@ -341,7 +345,7 @@ mod integration_tests {
             match rx {
                 task::CompletionReceiver::OneShot(receiver) => {
                     receiver.wait().await;
-                },
+                }
                 _ => panic!("Expected OneShot completion receiver"),
             }
         }
@@ -356,7 +360,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_completion_reason_expired() {
         let timer = TimerWheel::with_defaults();
-        
+
         let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let handle = timer.register(alloc_handle, task);
@@ -364,9 +368,7 @@ mod integration_tests {
         // Wait for completion notification and verify reason is Expired
         let (rx, _handle) = handle.into_parts();
         let result = match rx {
-            task::CompletionReceiver::OneShot(receiver) => {
-                receiver.wait().await
-            },
+            task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
             _ => panic!("Expected OneShot completion receiver"),
         };
         assert_eq!(result, TaskCompletion::Called);
@@ -375,7 +377,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_completion_reason_cancelled() {
         let timer = TimerWheel::with_defaults();
-        
+
         let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
         let handle = timer.register(alloc_handle, task);
@@ -387,9 +389,7 @@ mod integration_tests {
         // Wait for completion notification and verify reason is Cancelled
         let (rx, _handle) = handle.into_parts();
         let result = match rx {
-            task::CompletionReceiver::OneShot(receiver) => {
-                receiver.wait().await
-            },
+            task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
             _ => panic!("Expected OneShot completion receiver"),
         };
         assert_eq!(result, TaskCompletion::Cancelled);
@@ -398,17 +398,19 @@ mod integration_tests {
     #[tokio::test]
     async fn test_batch_completion_reasons() {
         let timer = TimerWheel::with_defaults();
-        
+
         // Step 1: Allocate handles
         let handles = timer.allocate_handles(5);
-        
+
         // Step 2: Create 5 tasks with 10 seconds delay
         let tasks: Vec<_> = (0..5)
             .map(|_| TimerTask::new_oneshot(Duration::from_secs(10), None))
             .collect();
-        
+
         // Step 3: Batch register
-        let batch = timer.register_batch(handles, tasks).expect("register_batch should succeed");
+        let batch = timer
+            .register_batch(handles, tasks)
+            .expect("register_batch should succeed");
         let task_ids: Vec<_> = batch.task_ids().to_vec();
         let (mut receivers, _batch_handle) = batch.into_parts();
 
@@ -418,9 +420,7 @@ mod integration_tests {
         // Verify first 3 tasks received Cancelled notification
         for rx in receivers.drain(0..3) {
             let result = match rx {
-                task::CompletionReceiver::OneShot(receiver) => {
-                    receiver.wait().await
-                },
+                task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
                 _ => panic!("Expected OneShot completion receiver"),
             };
             assert_eq!(result, TaskCompletion::Cancelled);
@@ -430,9 +430,7 @@ mod integration_tests {
         timer.cancel_batch(&task_ids[3..5]);
         for rx in receivers {
             let result = match rx {
-                task::CompletionReceiver::OneShot(receiver) => {
-                    receiver.wait().await
-                },
+                task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
                 _ => panic!("Expected OneShot completion receiver"),
             };
             assert_eq!(result, TaskCompletion::Cancelled);

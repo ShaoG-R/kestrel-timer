@@ -1,6 +1,6 @@
-use crate::{TimerWheel, TimerTask, TaskNotification};
 use crate::config::ServiceConfig;
 use crate::task::CallbackWrapper;
+use crate::{TaskNotification, TimerTask, TimerWheel};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -16,8 +16,8 @@ async fn test_periodic_task_basic() {
     let handle = service.allocate_handle();
     let task_id = handle.task_id();
     let task = TimerTask::new_periodic(
-        Duration::from_millis(30),  // initial delay (初始延迟)
-        Duration::from_millis(50),  // interval (间隔)
+        Duration::from_millis(30), // initial delay (初始延迟)
+        Duration::from_millis(50), // interval (间隔)
         Some(CallbackWrapper::new(move || {
             let counter = Arc::clone(&counter_clone);
             async move {
@@ -35,26 +35,31 @@ async fn test_periodic_task_basic() {
     // Receive first 3 notifications (接收前 3 个通知)
     while notification_count < 3 {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-            Ok(Some(notification)) => {
-                match notification {
-                    TaskNotification::Periodic(id) => {
-                        assert_eq!(id, task_id, "Should receive notification for correct task");
-                        notification_count += 1;
-                    }
-                    _ => panic!("Expected periodic notification"),
+            Ok(Some(notification)) => match notification {
+                TaskNotification::Periodic(id) => {
+                    assert_eq!(id, task_id, "Should receive notification for correct task");
+                    notification_count += 1;
                 }
-            }
+                _ => panic!("Expected periodic notification"),
+            },
             Ok(None) => break,
             Err(_) => panic!("Timeout waiting for periodic notification"),
         }
     }
 
-    assert_eq!(notification_count, 3, "Should receive 3 periodic notifications");
-    
+    assert_eq!(
+        notification_count, 3,
+        "Should receive 3 periodic notifications"
+    );
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 3, "Callback should execute 3 times");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        3,
+        "Callback should execute 3 times"
+    );
 
     // Cancel the periodic task (取消周期性任务)
     let cancelled = service.cancel_task(task_id);
@@ -83,7 +88,7 @@ async fn test_periodic_task_cancel_no_notification() {
         .await
         .expect("Should receive first notification")
         .expect("Should receive Some value");
-    
+
     assert_eq!(notification, TaskNotification::Periodic(task_id));
 
     // Cancel the task (取消任务)
@@ -128,25 +133,26 @@ async fn test_mixed_oneshot_and_periodic_tasks() {
     let start = tokio::time::Instant::now();
     while start.elapsed() < Duration::from_millis(200) {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Some(notification)) => {
-                match notification {
-                    TaskNotification::OneShot(id) => {
-                        assert_eq!(id, oneshot_id, "Should be one-shot task");
-                        oneshot_received = true;
-                    }
-                    TaskNotification::Periodic(id) => {
-                        assert_eq!(id, periodic_id, "Should be periodic task");
-                        periodic_count += 1;
-                    }
+            Ok(Some(notification)) => match notification {
+                TaskNotification::OneShot(id) => {
+                    assert_eq!(id, oneshot_id, "Should be one-shot task");
+                    oneshot_received = true;
                 }
-            }
+                TaskNotification::Periodic(id) => {
+                    assert_eq!(id, periodic_id, "Should be periodic task");
+                    periodic_count += 1;
+                }
+            },
             Ok(None) => break,
             Err(_) => break,
         }
     }
 
     assert!(oneshot_received, "Should receive one-shot notification");
-    assert!(periodic_count >= 2, "Should receive at least 2 periodic notifications");
+    assert!(
+        periodic_count >= 2,
+        "Should receive at least 2 periodic notifications"
+    );
 
     // Cancel periodic task (取消周期性任务)
     service.cancel_task(periodic_id);
@@ -177,7 +183,7 @@ async fn test_periodic_task_batch_register() {
             )
         })
         .collect();
-    
+
     service.register_batch(handles, tasks).unwrap();
 
     // Receive notifications (接收通知)
@@ -200,18 +206,25 @@ async fn test_periodic_task_batch_register() {
     // Each task should receive at least 2 notifications (每个任务应该至少收到 2 个通知)
     for task_id in &task_ids {
         let count = notification_counts.get(task_id).copied().unwrap_or(0);
-        assert!(count >= 2, "Task {:?} should receive at least 2 notifications, got {}", task_id, count);
+        assert!(
+            count >= 2,
+            "Task {:?} should receive at least 2 notifications, got {}",
+            task_id,
+            count
+        );
     }
 
     // Wait for callbacks to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
     let total_callbacks = counter.load(Ordering::SeqCst);
-    assert!(total_callbacks >= 6, "Should have at least 6 callback executions (3 tasks * 2), got {}", total_callbacks);
+    assert!(
+        total_callbacks >= 6,
+        "Should have at least 6 callback executions (3 tasks * 2), got {}",
+        total_callbacks
+    );
 
     // Cancel all periodic tasks (取消所有周期性任务)
     let cancelled = service.cancel_batch(&task_ids);
     assert_eq!(cancelled, 3, "Should cancel all 3 tasks");
 }
-
-

@@ -1,6 +1,6 @@
-use crate::{TimerWheel, TimerTask, TaskNotification};
 use crate::config::ServiceConfig;
 use crate::task::{CallbackWrapper, TaskId};
+use crate::{TaskNotification, TimerTask, TimerWheel};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -14,7 +14,7 @@ async fn test_cancel_task() {
     let handle = service.allocate_handle();
     let task_id = handle.task_id();
     let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
-    
+
     service.register(handle, task).unwrap();
 
     // Cancel task (取消任务)
@@ -64,7 +64,7 @@ async fn test_cancel_task_spawns_background_task() {
             }
         })),
     );
-    
+
     service.register(handle, task).unwrap();
 
     // Use cancel_task (will wait for result, but processed in background coroutine)
@@ -74,11 +74,18 @@ async fn test_cancel_task_spawns_background_task() {
 
     // Wait long enough to ensure callback is not executed (等待足够长时间以确保回调未执行)
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        0,
+        "Callback should not have been executed"
+    );
 
     // Verify task has been removed from active_tasks (验证任务已从 active_tasks 中移除)
     let cancelled_again = service.cancel_task(task_id);
-    assert!(!cancelled_again, "Task should have been removed from active_tasks");
+    assert!(
+        !cancelled_again,
+        "Task should have been removed from active_tasks"
+    );
 }
 
 #[tokio::test]
@@ -111,7 +118,11 @@ async fn test_schedule_and_cancel_direct() {
     // Wait to ensure callback is not executed
     // 等待确保回调未执行
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 0, "Callback should not have been executed");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        0,
+        "Callback should not have been executed"
+    );
 }
 
 #[tokio::test]
@@ -127,12 +138,15 @@ async fn test_cancel_batch_direct() {
     let tasks: Vec<_> = (0..10)
         .map(|_| {
             let counter = Arc::clone(&counter);
-            TimerTask::new_oneshot(Duration::from_secs(10), Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })))
+            TimerTask::new_oneshot(
+                Duration::from_secs(10),
+                Some(CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+            )
         })
         .collect();
 
@@ -147,7 +161,11 @@ async fn test_cancel_batch_direct() {
     // Wait to ensure callback is not executed
     // 等待确保回调未执行
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 0, "No callbacks should have been executed");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        0,
+        "No callbacks should have been executed"
+    );
 }
 
 #[tokio::test]
@@ -163,12 +181,15 @@ async fn test_cancel_batch_partial() {
     let tasks: Vec<_> = (0..10)
         .map(|_| {
             let counter = Arc::clone(&counter);
-            TimerTask::new_oneshot(Duration::from_secs(10), Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })))
+            TimerTask::new_oneshot(
+                Duration::from_secs(10),
+                Some(CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+            )
         })
         .collect();
 
@@ -183,7 +204,11 @@ async fn test_cancel_batch_partial() {
     // Wait to ensure first 5 callbacks are not executed
     // 等待确保前 5 个回调未执行
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 0, "Cancelled tasks should not execute");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        0,
+        "Cancelled tasks should not execute"
+    );
 }
 
 #[tokio::test]
@@ -229,11 +254,16 @@ async fn test_cancelled_task_not_forwarded_to_timeout_rx() {
         .expect("Should receive Some value");
 
     // Should only receive notification for second task (expired), not for first task (cancelled)
-    assert_eq!(received_notification, TaskNotification::OneShot(task2_id), "Should only receive expired task notification");
+    assert_eq!(
+        received_notification,
+        TaskNotification::OneShot(task2_id),
+        "Should only receive expired task notification"
+    );
 
     // Verify no other notifications (especially cancelled tasks should not have notifications)
     let no_more = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
-    assert!(no_more.is_err(), "Should not receive any more notifications");
+    assert!(
+        no_more.is_err(),
+        "Should not receive any more notifications"
+    );
 }
-
-

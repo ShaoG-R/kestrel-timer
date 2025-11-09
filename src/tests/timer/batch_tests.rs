@@ -1,5 +1,5 @@
-use crate::timer::TimerWheel;
 use crate::task::{CallbackWrapper, TimerTask};
+use crate::timer::TimerWheel;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -42,7 +42,7 @@ async fn test_postpone_batch() {
     // Wait for new trigger time (from postponed start, need to wait about 150ms)
     // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -58,10 +58,7 @@ async fn test_postpone_batch_with_callbacks() {
     // 创建 3 个任务
     let mut task_ids = Vec::new();
     for _ in 0..3 {
-        let task = TimerTask::new_oneshot(
-            Duration::from_millis(50),
-            None
-        );
+        let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let allocate_handle = timer.allocate_handle();
         let task_id = allocate_handle.task_id();
         let _handle = timer.register(allocate_handle, task);
@@ -74,12 +71,16 @@ async fn test_postpone_batch_with_callbacks() {
         .into_iter()
         .map(|id| {
             let counter_clone = Arc::clone(&counter);
-            (id, Duration::from_millis(150), Some(CallbackWrapper::new(move || {
-                let counter = Arc::clone(&counter_clone);
-                async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            })))
+            (
+                id,
+                Duration::from_millis(150),
+                Some(CallbackWrapper::new(move || {
+                    let counter = Arc::clone(&counter_clone);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+            )
         })
         .collect();
 
@@ -96,7 +97,7 @@ async fn test_postpone_batch_with_callbacks() {
     // Wait for new trigger time (from postponed start, need to wait about 150ms)
     // 等待新的触发时间（从推迟开始算起，大约需要等待 150ms）
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -134,7 +135,10 @@ async fn test_periodic_batch_cancel() {
     // 等待第一次执行
     tokio::time::sleep(Duration::from_millis(80)).await;
     let count_before_cancel = counter.load(Ordering::SeqCst);
-    assert!(count_before_cancel >= 3, "Expected at least 3 executions before cancel");
+    assert!(
+        count_before_cancel >= 3,
+        "Expected at least 3 executions before cancel"
+    );
 
     // Batch cancel
     // 批量取消
@@ -145,7 +149,7 @@ async fn test_periodic_batch_cancel() {
     // 等待并验证任务已停止
     tokio::time::sleep(Duration::from_millis(150)).await;
     let count_after_cancel = counter.load(Ordering::SeqCst);
-    
+
     // Count should not increase significantly after cancellation
     // 取消后计数不应该显著增加
     assert!(
@@ -191,14 +195,22 @@ async fn test_periodic_batch_postpone() {
     // Wait original time, should not trigger
     // 等待原始时间，不应触发
     tokio::time::sleep(Duration::from_millis(80)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 0, "Tasks should not trigger at original time");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        0,
+        "Tasks should not trigger at original time"
+    );
 
     // Wait for postponed time
     // 等待推迟后的时间
     tokio::time::sleep(Duration::from_millis(150)).await;
-    
+
     let count = counter.load(Ordering::SeqCst);
-    assert!(count >= 3, "All tasks should trigger after postpone, got count: {}", count);
+    assert!(
+        count >= 3,
+        "All tasks should trigger after postpone, got count: {}",
+        count
+    );
 }
 
 #[tokio::test]
@@ -231,16 +243,21 @@ async fn test_periodic_batch_register() {
 
     // Step 3: Batch register
     // 批量注册
-    let batch_handle = timer.register_batch(handles, tasks).expect("register_batch should succeed");
+    let batch_handle = timer
+        .register_batch(handles, tasks)
+        .expect("register_batch should succeed");
     assert_eq!(batch_handle.len(), 3);
 
     // Wait for executions
     // 等待执行
     tokio::time::sleep(Duration::from_millis(250)).await;
-    
+
     let count = counter.load(Ordering::SeqCst);
     // Each task should execute at least 3 times, total at least 9
     // 每个任务应至少执行 3 次，总共至少 9 次
-    assert!(count >= 9, "Expected at least 9 total executions, got {}", count);
+    assert!(
+        count >= 9,
+        "Expected at least 9 total executions, got {}",
+        count
+    );
 }
-

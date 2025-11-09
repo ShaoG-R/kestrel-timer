@@ -1,5 +1,5 @@
+use crate::task::{CallbackWrapper, CompletionReceiver, TimerTask};
 use crate::timer::TimerWheel;
-use crate::task::{CallbackWrapper, TimerTask, CompletionReceiver};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -38,15 +38,12 @@ async fn test_postpone_timer() {
     let (rx, _handle) = handle.into_parts();
     let result = match rx {
         CompletionReceiver::OneShot(receiver) => {
-            tokio::time::timeout(
-                Duration::from_millis(200),
-                receiver.wait()
-            ).await
-        },
+            tokio::time::timeout(Duration::from_millis(200), receiver.wait()).await
+        }
         _ => panic!("Expected OneShot completion receiver"),
     };
     assert!(result.is_ok());
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -93,19 +90,16 @@ async fn test_postpone_with_callback() {
     let (rx, _handle) = handle.into_parts();
     let result = match rx {
         CompletionReceiver::OneShot(receiver) => {
-            tokio::time::timeout(
-                Duration::from_millis(200),
-                receiver.wait()
-            ).await
-        },
+            tokio::time::timeout(Duration::from_millis(200), receiver.wait()).await
+        }
         _ => panic!("Expected OneShot completion receiver"),
     };
     assert!(result.is_ok());
-    
+
     // Wait for callback to execute
     // 等待回调执行
     tokio::time::sleep(Duration::from_millis(20)).await;
-    
+
     // Verify new callback is executed (increased 10 instead of 1)
     // 验证新回调已执行（增加 10 而不是 1）
     assert_eq!(counter.load(Ordering::SeqCst), 10);
@@ -139,18 +133,16 @@ async fn test_postpone_keeps_completion_receiver_valid() {
     let (rx, _handle) = handle.into_parts();
     let result = match rx {
         CompletionReceiver::OneShot(receiver) => {
-            tokio::time::timeout(
-                Duration::from_millis(200),
-                receiver.wait()
-            ).await
-        },
+            tokio::time::timeout(Duration::from_millis(200), receiver.wait()).await
+        }
         _ => panic!("Expected OneShot completion receiver"),
     };
-    assert!(result.is_ok(), "Completion receiver should still work after postpone");
-    
+    assert!(
+        result.is_ok(),
+        "Completion receiver should still work after postpone"
+    );
+
     // Wait for callback to execute
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
-
-

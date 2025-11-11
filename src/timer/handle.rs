@@ -226,7 +226,7 @@ impl TimerHandleWithCompletion {
     /// use kestrel_timer::CompletionReceiver;
     /// match rx {
     ///     CompletionReceiver::OneShot(receiver) => {
-    ///         receiver.wait().await;
+    ///         receiver.recv().await.unwrap();
     ///     },
     ///     _ => {}
     /// }
@@ -647,7 +647,7 @@ impl BatchHandleWithCompletion {
     ///     tokio::spawn(async move {
     ///         match rx {
     ///             CompletionReceiver::OneShot(receiver) => {
-    ///                 receiver.wait().await;
+    ///                 receiver.recv().await.unwrap();
     ///                 println!("A timer completed!");
     ///             },
     ///             _ => {}

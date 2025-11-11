@@ -270,7 +270,7 @@ impl TimerWheel {
     ///     let (rx, _handle) = handle.into_parts();
     ///     match rx {
     ///         CompletionReceiver::OneShot(receiver) => {
-    ///             receiver.wait().await;
+    ///             receiver.recv().await.unwrap();
     ///         },
     ///         _ => {}
     ///     }

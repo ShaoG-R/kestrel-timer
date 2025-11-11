@@ -938,7 +938,12 @@ impl ServiceActor {
                                 match rx {
                                     crate::task::CompletionReceiver::OneShot(receiver) => {
                                         let future: BoxFuture<'static, (TaskId, TaskCompletion)> = Box::pin(async move {
-                                            (task_id, receiver.wait().await)
+                                            // unwrap() is safe here: the sender is held by the task and will send
+                                            // before being dropped. If the sender is dropped without sending,
+                                            // it's a logic error in the task implementation.
+                                            // unwrap() 在这里是安全的：发送器由任务持有，在被丢弃前会发送。
+                                            // 如果发送器在未发送的情况下被丢弃，这是任务实现中的逻辑错误。
+                                            (task_id, receiver.recv().await.unwrap())
                                         });
                                         oneshot_futures.push(future);
                                     },
@@ -958,7 +963,12 @@ impl ServiceActor {
                             match completion_rx {
                                 crate::task::CompletionReceiver::OneShot(receiver) => {
                                     let future: BoxFuture<'static, (TaskId, TaskCompletion)> = Box::pin(async move {
-                                        (task_id, receiver.wait().await)
+                                        // unwrap() is safe here: the sender is held by the task and will send
+                                        // before being dropped. If the sender is dropped without sending,
+                                        // it's a logic error in the task implementation.
+                                        // unwrap() 在这里是安全的：发送器由任务持有，在被丢弃前会发送。
+                                        // 如果发送器在未发送的情况下被丢弃，这是任务实现中的逻辑错误。
+                                        (task_id, receiver.recv().await.unwrap())
                                     });
                                     oneshot_futures.push(future);
                                 },

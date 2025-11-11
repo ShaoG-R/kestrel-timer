@@ -51,7 +51,7 @@
 //!     let (rx, _handle) = timer_handle.into_parts();
 //!     match rx {
 //!         CompletionReceiver::OneShot(receiver) => {
-//!             receiver.wait().await;
+//!             receiver.recv().await.unwrap();
 //!         },
 //!         _ => {}
 //!     }
@@ -284,7 +284,7 @@ mod integration_tests {
         let (rx, _handle) = handle.into_parts();
         match rx {
             task::CompletionReceiver::OneShot(receiver) => {
-                receiver.wait().await;
+                receiver.recv().await.unwrap();
             }
             _ => panic!("Expected OneShot completion receiver"),
         }
@@ -306,7 +306,7 @@ mod integration_tests {
         let (rx, _handle) = handle.into_parts();
         match rx {
             task::CompletionReceiver::OneShot(receiver) => {
-                receiver.wait().await;
+                receiver.recv().await.unwrap();
             }
             _ => panic!("Expected OneShot completion receiver"),
         }
@@ -345,7 +345,7 @@ mod integration_tests {
         for rx in receivers {
             match rx {
                 task::CompletionReceiver::OneShot(receiver) => {
-                    receiver.wait().await;
+                    receiver.recv().await.unwrap();
                 }
                 _ => panic!("Expected OneShot completion receiver"),
             }
@@ -369,7 +369,7 @@ mod integration_tests {
         // Wait for completion notification and verify reason is Expired
         let (rx, _handle) = handle.into_parts();
         let result = match rx {
-            task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
+            task::CompletionReceiver::OneShot(receiver) => receiver.recv().await.unwrap(),
             _ => panic!("Expected OneShot completion receiver"),
         };
         assert_eq!(result, TaskCompletion::Called);
@@ -390,7 +390,7 @@ mod integration_tests {
         // Wait for completion notification and verify reason is Cancelled
         let (rx, _handle) = handle.into_parts();
         let result = match rx {
-            task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
+            task::CompletionReceiver::OneShot(receiver) => receiver.recv().await.unwrap(),
             _ => panic!("Expected OneShot completion receiver"),
         };
         assert_eq!(result, TaskCompletion::Cancelled);
@@ -421,7 +421,7 @@ mod integration_tests {
         // Verify first 3 tasks received Cancelled notification
         for rx in receivers.drain(0..3) {
             let result = match rx {
-                task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
+                task::CompletionReceiver::OneShot(receiver) => receiver.recv().await.unwrap(),
                 _ => panic!("Expected OneShot completion receiver"),
             };
             assert_eq!(result, TaskCompletion::Cancelled);
@@ -431,7 +431,7 @@ mod integration_tests {
         timer.cancel_batch(&task_ids[3..5]);
         for rx in receivers {
             let result = match rx {
-                task::CompletionReceiver::OneShot(receiver) => receiver.wait().await,
+                task::CompletionReceiver::OneShot(receiver) => receiver.recv().await.unwrap(),
                 _ => panic!("Expected OneShot completion receiver"),
             };
             assert_eq!(result, TaskCompletion::Cancelled);

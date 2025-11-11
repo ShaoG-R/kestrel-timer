@@ -12,6 +12,7 @@ use lite_sync::spsc::{self, TryRecvError};
 const ONESHOT_PENDING: u8 = 0;
 const ONESHOT_CALLED: u8 = 1;
 const ONESHOT_CANCELLED: u8 = 2;
+const ONESHOT_CLOSED: u8 = 3;
 
 /// Task Completion Reason for Periodic Tasks
 ///
@@ -51,6 +52,11 @@ impl State for TaskCompletion {
     #[inline]
     fn pending_value() -> u8 {
         ONESHOT_PENDING
+    }
+
+    #[inline]
+    fn closed_value() -> u8 {
+        ONESHOT_CLOSED
     }
 }
 

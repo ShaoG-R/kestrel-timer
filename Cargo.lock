@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-timer"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "criterion",
  "deferred-map",
@@ -337,9 +337,9 @@ checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
 name = "lite-sync"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96312bdc603ca354f9453b61ac102e166a0ceadfae1b05fb27e359c4f551059b"
+checksum = "309a8841bcd912729bf10ac545ab5b6690c38b3a7df52523027fda5b63b7e2f4"
 dependencies = [
  "crossbeam-queue",
  "smallring",
@@ -610,9 +610,9 @@ checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
 
 [[package]]
 name = "smallring"
-version = "0.1.1"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40d1041d947bb4c4e29fc20269dc212123ea85e8c4d3526a338ddf54045ba985"
+checksum = "6da8cd6a48f774eddeeaee5d4fc3d4c23d0c78e3d55cd7020f5b7aadb748f0db"
 
 [[package]]
 name = "smallvec"

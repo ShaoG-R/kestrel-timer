@@ -346,12 +346,9 @@ impl Wheel {
         slots[slot_index].push(task);
 
         // Insert task location into DeferredMap using handle
-        // In non-debug mode, it is guaranteed that this method will not panic.
         // 使用 handle 将任务位置插入 DeferredMap
-        // 由于 deferred_map::DeferredMap 是我实现的，底层保证非debug模式下不会panic
         self.task_index
-            .insert(handle.into_handle(), location)
-            .expect("Handle should be valid for insertion");
+            .insert(handle.into_handle(), location);
     }
 
     /// Batch insert timer tasks
@@ -427,12 +424,9 @@ impl Wheel {
             slots[slot_index].push(task);
 
             // Insert task location into DeferredMap using handle
-            // In non-debug mode, it is guaranteed that this method will not panic.
             // 使用 handle 将任务位置插入 DeferredMap
-            // 由于 deferred_map::DeferredMap 是我实现的，底层保证非debug模式下不会panic
             self.task_index
-                .insert(handle.into_handle(), location)
-                .expect("Handle should be valid for insertion");
+                .insert(handle.into_handle(), location);
         }
 
         Ok(())

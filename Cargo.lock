@@ -181,9 +181,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "deferred-map"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b3d9a9a0d48537ad779dc65d223a55a7ef7ca1f7624ff53af06231472e5860c"
+checksum = "8532bf8d4816ed7372c622825a28ecd0b4eade400d12a2fc8dd261e08efacd67"
 
 [[package]]
 name = "either"
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-timer"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "criterion",
  "deferred-map",

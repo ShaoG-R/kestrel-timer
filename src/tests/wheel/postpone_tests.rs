@@ -2,6 +2,8 @@
 //
 // 时间轮延期功能测试
 
+use deferred_map::{DefaultKey, Key};
+
 use crate::config::{BatchConfig, WheelConfig};
 use crate::task::{CallbackWrapper, TaskId, TimerTask, TimerTaskWithCompletionNotifier};
 use crate::wheel::Wheel;
@@ -90,7 +92,20 @@ fn test_postpone_nonexistent_task() {
     let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
 
     // Try to postpone nonexistent task (尝试延期不存在任务)
-    let fake_task_id = TaskId::from_key(u64::MAX);
+    // We need a key with a valid map_id to avoid "Wrong map instance" panic in debug mode
+    let handle = wheel.allocate_handle();
+    let valid_key = handle.task_id().key();
+    #[cfg(debug_assertions)]
+    let map_id = valid_key.map_id();
+
+    let fake_key = DefaultKey::from_parts(
+        u32::MAX,
+        deferred_map::Generation::MIN,
+        #[cfg(debug_assertions)]
+        map_id,
+    );
+    let fake_task_id = TaskId::from_key(fake_key);
+
     let postponed = wheel.postpone(fake_task_id, Duration::from_millis(100), None);
     assert!(!postponed);
 }
@@ -159,7 +174,17 @@ fn test_postpone_batch_partial() {
     }
 
     // Only postpone the first 5 tasks to 150ms, including a nonexistent task (只延期前 5 个任务到 150毫秒，包括一个不存在任务)
-    let fake_task_id = TaskId::from_key(u64::MAX);
+    #[cfg(debug_assertions)]
+    let map_id = task_ids[0].key().map_id();
+
+    let fake_key = DefaultKey::from_parts(
+        u32::MAX,
+        deferred_map::Generation::MIN,
+        #[cfg(debug_assertions)]
+        map_id,
+    );
+    let fake_task_id = TaskId::from_key(fake_key);
+
     let mut updates: Vec<_> = task_ids[0..5]
         .iter()
         .map(|&id| (id, Duration::from_millis(150)))

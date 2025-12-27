@@ -3,6 +3,7 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use deferred_map::{DefaultKey, Key};
 use lite_sync::oneshot::lite::{Receiver, Sender, State, channel};
 use lite_sync::spsc::{self, TryRecvError};
 
@@ -62,21 +63,21 @@ impl State for TaskCompletion {
 
 /// Unique identifier for timer tasks
 ///
-/// Now wraps a DeferredMap key (u64) which includes generation information
+/// Now wraps a DeferredMap key (DefaultKey) which includes generation information
 /// for safe reference and prevention of use-after-free.
 ///
 /// 定时器任务唯一标识符
 ///
-/// 现在封装 DeferredMap key (u64)，包含代数信息以实现安全引用和防止释放后使用
+/// 现在封装 DeferredMap key (DefaultKey)，包含代数信息以实现安全引用和防止释放后使用
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TaskId(u64);
+pub struct TaskId(DefaultKey);
 
 impl TaskId {
     /// Create TaskId from DeferredMap key (internal use)
     ///
     /// 从 DeferredMap key 创建 TaskId (内部使用)
     #[inline]
-    pub(crate) fn from_key(key: u64) -> Self {
+    pub(crate) fn from_key(key: DefaultKey) -> Self {
         TaskId(key)
     }
 
@@ -84,7 +85,7 @@ impl TaskId {
     ///
     /// 获取 DeferredMap key
     #[inline]
-    pub(crate) fn key(&self) -> u64 {
+    pub(crate) fn key(&self) -> DefaultKey {
         self.0
     }
 
@@ -92,8 +93,8 @@ impl TaskId {
     ///
     /// 获取任务 ID 的数值
     #[inline]
-    pub fn as_u64(&self) -> u64 {
-        self.0
+    pub fn raw(&self) -> u64 {
+        self.0.raw()
     }
 }
 

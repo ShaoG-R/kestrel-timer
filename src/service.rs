@@ -12,6 +12,7 @@ use lite_sync::{
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Task notification type for distinguishing between one-shot and periodic tasks
@@ -143,7 +144,7 @@ pub struct TimerService {
     /// Command sender
     ///
     /// 命令发送器
-    command_tx: spsc::Sender<ServiceCommand, 32>,
+    command_tx: mpsc::Sender<ServiceCommand>,
     /// Timeout receiver (supports both one-shot and periodic task notifications)
     ///
     /// 超时接收器（支持一次性和周期性任务通知）
@@ -239,7 +240,7 @@ impl TimerService {
     /// 通常不直接调用，而是通过 `TimerWheel::create_service()` 创建
     ///
     pub(crate) fn new(wheel: Arc<Mutex<Wheel>>, config: ServiceConfig) -> Self {
-        let (command_tx, command_rx) = spsc::channel(config.command_channel_capacity);
+        let (command_tx, command_rx) = mpsc::channel(config.command_channel_capacity.get());
         let (timeout_tx, timeout_rx) = spsc::channel(config.timeout_channel_capacity);
 
         let (shutdown_tx, shutdown_rx) = channel::<()>();
@@ -807,7 +808,7 @@ impl TimerService {
     /// ```
     pub async fn shutdown(mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            shutdown_tx.notify(());
+            let _ = shutdown_tx.send(());
         }
         if let Some(handle) = self.actor_handle.take() {
             let _ = handle.await;
@@ -830,7 +831,7 @@ struct ServiceActor {
     /// Command receiver
     ///
     /// 命令接收器
-    command_rx: spsc::Receiver<ServiceCommand, 32>,
+    command_rx: mpsc::Receiver<ServiceCommand>,
     /// Timeout sender (supports both one-shot and periodic task notifications)
     ///
     /// 超时发送器（支持一次性和周期性任务通知）
@@ -846,7 +847,7 @@ impl ServiceActor {
     ///
     /// 创建新的 ServiceActor
     fn new(
-        command_rx: spsc::Receiver<ServiceCommand, 32>,
+        command_rx: mpsc::Receiver<ServiceCommand>,
         timeout_tx: spsc::Sender<TaskNotification, 32>,
         shutdown_rx: Receiver<()>,
     ) -> Self {
@@ -860,7 +861,7 @@ impl ServiceActor {
     /// Run Actor event loop
     ///
     /// 运行 Actor 事件循环
-    async fn run(self) {
+    async fn run(mut self) {
         // Use separate FuturesUnordered for one-shot and periodic tasks
         // 为一次性任务和周期性任务使用独立的 FuturesUnordered
 
@@ -1157,5 +1158,27 @@ mod tests {
         // 第二次调用应该返回 None
         let rx2 = service.take_receiver();
         assert!(rx2.is_none(), "Second take_receiver should return None");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_registration_single_service() {
+        let timer = TimerWheel::with_defaults();
+        let service = Arc::new(timer.create_service(ServiceConfig::default()));
+
+        let mut tasks = Vec::new();
+        for _ in 0..10 {
+            let service_clone = Arc::clone(&service);
+            tasks.push(tokio::spawn(async move {
+                for _ in 0..20 {
+                    let handle = service_clone.allocate_handle();
+                    let task = TimerTask::new_oneshot(Duration::from_millis(500), None);
+                    service_clone.register(handle, task).expect("register should succeed");
+                }
+            }));
+        }
+
+        for task in tasks {
+            task.await.unwrap();
+        }
     }
 }

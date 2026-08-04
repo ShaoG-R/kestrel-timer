@@ -18,12 +18,12 @@ exclude = [
 ]
 
 [dependencies]
-tokio = { version = "1.48.0", default-features = false, features = ["test-util", "macros", "rt-multi-thread", "parking_lot"] }
+tokio = { version = "1.48.0", default-features = false, features = ["test-util", "macros", "rt-multi-thread", "parking_lot", "sync"] }
 parking_lot = "0.12.5"
 futures = "0.3"
 
 # 以下依赖由本库作者维护
-lite-sync = "0.1.7"
+lite-sync = "0.3"
 deferred-map = "0.3.1"
 
 [dev-dependencies]

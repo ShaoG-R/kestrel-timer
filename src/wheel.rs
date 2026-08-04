@@ -482,7 +482,7 @@ impl Wheel {
             } => {
                 // Use Notify + AtomicU8 for zero-allocation notification
                 // 使用 Notify + AtomicU8 实现零分配通知
-                completion_notifier.notify(crate::task::TaskCompletion::Cancelled);
+                let _ = completion_notifier.send(crate::task::TaskCompletion::Cancelled);
             }
             TaskTypeWithCompletionNotifier::Periodic {
                 completion_notifier,
@@ -596,7 +596,8 @@ impl Wheel {
                         } => {
                             // Use Notify + AtomicU8 for zero-allocation notification
                             // 使用 Notify + AtomicU8 实现零分配通知
-                            completion_notifier.notify(crate::task::TaskCompletion::Cancelled);
+                            let _ =
+                                completion_notifier.send(crate::task::TaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic {
                             completion_notifier,
@@ -648,7 +649,8 @@ impl Wheel {
                         } => {
                             // Use Notify + AtomicU8 for zero-allocation notification
                             // 使用 Notify + AtomicU8 实现零分配通知
-                            completion_notifier.notify(crate::task::TaskCompletion::Cancelled);
+                            let _ =
+                                completion_notifier.send(crate::task::TaskCompletion::Cancelled);
                         }
                         TaskTypeWithCompletionNotifier::Periodic {
                             completion_notifier,
@@ -808,17 +810,20 @@ impl Wheel {
 
                 let TimerTaskForWheel { task_id, task, .. } = task_with_notifier;
 
-                match &task.task_type {
+                match task.task_type {
                     TaskTypeWithCompletionNotifier::Periodic {
+                        interval,
                         completion_notifier,
-                        ..
                     } => {
                         let _ = completion_notifier.0.try_send(TaskCompletion::Called);
 
                         periodic_tasks_to_reinsert.push((
                             task_id,
                             TimerTaskWithCompletionNotifier {
-                                task_type: task.task_type,
+                                task_type: TaskTypeWithCompletionNotifier::Periodic {
+                                    interval,
+                                    completion_notifier,
+                                },
                                 delay: task.delay,
                                 callback: task.callback.clone(),
                             },
@@ -827,7 +832,7 @@ impl Wheel {
                     TaskTypeWithCompletionNotifier::OneShot {
                         completion_notifier,
                     } => {
-                        completion_notifier.notify(crate::task::TaskCompletion::Called);
+                        let _ = completion_notifier.send(crate::task::TaskCompletion::Called);
                     }
                 }
 

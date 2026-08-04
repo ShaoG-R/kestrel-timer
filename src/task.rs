@@ -14,6 +14,7 @@ const ONESHOT_PENDING: u8 = 0;
 const ONESHOT_CALLED: u8 = 1;
 const ONESHOT_CANCELLED: u8 = 2;
 const ONESHOT_CLOSED: u8 = 3;
+const ONESHOT_RECEIVER_CLOSED: u8 = 4;
 
 /// Task Completion Reason for Periodic Tasks
 ///
@@ -58,6 +59,11 @@ impl State for TaskCompletion {
     #[inline]
     fn closed_value() -> u8 {
         ONESHOT_CLOSED
+    }
+
+    #[inline]
+    fn receiver_closed_value() -> u8 {
+        ONESHOT_RECEIVER_CLOSED
     }
 }
 

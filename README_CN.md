@@ -64,7 +64,7 @@
 
 ```toml
 [dependencies]
-kestrel-timer = "0.3"
+kestrel-timer = "0.4"
 tokio = { version = "1.48", features = ["full"] }
 ```
 

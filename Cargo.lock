@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-timer"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "deferred-map",

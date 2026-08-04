@@ -252,8 +252,8 @@ mod integration_tests {
         }
 
         // Cancel first 3 timers
-        for i in 0..3 {
-            let cancel_result = handles[i].cancel();
+        for handle in handles.iter().take(3) {
+            let cancel_result = handle.cancel();
             assert!(cancel_result);
         }
 

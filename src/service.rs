@@ -1172,7 +1172,9 @@ mod tests {
                 for _ in 0..20 {
                     let handle = service_clone.allocate_handle();
                     let task = TimerTask::new_oneshot(Duration::from_millis(500), None);
-                    service_clone.register(handle, task).expect("register should succeed");
+                    service_clone
+                        .register(handle, task)
+                        .expect("register should succeed");
                 }
             }));
         }

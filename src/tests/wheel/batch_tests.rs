@@ -185,8 +185,8 @@ fn test_batch_allocation_firing_order() {
     let mut tasks = Vec::new();
     let mut id_to_index = std::collections::HashMap::new();
 
-    for i in 0..100 {
-        let handle_id = handles[i].task_id();
+    for (i, handle) in handles.iter().take(100).enumerate() {
+        let handle_id = handle.task_id();
         id_to_index.insert(handle_id, i);
 
         let delay = Duration::from_secs(i as u64);

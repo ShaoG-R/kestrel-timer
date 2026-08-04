@@ -84,11 +84,8 @@ async fn test_timer_precision() {
     // 使用完成接收器等待定时器完成，而不是固定睡眠时间
     // 这样可以避免竞争条件
     let (rx, _handle) = handle.into_parts();
-    match rx {
-        CompletionReceiver::OneShot(receiver) => {
-            receiver.recv().await.unwrap();
-        }
-        _ => {}
+    if let CompletionReceiver::OneShot(receiver) = rx {
+        receiver.recv().await.unwrap();
     }
 
     // Additional wait to ensure callback execution is complete
@@ -165,7 +162,7 @@ async fn test_timer_with_different_delays() {
     let timer = TimerWheel::with_defaults();
     let results = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
-    let delays = vec![10, 20, 30, 50, 100, 150, 200];
+    let delays = [10, 20, 30, 50, 100, 150, 200];
     let mut handles = Vec::new();
 
     for (idx, &delay_ms) in delays.iter().enumerate() {
@@ -192,11 +189,8 @@ async fn test_timer_with_different_delays() {
     // 这样可以确保所有定时器都实际触发
     for handle in handles {
         let (rx, _handle) = handle.into_parts();
-        match rx {
-            CompletionReceiver::OneShot(receiver) => {
-                receiver.recv().await.unwrap();
-            }
-            _ => {}
+        if let CompletionReceiver::OneShot(receiver) = rx {
+            receiver.recv().await.unwrap();
         }
     }
 
@@ -810,7 +804,7 @@ async fn test_single_wheel_multiple_services() {
                     })),
                 );
                 let handle = service.allocate_handle();
-                if let Ok(_) = service.register(handle, task) {
+                if service.register(handle, task).is_ok() {
                     // Successfully registered (成功注册)
                 }
             }
@@ -826,10 +820,10 @@ async fn test_single_wheel_multiple_services() {
     // 等待所有服务完成注册
     let mut all_receivers = Vec::new();
     for handle in handles {
-        if let Ok(receiver) = handle.await {
-            if let Some(rx) = receiver {
-                all_receivers.push(rx);
-            }
+        if let Ok(receiver) = handle.await
+            && let Some(rx) = receiver
+        {
+            all_receivers.push(rx);
         }
     }
 
@@ -896,7 +890,7 @@ async fn test_multiple_services_concurrent_operations() {
                 let task_id = handle.task_id();
                 task_ids.push(task_id);
 
-                if let Ok(_) = service.register(handle, task) {
+                if service.register(handle, task).is_ok() {
                     // Successfully registered
                     // 成功注册
                 }
@@ -965,7 +959,7 @@ async fn test_multiple_services_concurrent_operations() {
     // 服务 4: 100 个任务，大约 34 个取消 = 大约 66 个触发
     // 预期：100 + 66 + 100 + 100 + 66 = 432 (大约)
     assert!(
-        count >= 400 && count <= 450,
+        (400..=450).contains(&count),
         "Considering cancellation operations, the number of triggered timers should be in a reasonable range, actual: {}",
         count
     );

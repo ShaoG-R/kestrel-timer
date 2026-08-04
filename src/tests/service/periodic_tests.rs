@@ -96,9 +96,8 @@ async fn test_periodic_task_cancel_no_notification() {
     assert!(cancelled, "Should be able to cancel task");
 
     // Should not receive cancelled notification (不应该接收到取消通知)
-    match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-        Ok(Some(_)) => panic!("Should not receive cancelled notification"),
-        Ok(None) | Err(_) => {} // Expected: timeout or channel closed
+    if let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+        panic!("Should not receive cancelled notification");
     }
 }
 

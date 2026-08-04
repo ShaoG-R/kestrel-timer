@@ -41,11 +41,12 @@ fn test_hierarchical_l1_to_l0_demotion() {
         wheel.advance();
 
         // Check if task is demoted to L0 (检查任务是否降级到 L0)
-        if let Some(location) = wheel.task_index.get(task_id.key()) {
-            if location.level == 0 && !demoted {
-                demoted = true;
-                println!("Task demoted to L0 at L0 tick {}", i); // 任务降级到 L0 在 L0 tick {i}
-            }
+        if let Some(location) = wheel.task_index.get(task_id.key())
+            && location.level == 0
+            && !demoted
+        {
+            demoted = true;
+            println!("Task demoted to L0 at L0 tick {}", i); // 任务降级到 L0 在 L0 tick {i}
         }
     }
 

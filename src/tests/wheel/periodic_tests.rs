@@ -156,7 +156,7 @@ fn test_periodic_task_multiple_triggers() {
 
         // Collect all notifications
         // 收集所有通知
-        while let Ok(_) = rx.try_recv() {
+        while rx.try_recv().is_ok() {
             trigger_count += 1;
         }
     }

@@ -100,15 +100,9 @@ fn test_postpone_nonexistent_task() {
     let handle = wheel.allocate_handle();
     let valid_task_id = handle.task_id();
     let wheel_id = valid_task_id.wheel_id();
-    #[cfg(debug_assertions)]
     let map_id = valid_task_id.key().map_id();
 
-    let fake_key = DefaultKey::from_parts(
-        u32::MAX,
-        deferred_map::Generation::MIN,
-        #[cfg(debug_assertions)]
-        map_id,
-    );
+    let fake_key = DefaultKey::from_parts(u32::MAX, deferred_map::Generation::MIN, map_id);
     let fake_task_id = TaskId::from_key(wheel_id, fake_key);
 
     let postponed = wheel
@@ -181,15 +175,9 @@ fn test_postpone_batch_partial() {
     }
 
     // Only postpone the first 5 tasks to 150ms, including a nonexistent task (只延期前 5 个任务到 150毫秒，包括一个不存在任务)
-    #[cfg(debug_assertions)]
     let map_id = task_ids[0].key().map_id();
 
-    let fake_key = DefaultKey::from_parts(
-        u32::MAX,
-        deferred_map::Generation::MIN,
-        #[cfg(debug_assertions)]
-        map_id,
-    );
+    let fake_key = DefaultKey::from_parts(u32::MAX, deferred_map::Generation::MIN, map_id);
     let wheel_id = task_ids[0].wheel_id();
     let fake_task_id = TaskId::from_key(wheel_id, fake_key);
 

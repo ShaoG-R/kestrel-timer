@@ -101,13 +101,13 @@ jobs:
         run: cargo test --release --all-features --locked --lib --test integration_test
 
   msrv:
-    name: MSRV (Rust 1.87)
+    name: MSRV (Rust 1.88)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@main
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.87.0
+        uses: dtolnay/rust-toolchain@1.88.0
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
       - name: Check MSRV targets

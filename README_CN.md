@@ -2,7 +2,7 @@
 
 > 基于分层时间轮（Hierarchical Timing Wheel）算法的高性能异步定时器库
 
-[![Rust](https://img.shields.io/badge/rust-1.87%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tokio](https://img.shields.io/badge/tokio-1.48-blue.svg)](https://tokio.rs/)
 [![Crates.io](https://img.shields.io/crates/v/kestrel-timer.svg)](https://crates.io/crates/kestrel-timer)
 [![Documentation](https://docs.rs/kestrel-timer/badge.svg)](https://docs.rs/kestrel-timer)

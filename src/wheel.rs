@@ -282,7 +282,7 @@ impl Wheel {
     /// 用于后续插入的唯一 handle
     pub fn allocate_handle(&mut self) -> TaskHandle {
         self.reclaim_dropped_handles();
-        TaskHandle::new(self.owner.clone(), self.task_index.allocate_handle())
+        TaskHandle::new(self.owner.clone(), self.task_index.alloc())
     }
 
     /// Batch allocate handles from DeferredMap
@@ -304,10 +304,7 @@ impl Wheel {
         self.reclaim_dropped_handles();
         let mut handles = Vec::with_capacity(count);
         for _ in 0..count {
-            handles.push(TaskHandle::new(
-                self.owner.clone(),
-                self.task_index.allocate_handle(),
-            ));
+            handles.push(TaskHandle::new(self.owner.clone(), self.task_index.alloc()));
         }
         handles
     }

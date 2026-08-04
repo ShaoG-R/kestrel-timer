@@ -235,7 +235,8 @@ impl TimerWheel {
     ///
     /// # Returns
     /// Return `Ok` with a timer handle and completion receiver. Returns
-    /// `Err(TimerError::WrongWheel)` when the handle belongs to another wheel.
+    /// `Err(TimerError::WrongWheel)` when the handle belongs to another wheel,
+    /// or `Err(TimerError::Shutdown)` when the wheel is closed.
     ///
     /// 注册定时器任务到时间轮 (注册阶段)
     ///
@@ -244,7 +245,8 @@ impl TimerWheel {
     ///
     /// # 返回值
     /// 成功时返回包含完成通知接收器的定时器句柄；handle 属于其他时间轮时
-    /// 返回 `Err(TimerError::WrongWheel)`。
+    /// 返回 `Err(TimerError::WrongWheel)`；时间轮关闭时返回
+    /// `Err(TimerError::Shutdown)`。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -312,6 +314,7 @@ impl TimerWheel {
     /// - `Ok(BatchHandleWithCompletion)` if all tasks are successfully registered
     /// - `Err(TimerError::BatchLengthMismatch)` if handles and tasks lengths don't match
     /// - `Err(TimerError::WrongWheel)` if any handle belongs to another wheel
+    /// - `Err(TimerError::Shutdown)` if the wheel is closed
     ///
     /// 批量注册定时器任务到时间轮 (注册阶段)
     ///
@@ -323,6 +326,7 @@ impl TimerWheel {
     /// - `Ok(BatchHandleWithCompletion)` 如果所有任务成功注册
     /// - `Err(TimerError::BatchLengthMismatch)` 如果 handles 和 tasks 长度不匹配
     /// - `Err(TimerError::WrongWheel)` 如果任一 handle 属于其他时间轮
+    /// - `Err(TimerError::Shutdown)` 如果时间轮已关闭
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -792,7 +796,14 @@ impl TimerWheel {
 
     /// Graceful shutdown of TimerWheel
     ///
+    /// Cancels every task still owned by this wheel, sends `Cancelled` to
+    /// retained completion receivers, and stops the background driver. The
+    /// wheel rejects all later registrations.
+    ///
     /// 优雅关闭 TimerWheel
+    ///
+    /// 取消此时间轮中仍存在的所有任务，向仍保留的完成接收器发送
+    /// `Cancelled`，并停止后台驱动。关闭后不再接受新的注册。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -807,6 +818,8 @@ impl TimerWheel {
     /// # }
     /// ```
     pub async fn shutdown(mut self) {
+        self.wheel.lock().shutdown();
+
         if let Some(handle) = self.tick_handle.take() {
             handle.abort();
             let _ = handle.await;
@@ -814,11 +827,13 @@ impl TimerWheel {
     }
 }
 
-/// Automatically abort the background tick task when TimerWheel is dropped
+/// Close the wheel and abort the background tick task when TimerWheel is dropped
 ///
-/// 当 TimerWheel 被销毁时自动中止后台 tick 任务
+/// 当 TimerWheel 被销毁时关闭时间轮并中止后台 tick 任务
 impl Drop for TimerWheel {
     fn drop(&mut self) {
+        self.wheel.lock().shutdown();
+
         if let Some(handle) = self.tick_handle.take() {
             handle.abort();
         }
@@ -888,5 +903,50 @@ mod tests {
             request_time.elapsed() >= delay,
             "timer fired before its requested delay"
         );
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_notifies_retained_oneshot_receiver() {
+        let timer = TimerWheel::with_defaults();
+        let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
+        let (receiver, _handle) = timer
+            .register(timer.allocate_handle(), task)
+            .unwrap()
+            .into_parts();
+
+        timer.shutdown().await;
+
+        match receiver {
+            CompletionReceiver::OneShot(receiver) => {
+                assert_eq!(receiver.recv().await.unwrap(), TaskCompletion::Cancelled);
+            }
+            CompletionReceiver::Periodic(_) => panic!("expected one-shot receiver"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_notifies_retained_periodic_receiver() {
+        let (receiver, _handle) = {
+            let timer = TimerWheel::with_defaults();
+            timer
+                .register(
+                    timer.allocate_handle(),
+                    TimerTask::new_periodic(
+                        Duration::from_secs(10),
+                        Duration::from_secs(10),
+                        None,
+                        Some(std::num::NonZeroUsize::new(1).unwrap()),
+                    ),
+                )
+                .unwrap()
+                .into_parts()
+        };
+
+        match receiver {
+            CompletionReceiver::Periodic(mut receiver) => {
+                assert_eq!(receiver.recv().await, Some(TaskCompletion::Cancelled));
+            }
+            CompletionReceiver::OneShot(_) => panic!("expected periodic receiver"),
+        }
     }
 }

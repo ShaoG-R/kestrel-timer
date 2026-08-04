@@ -23,6 +23,11 @@ pub enum TimerError {
     /// 注册失败，内部通道已满或已关闭
     RegisterFailed,
 
+    /// The timing wheel has been shut down and cannot accept new tasks
+    ///
+    /// 时间轮已关闭，不能再接受新任务
+    Shutdown,
+
     /// A task handle or task ID belongs to another timing wheel
     ///
     /// 任务句柄或任务 ID 属于另一个时间轮
@@ -59,6 +64,9 @@ impl fmt::Display for TimerError {
                     f,
                     "Registration failed: internal channel is full or closed (注册失败: 内部通道已满或已关闭)"
                 )
+            }
+            TimerError::Shutdown => {
+                write!(f, "Timer wheel has been shut down (时间轮已关闭)")
             }
             TimerError::WrongWheel => {
                 write!(

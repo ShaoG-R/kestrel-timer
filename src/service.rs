@@ -13,9 +13,11 @@ use lite_sync::{
     spsc,
 };
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 /// Task notification type for distinguishing between one-shot and periodic tasks
@@ -164,6 +166,10 @@ pub struct TimerService {
     ///
     /// Actor 关闭信号发送器
     shutdown_tx: Option<Sender<()>>,
+    /// Tasks registered through this service and still eligible for cleanup
+    ///
+    /// 通过此服务注册、仍需由服务清理的任务
+    registered_task_ids: Arc<Mutex<HashSet<TaskId>>>,
 }
 
 impl TimerService {
@@ -247,7 +253,15 @@ impl TimerService {
         let (timeout_tx, timeout_rx) = spsc::channel(config.timeout_channel_capacity);
 
         let (shutdown_tx, shutdown_rx) = channel::<()>();
-        let actor = ServiceActor::new(command_rx, timeout_tx, shutdown_rx);
+        let registered_task_ids = Arc::new(Mutex::new(HashSet::new()));
+        let wheel_closed = wheel.lock().owner().subscribe_closed();
+        let actor = ServiceActor::new(
+            command_rx,
+            timeout_tx,
+            shutdown_rx,
+            wheel_closed,
+            Arc::clone(&registered_task_ids),
+        );
         let actor_handle = tokio::spawn(async move {
             actor.run().await;
         });
@@ -258,6 +272,7 @@ impl TimerService {
             actor_handle: Some(actor_handle),
             wheel,
             shutdown_tx: Some(shutdown_tx),
+            registered_task_ids,
         }
     }
 
@@ -631,6 +646,7 @@ impl TimerService {
     /// - `Ok(TimerHandle)`: Register successfully
     /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
     /// - `Err(TimerError::WrongWheel)`: Handle belongs to another wheel
+    /// - `Err(TimerError::Shutdown)`: The timing wheel is closed
     ///
     /// 注册定时器任务到服务 (注册阶段)
     /// # 参数
@@ -641,6 +657,7 @@ impl TimerService {
     /// - `Ok(TimerHandle)`: 注册成功
     /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
     /// - `Err(TimerError::WrongWheel)`: handle 属于其他时间轮
+    /// - `Err(TimerError::Shutdown)`: 时间轮已关闭
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -682,6 +699,8 @@ impl TimerService {
             wheel_guard.insert_at(handle, task)?;
         }
 
+        self.registered_task_ids.lock().insert(task_id);
+
         // The wheel insertion is provisional until the actor accepts this command.
         // 时间轮插入在 actor 接受命令前只是暂存状态。
         match self.command_tx.try_send(ServiceCommand::AddTimerHandle {
@@ -708,6 +727,7 @@ impl TimerService {
     /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
     /// - `Err(TimerError::BatchLengthMismatch)`: Handles and tasks lengths don't match
     /// - `Err(TimerError::WrongWheel)`: Any handle belongs to another wheel
+    /// - `Err(TimerError::Shutdown)`: The timing wheel is closed
     ///
     /// 批量注册定时器任务到服务 (注册阶段)
     /// # 参数
@@ -719,6 +739,7 @@ impl TimerService {
     /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
     /// - `Err(TimerError::BatchLengthMismatch)`: handles 和 tasks 长度不匹配
     /// - `Err(TimerError::WrongWheel)`: 任一 handle 属于其他时间轮
+    /// - `Err(TimerError::Shutdown)`: 时间轮已关闭
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -789,6 +810,10 @@ impl TimerService {
             wheel_guard.insert_batch_at(prepared_handles, prepared_tasks)?;
         }
 
+        self.registered_task_ids
+            .lock()
+            .extend(task_ids.iter().copied());
+
         // The batch insertion is provisional until the actor accepts this command.
         // 批量插入在 actor 接受命令前只是暂存状态。
         match self.command_tx.try_send(ServiceCommand::AddBatchHandle {
@@ -809,13 +834,35 @@ impl TimerService {
             return;
         }
 
+        self.registered_task_ids
+            .lock()
+            .retain(|task_id| !task_ids.contains(task_id));
+
         let mut wheel = self.wheel.lock();
         let _ = wheel.cancel_batch(task_ids);
     }
 
+    fn cancel_registered_tasks(&self) {
+        let task_ids: Vec<_> = self.registered_task_ids.lock().drain().collect();
+
+        if task_ids.is_empty() {
+            return;
+        }
+
+        let mut wheel = self.wheel.lock();
+        let _ = wheel.cancel_batch(&task_ids);
+    }
+
     /// Graceful shutdown of TimerService
     ///
+    /// Cancels tasks registered through this service, closes its aggregated
+    /// notification receiver, and waits for the actor to stop. Tasks owned by
+    /// other services sharing the same wheel are left untouched.
+    ///
     /// 优雅关闭 TimerService
+    ///
+    /// 取消通过此服务注册的任务，关闭聚合通知接收器，并等待 actor 停止。
+    /// 共享同一时间轮的其他服务任务不会受到影响。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -831,6 +878,8 @@ impl TimerService {
     /// # }
     /// ```
     pub async fn shutdown(mut self) {
+        self.cancel_registered_tasks();
+
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
         }
@@ -864,6 +913,14 @@ struct ServiceActor {
     ///
     /// Actor 关闭信号接收器
     shutdown_rx: Receiver<()>,
+    /// Timing wheel lifecycle signal
+    ///
+    /// 时间轮生命周期信号
+    wheel_closed: watch::Receiver<bool>,
+    /// Shared registry used to remove completed service-owned tasks
+    ///
+    /// 用于移除已完成服务任务的共享注册表
+    registered_task_ids: Arc<Mutex<HashSet<TaskId>>>,
 }
 
 impl ServiceActor {
@@ -874,11 +931,15 @@ impl ServiceActor {
         command_rx: mpsc::Receiver<ServiceCommand>,
         timeout_tx: spsc::Sender<TaskNotification, 32>,
         shutdown_rx: Receiver<()>,
+        wheel_closed: watch::Receiver<bool>,
+        registered_task_ids: Arc<Mutex<HashSet<TaskId>>>,
     ) -> Self {
         Self {
             command_rx,
             timeout_tx,
             shutdown_rx,
+            wheel_closed,
+            registered_task_ids,
         }
     }
 
@@ -886,10 +947,12 @@ impl ServiceActor {
         timeout_tx: &spsc::Sender<TaskNotification, 32>,
         notification: TaskNotification,
         shutdown_rx: &mut Receiver<()>,
+        wheel_closed: &mut watch::Receiver<bool>,
     ) -> bool {
         tokio::select! {
             biased;
             _ = &mut *shutdown_rx => false,
+            _ = wheel_closed.changed() => false,
             result = timeout_tx.send(notification) => result.is_ok(),
         }
     }
@@ -922,6 +985,12 @@ impl ServiceActor {
         // 将 shutdown_rx 从 self 中移出，以便在 select! 中使用 &mut
         let timeout_tx = self.timeout_tx;
         let mut shutdown_rx = self.shutdown_rx;
+        let mut wheel_closed = self.wheel_closed;
+        let registered_task_ids = self.registered_task_ids;
+
+        if *wheel_closed.borrow() {
+            return;
+        }
 
         loop {
             tokio::select! {
@@ -933,9 +1002,17 @@ impl ServiceActor {
                     break;
                 }
 
+                // Stop when the owner timing wheel is shut down
+                // 所属时间轮关闭时停止
+                _ = wheel_closed.changed() => {
+                    break;
+                }
+
                 // Listen to one-shot task timeout events
                 // 监听一次性任务超时事件
                 Some((task_id, completion)) = oneshot_futures.next() => {
+                    registered_task_ids.lock().remove(&task_id);
+
                     // Check completion reason, only forward Called events, do not forward Cancelled events
                     // 检查完成原因，只转发 Called 事件，不转发 Cancelled 事件
                     if completion == TaskCompletion::Called
@@ -943,6 +1020,7 @@ impl ServiceActor {
                             &timeout_tx,
                             TaskNotification::OneShot(task_id),
                             &mut shutdown_rx,
+                            &mut wheel_closed,
                         )
                         .await
                     {
@@ -962,6 +1040,7 @@ impl ServiceActor {
                             &timeout_tx,
                             TaskNotification::Periodic(task_id),
                             &mut shutdown_rx,
+                            &mut wheel_closed,
                         )
                         .await
                         {
@@ -975,6 +1054,8 @@ impl ServiceActor {
                             (task_id, reason, receiver)
                         });
                         periodic_futures.push(future);
+                    } else {
+                        registered_task_ids.lock().remove(&task_id);
                     }
                     // If Cancelled or None, do not re-add the future (task is done)
                     // 如果 Cancelled 或 None，不重新添加 future（任务结束）
@@ -1106,6 +1187,64 @@ mod tests {
         service.register(handle2, task2).unwrap();
 
         // Immediately shutdown (without waiting for timers to trigger) (立即关闭（不等待定时器触发）)
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_cancels_owned_tasks_and_closes_receiver() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+        let callback_count = Arc::new(AtomicU32::new(0));
+        let callback_count_clone = Arc::clone(&callback_count);
+        let handle = service
+            .register(
+                service.allocate_handle(),
+                TimerTask::new_oneshot(
+                    Duration::from_secs(10),
+                    Some(CallbackWrapper::new(move || {
+                        let callback_count = Arc::clone(&callback_count_clone);
+                        async move {
+                            callback_count.fetch_add(1, Ordering::SeqCst);
+                        }
+                    })),
+                ),
+            )
+            .unwrap();
+        let receiver = service.take_receiver().unwrap();
+
+        service.shutdown().await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("service receiver should close")
+                .is_none()
+        );
+        assert!(!handle.cancel().unwrap());
+        assert_eq!(callback_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_timer_shutdown_closes_bound_service() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+        let receiver = service.take_receiver().unwrap();
+
+        timer.shutdown().await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("service receiver should close when its wheel closes")
+                .is_none()
+        );
+        assert!(matches!(
+            service.register(
+                service.allocate_handle(),
+                TimerTask::new_oneshot(Duration::from_secs(1), None),
+            ),
+            Err(TimerError::Shutdown)
+        ));
         service.shutdown().await;
     }
 

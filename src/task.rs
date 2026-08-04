@@ -1,14 +1,16 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::time::Instant;
 
 use deferred_map::{DefaultKey, Key};
 use lite_sync::oneshot::lite::{Receiver, Sender, State, channel};
-use lite_sync::spsc::{self, TryRecvError};
 use parking_lot::Mutex;
+use tokio::sync::watch;
+use tokio::sync::{Notify, mpsc};
 
 /// One-shot task completion state constants
 ///
@@ -111,14 +113,19 @@ impl WheelId {
 pub(crate) struct WheelOwner {
     id: WheelId,
     released_handles: Mutex<Vec<deferred_map::Handle>>,
+    closed: AtomicBool,
+    close_signal: watch::Sender<bool>,
 }
 
 impl WheelOwner {
     #[inline]
     pub(crate) fn new() -> Arc<Self> {
+        let (close_signal, _) = watch::channel(false);
         Arc::new(Self {
             id: WheelId::new(),
             released_handles: Mutex::new(Vec::new()),
+            closed: AtomicBool::new(false),
+            close_signal,
         })
     }
 
@@ -135,6 +142,22 @@ impl WheelOwner {
     #[inline]
     pub(crate) fn take_released_handles(&self) -> Vec<deferred_map::Handle> {
         std::mem::take(&mut *self.released_handles.lock())
+    }
+
+    #[inline]
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        let _ = self.close_signal.send(true);
+    }
+
+    #[inline]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub(crate) fn subscribe_closed(&self) -> watch::Receiver<bool> {
+        self.close_signal.subscribe()
     }
 }
 
@@ -367,10 +390,10 @@ pub enum TaskType {
         ///
         /// 周期任务的间隔时间
         interval: std::time::Duration,
-        /// Buffer size for periodic task completion notifier
+        /// Maximum number of pending Called notifications; None is unbounded
         ///
-        /// 周期性任务完成通知器的缓冲区大小
-        buffer_size: NonZeroUsize,
+        /// 待消费 Called 通知的最大数量；None 表示无界
+        buffer_size: Option<NonZeroUsize>,
     },
 }
 
@@ -417,27 +440,151 @@ impl TaskTypeWithCompletionNotifier {
     }
 }
 
-/// Completion notifier for periodic tasks
+pub(crate) struct PeriodicCompletionQueue {
+    state: Mutex<PeriodicCompletionQueueState>,
+    notify: Notify,
+}
+
+struct PeriodicCompletionQueueState {
+    events: VecDeque<TaskCompletion>,
+    capacity: Option<NonZeroUsize>,
+    terminal_pending: bool,
+    closed: bool,
+    receiver_alive: bool,
+    dropped_called: usize,
+}
+
+enum PeriodicReceiveState {
+    Empty,
+    Closed,
+}
+
+impl PeriodicCompletionQueue {
+    fn new(capacity: Option<NonZeroUsize>) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(PeriodicCompletionQueueState {
+                events: VecDeque::new(),
+                capacity,
+                terminal_pending: false,
+                closed: false,
+                receiver_alive: true,
+                dropped_called: 0,
+            }),
+            notify: Notify::new(),
+        })
+    }
+
+    fn send(&self, completion: TaskCompletion) -> bool {
+        let mut state = self.state.lock();
+        if state.closed || !state.receiver_alive {
+            return false;
+        }
+
+        if completion == TaskCompletion::Cancelled {
+            state.terminal_pending = true;
+            drop(state);
+            self.notify.notify_waiters();
+            return true;
+        }
+
+        if state.terminal_pending {
+            return false;
+        }
+
+        if let Some(capacity) = state.capacity
+            && state.events.len() >= capacity.get()
+        {
+            state.dropped_called = state.dropped_called.saturating_add(1);
+            return false;
+        }
+
+        state.events.push_back(completion);
+        drop(state);
+        self.notify.notify_one();
+        true
+    }
+
+    fn try_receive(&self) -> Result<TaskCompletion, PeriodicReceiveState> {
+        let mut state = self.state.lock();
+        if let Some(completion) = state.events.pop_front() {
+            return Ok(completion);
+        }
+
+        if state.terminal_pending {
+            state.terminal_pending = false;
+            return Ok(TaskCompletion::Cancelled);
+        }
+
+        if state.closed {
+            Err(PeriodicReceiveState::Closed)
+        } else {
+            Err(PeriodicReceiveState::Empty)
+        }
+    }
+
+    fn close_sender(&self) {
+        let mut state = self.state.lock();
+        state.closed = true;
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn close_receiver(&self) {
+        let mut state = self.state.lock();
+        state.receiver_alive = false;
+        state.closed = true;
+        state.events.clear();
+        state.terminal_pending = false;
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn dropped_called(&self) -> usize {
+        self.state.lock().dropped_called
+    }
+}
+
+/// Completion notifier for periodic tasks.
 ///
-/// Uses custom SPSC channel for high-performance, low-latency notification
+/// `Some(buffer_size)` keeps at most that many pending `Called` notifications.
+/// `None` keeps every notification. A final `Cancelled` notification is kept
+/// separately and is never evicted by the bounded queue.
 ///
-/// 周期任务完成通知器
+/// 周期任务完成通知器。
 ///
-/// 使用自定义 SPSC 通道实现高性能、低延迟的通知
-pub struct PeriodicCompletionNotifier(pub spsc::Sender<TaskCompletion, 32>);
+/// `Some(buffer_size)` 最多保留指定数量的待消费 `Called` 通知；`None` 保留
+/// 所有通知。最终的 `Cancelled` 通知独立保存，不会被有界队列挤出。
+pub struct PeriodicCompletionNotifier(pub(crate) Arc<PeriodicCompletionQueue>);
+
+impl PeriodicCompletionNotifier {
+    #[inline]
+    pub(crate) fn send(&self, completion: TaskCompletion) -> bool {
+        self.0.send(completion)
+    }
+}
+
+impl Drop for PeriodicCompletionNotifier {
+    fn drop(&mut self) {
+        self.0.close_sender();
+    }
+}
 
 /// Completion receiver for periodic tasks
 ///
 /// 周期任务完成通知接收器
-pub struct PeriodicCompletionReceiver(pub spsc::Receiver<TaskCompletion, 32>);
+pub struct PeriodicCompletionReceiver(pub(crate) Arc<PeriodicCompletionQueue>);
 
 impl PeriodicCompletionReceiver {
     /// Try to receive a completion notification
     ///
     /// 尝试接收完成通知
     #[inline]
-    pub fn try_recv(&mut self) -> Result<TaskCompletion, TryRecvError> {
-        self.0.try_recv()
+    pub fn try_recv(&mut self) -> Result<TaskCompletion, mpsc::error::TryRecvError> {
+        match self.0.try_receive() {
+            Ok(completion) => Ok(completion),
+            Err(PeriodicReceiveState::Empty) => Err(mpsc::error::TryRecvError::Empty),
+            Err(PeriodicReceiveState::Closed) => Err(mpsc::error::TryRecvError::Disconnected),
+        }
     }
 
     /// Receive a completion notification
@@ -445,7 +592,28 @@ impl PeriodicCompletionReceiver {
     /// 接收完成通知
     #[inline]
     pub async fn recv(&mut self) -> Option<TaskCompletion> {
-        self.0.recv().await
+        loop {
+            let notified = self.0.notify.notified();
+            match self.0.try_receive() {
+                Ok(completion) => return Some(completion),
+                Err(PeriodicReceiveState::Closed) => return None,
+                Err(PeriodicReceiveState::Empty) => notified.await,
+            }
+        }
+    }
+
+    /// Get the number of `Called` notifications discarded by a bounded queue.
+    ///
+    /// 获取有界队列丢弃的 `Called` 通知数量。
+    #[inline]
+    pub fn dropped_notifications(&self) -> usize {
+        self.0.dropped_called()
+    }
+}
+
+impl Drop for PeriodicCompletionReceiver {
+    fn drop(&mut self) {
+        self.0.close_receiver();
     }
 }
 
@@ -530,6 +698,8 @@ impl TimerTask {
     /// - `initial_delay`: Initial delay before first execution
     /// - `interval`: Interval between subsequent executions
     /// - `callback`: Callback function, optional
+    /// - `buffer_size`: Maximum pending `Called` notifications; `None` is
+    ///   unbounded
     ///
     /// # Note
     /// TaskId will be assigned when the task is inserted into the timing wheel.
@@ -540,9 +710,12 @@ impl TimerTask {
     /// - `initial_delay`: 首次执行前的初始延迟
     /// - `interval`: 后续执行之间的间隔
     /// - `callback`: 回调函数，可选
+    /// - `buffer_size`: 待消费 `Called` 通知的最大数量；`None` 表示无界
     ///
     /// # 注意
-    /// TaskId 将在任务插入到时间轮时分配
+    /// TaskId 将在任务插入到时间轮时分配。
+    /// 有界模式超出的 `Called` 通知可通过 `PeriodicCompletionReceiver::dropped_notifications`
+    /// 查询。
     #[inline]
     pub fn new_periodic(
         initial_delay: std::time::Duration,
@@ -553,7 +726,7 @@ impl TimerTask {
         Self {
             task_type: TaskType::Periodic {
                 interval,
-                buffer_size: buffer_size.unwrap_or(NonZeroUsize::new(32).unwrap()),
+                buffer_size,
             },
             delay: initial_delay,
             callback,
@@ -651,12 +824,10 @@ impl TimerTaskWithCompletionNotifier {
                 interval,
                 buffer_size,
             } => {
-                // Use custom SPSC channel for high-performance periodic notification
-                // 使用自定义 SPSC 通道实现高性能周期通知
-                let (tx, rx) = spsc::channel(buffer_size);
+                let queue = PeriodicCompletionQueue::new(buffer_size);
 
-                let notifier = PeriodicCompletionNotifier(tx);
-                let receiver = PeriodicCompletionReceiver(rx);
+                let notifier = PeriodicCompletionNotifier(Arc::clone(&queue));
+                let receiver = PeriodicCompletionReceiver(queue);
 
                 (
                     Self {

@@ -373,6 +373,10 @@ impl Wheel {
         task: TimerTaskWithCompletionNotifier,
         now: Option<Instant>,
     ) -> Result<(), TimerError> {
+        if self.owner.is_closed() {
+            return Err(TimerError::Shutdown);
+        }
+
         if !handle.belongs_to(self.owner.id()) {
             return Err(TimerError::WrongWheel);
         }
@@ -480,6 +484,10 @@ impl Wheel {
             });
         }
 
+        if self.owner.is_closed() {
+            return Err(TimerError::Shutdown);
+        }
+
         if handles
             .iter()
             .any(|handle| !handle.belongs_to(self.owner.id()))
@@ -563,9 +571,9 @@ impl Wheel {
                 completion_notifier,
                 ..
             } => {
-                // Use flume for high-performance periodic notification
-                // 使用 flume 实现高性能周期通知
-                let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
+                // Apply the configured bounded or unbounded completion policy.
+                // 按配置应用有界或无界完成通知策略。
+                let _ = completion_notifier.send(TaskCompletion::Cancelled);
             }
         }
 
@@ -687,9 +695,9 @@ impl Wheel {
                             completion_notifier,
                             ..
                         } => {
-                            // Use flume for high-performance periodic notification
-                            // 使用 flume 实现高性能周期通知
-                            let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
+                            // Apply the configured bounded or unbounded completion policy.
+                            // 按配置应用有界或无界完成通知策略。
+                            let _ = completion_notifier.send(TaskCompletion::Cancelled);
                         }
                     }
 
@@ -740,9 +748,9 @@ impl Wheel {
                             completion_notifier,
                             ..
                         } => {
-                            // Use flume for high-performance periodic notification
-                            // 使用 flume 实现高性能周期通知
-                            let _ = completion_notifier.0.try_send(TaskCompletion::Cancelled);
+                            // Apply the configured bounded or unbounded completion policy.
+                            // 按配置应用有界或无界完成通知策略。
+                            let _ = completion_notifier.send(TaskCompletion::Cancelled);
                         }
                     }
 
@@ -865,6 +873,10 @@ impl Wheel {
     /// - L1 层每 (L1_tick / L0_tick) 次推进一次
     /// - L1 层过期任务批量降级到 L0
     pub fn advance(&mut self) -> Vec<WheelAdvanceResult> {
+        if self.owner.is_closed() {
+            return Vec::new();
+        }
+
         self.clock_at += self.l0.tick_duration;
         self.advance_one_tick()
     }
@@ -874,6 +886,10 @@ impl Wheel {
     /// 在真实单调时钟时间点推进时间轮。
     #[inline]
     pub(crate) fn advance_at(&mut self, now: Instant) -> Vec<WheelAdvanceResult> {
+        if self.owner.is_closed() {
+            return Vec::new();
+        }
+
         let elapsed = now
             .checked_duration_since(self.clock_origin)
             .unwrap_or(Duration::ZERO);
@@ -892,6 +908,11 @@ impl Wheel {
             expired_tasks.extend(self.advance_one_tick());
         }
         expired_tasks
+    }
+
+    #[inline]
+    pub(crate) fn owner(&self) -> std::sync::Arc<WheelOwner> {
+        self.owner.clone()
     }
 
     fn advance_one_tick(&mut self) -> Vec<WheelAdvanceResult> {
@@ -963,7 +984,7 @@ impl Wheel {
                         interval,
                         completion_notifier,
                     } => {
-                        let _ = completion_notifier.0.try_send(TaskCompletion::Called);
+                        let _ = completion_notifier.send(TaskCompletion::Called);
 
                         periodic_tasks_to_reinsert.push((
                             task_id,
@@ -1080,6 +1101,39 @@ impl Wheel {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.task_index.is_empty()
+    }
+
+    /// Cancel every task and permanently close the wheel.
+    ///
+    /// All retained completion receivers receive `Cancelled` before their
+    /// corresponding notifier is dropped. The operation is idempotent.
+    ///
+    /// 取消所有任务并永久关闭时间轮。
+    ///
+    /// 所有仍保留的完成接收器都会先收到 `Cancelled`，随后对应通知器才会
+    /// 被释放。该操作可重复调用。
+    pub(crate) fn shutdown(&mut self) {
+        if self.owner.is_closed() {
+            return;
+        }
+
+        self.owner.close();
+
+        let mut task_ids = Vec::with_capacity(self.task_index.len());
+        task_ids.extend(
+            self.l0
+                .slots
+                .iter()
+                .flat_map(|slot| slot.iter().map(TimerTaskForWheel::get_id)),
+        );
+        task_ids.extend(
+            self.l1
+                .slots
+                .iter()
+                .flat_map(|slot| slot.iter().map(TimerTaskForWheel::get_id)),
+        );
+
+        let _ = self.cancel_batch(&task_ids);
     }
 
     /// Postpone timer task (keep original TaskId)

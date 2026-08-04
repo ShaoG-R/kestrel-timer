@@ -7,6 +7,7 @@ use crate::task::{
     CallbackWrapper, CompletionReceiver, TaskCompletion, TimerTask, TimerTaskWithCompletionNotifier,
 };
 use crate::wheel::Wheel;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 #[test]
@@ -271,6 +272,69 @@ fn test_periodic_task_batch_cancel() {
     }
 
     assert!(wheel.is_empty(), "Wheel should be empty");
+}
+
+#[test]
+fn test_bounded_periodic_completion_limits_called_notifications() {
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let task = TimerTask::new_periodic(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        None,
+        Some(NonZeroUsize::new(1).unwrap()),
+    );
+    let (task_with_notifier, completion_receiver) =
+        TimerTaskWithCompletionNotifier::from_timer_task(task);
+    let handle = wheel.allocate_handle();
+    let task_id = handle.task_id();
+    wheel.insert(handle, task_with_notifier).unwrap();
+
+    let mut receiver = match completion_receiver {
+        CompletionReceiver::Periodic(receiver) => receiver,
+        CompletionReceiver::OneShot(_) => panic!("expected periodic completion receiver"),
+    };
+
+    for _ in 0..3 {
+        wheel.advance();
+    }
+    assert!(wheel.cancel(task_id).unwrap());
+
+    assert_eq!(receiver.try_recv().unwrap(), TaskCompletion::Called);
+    assert_eq!(receiver.try_recv().unwrap(), TaskCompletion::Cancelled);
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(receiver.dropped_notifications(), 2);
+}
+
+#[test]
+fn test_unbounded_periodic_completion_keeps_all_notifications() {
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let task = TimerTask::new_periodic(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        None,
+        None,
+    );
+    let (task_with_notifier, completion_receiver) =
+        TimerTaskWithCompletionNotifier::from_timer_task(task);
+    let handle = wheel.allocate_handle();
+    let task_id = handle.task_id();
+    wheel.insert(handle, task_with_notifier).unwrap();
+
+    let mut receiver = match completion_receiver {
+        CompletionReceiver::Periodic(receiver) => receiver,
+        CompletionReceiver::OneShot(_) => panic!("expected periodic completion receiver"),
+    };
+
+    for _ in 0..3 {
+        wheel.advance();
+    }
+    assert!(wheel.cancel(task_id).unwrap());
+
+    for _ in 0..3 {
+        assert_eq!(receiver.try_recv().unwrap(), TaskCompletion::Called);
+    }
+    assert_eq!(receiver.try_recv().unwrap(), TaskCompletion::Cancelled);
+    assert_eq!(receiver.dropped_notifications(), 0);
 }
 
 #[test]

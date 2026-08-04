@@ -3,6 +3,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::time::Instant;
 
 use deferred_map::{DefaultKey, Key};
 use lite_sync::oneshot::lite::{Receiver, Sender, State, channel};
@@ -698,6 +699,7 @@ pub(crate) struct TimerTaskForWheel {
     pub(crate) task: TimerTaskWithCompletionNotifier,
     pub(crate) deadline_tick: u64,
     pub(crate) rounds: u32,
+    pub(crate) deadline_at: Instant,
 }
 
 impl TimerTaskForWheel {
@@ -722,12 +724,14 @@ impl TimerTaskForWheel {
         task: TimerTaskWithCompletionNotifier,
         deadline_tick: u64,
         rounds: u32,
+        deadline_at: Instant,
     ) -> Self {
         Self {
             task_id,
             task,
             deadline_tick,
             rounds,
+            deadline_at,
         }
     }
 

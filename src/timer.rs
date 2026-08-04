@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 /// Timing Wheel Timer Manager
 ///
@@ -293,7 +294,7 @@ impl TimerWheel {
         // Single lock to complete all operations
         // 单次加锁完成所有操作
         let mut wheel_guard = self.wheel.lock();
-        wheel_guard.insert(handle, task)?;
+        wheel_guard.insert_at(handle, task)?;
 
         Ok(TimerHandleWithCompletion::new(
             TimerHandle::new(task_id, self.wheel.clone()),
@@ -380,7 +381,7 @@ impl TimerWheel {
         // Step 2: Single lock, batch insert
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert_batch(prepared_handles, prepared_tasks)?;
+            wheel_guard.insert_batch_at(prepared_handles, prepared_tasks)?;
         }
 
         Ok(BatchHandleWithCompletion::new(
@@ -592,7 +593,7 @@ impl TimerWheel {
         callback: Option<CallbackWrapper>,
     ) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
-        wheel.postpone(task_id, new_delay, callback)
+        wheel.postpone_at(task_id, new_delay, callback)
     }
 
     /// Batch postpone timers (keep original callbacks)
@@ -670,7 +671,7 @@ impl TimerWheel {
     #[inline]
     pub fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> Result<usize, TimerError> {
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch(updates)
+        wheel.postpone_batch_at(updates)
     }
 
     /// Batch postpone timers (replace callbacks)
@@ -743,7 +744,7 @@ impl TimerWheel {
         updates: Vec<(TaskId, Duration, Option<CallbackWrapper>)>,
     ) -> Result<usize, TimerError> {
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch_with_callbacks(updates)
+        wheel.postpone_batch_with_callbacks_at(updates)
     }
 
     /// Core tick loop
@@ -769,14 +770,14 @@ impl TimerWheel {
             interval.tick().await;
 
             // Advance timing wheel and get expired tasks
-            // Note: wheel.advance() already handles completion notifications
+            // Note: wheel.advance_at() already handles completion notifications
             let expired_tasks = {
                 let mut wheel_guard = wheel.lock();
-                wheel_guard.advance()
+                wheel_guard.advance_at(Instant::now())
             };
 
             // Execute callbacks for expired tasks
-            // Notifications have already been sent by wheel.advance()
+            // Notifications have already been sent by wheel.advance_at()
             for task in expired_tasks {
                 if let Some(callback) = task.callback {
                     // Spawn callback execution in a separate tokio task
@@ -827,7 +828,7 @@ impl Drop for TimerWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::TimerTask;
+    use crate::task::{CompletionReceiver, TaskCompletion, TimerTask};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
@@ -858,5 +859,34 @@ mod tests {
         // 等待定时器触发
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_non_integral_delay_does_not_fire_early() {
+        let timer = TimerWheel::with_defaults();
+        let delay = Duration::from_millis(15);
+        let request_time = Instant::now();
+        let handle = timer
+            .register(timer.allocate_handle(), TimerTask::new_oneshot(delay, None))
+            .unwrap();
+        let (receiver, _handle) = handle.into_parts();
+
+        let completion = match receiver {
+            CompletionReceiver::OneShot(receiver) => {
+                tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                    .await
+                    .expect("timer should complete")
+                    .expect("completion channel should remain open")
+            }
+            CompletionReceiver::Periodic(_) => {
+                panic!("expected one-shot completion receiver")
+            }
+        };
+
+        assert_eq!(completion, TaskCompletion::Called);
+        assert!(
+            request_time.elapsed() >= delay,
+            "timer fired before its requested delay"
+        );
     }
 }

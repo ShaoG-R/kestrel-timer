@@ -99,7 +99,7 @@ impl TimerHandle {
         callback: Option<crate::task::CallbackWrapper>,
     ) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
-        wheel.postpone(self.task_id, new_delay, callback)
+        wheel.postpone_at(self.task_id, new_delay, callback)
     }
 }
 
@@ -395,7 +395,7 @@ impl BatchHandle {
     pub fn postpone_all(self, new_delay: std::time::Duration) -> Result<usize, TimerError> {
         let updates: Vec<_> = self.task_ids.iter().map(|&id| (id, new_delay)).collect();
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch(updates)
+        wheel.postpone_batch_at(updates)
     }
 
     /// Batch postpone timers with individual delays (keep original callbacks)
@@ -443,7 +443,7 @@ impl BatchHandle {
     pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> Result<usize, TimerError> {
         let updates: Vec<_> = self.task_ids.into_iter().zip(delays).collect();
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch(updates)
+        wheel.postpone_batch_at(updates)
     }
 
     /// Batch postpone timers with individual delays and callbacks
@@ -499,7 +499,7 @@ impl BatchHandle {
             .map(|(id, (delay, callback))| (id, delay, callback))
             .collect();
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch_with_callbacks(updates_with_ids)
+        wheel.postpone_batch_with_callbacks_at(updates_with_ids)
     }
 }
 

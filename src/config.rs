@@ -175,15 +175,16 @@ impl WheelConfigBuilder {
             });
         }
 
-        // Validate L1 tick is an integer multiple of L0 tick
-        let l0_ms = self.l0_tick_duration.as_millis() as u64;
-        let l1_ms = self.l1_tick_duration.as_millis() as u64;
-        if !l1_ms.is_multiple_of(l0_ms) {
+        // Validate L1 tick is an integer multiple of L0 tick without losing
+        // sub-millisecond precision.
+        let l0_nanos = self.l0_tick_duration.as_nanos();
+        let l1_nanos = self.l1_tick_duration.as_nanos();
+        if !l1_nanos.is_multiple_of(l0_nanos) {
             return Err(TimerError::InvalidConfiguration {
                 field: "l1_tick_duration".to_string(),
                 reason: format!(
-                    "L1 tick duration ({} ms) must be an integer multiple of L0 tick duration ({} ms)",
-                    l1_ms, l0_ms
+                    "L1 tick duration ({:?}) must be an integer multiple of L0 tick duration ({:?})",
+                    self.l1_tick_duration, self.l0_tick_duration
                 ),
             });
         }
@@ -480,6 +481,16 @@ mod tests {
             .build();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wheel_config_accepts_sub_millisecond_ticks() {
+        let result = WheelConfig::builder()
+            .l0_tick_duration(Duration::from_micros(500))
+            .l1_tick_duration(Duration::from_millis(1))
+            .build();
+
+        assert!(result.is_ok());
     }
 
     #[test]

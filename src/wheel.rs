@@ -7,6 +7,7 @@ use crate::task::{
 };
 use deferred_map::DeferredMap;
 use std::time::Duration;
+use tokio::time::Instant;
 
 pub struct WheelAdvanceResult {
     pub id: TaskId,
@@ -37,10 +38,10 @@ struct WheelLayer {
     /// 每个 tick 的持续时间
     tick_duration: Duration,
 
-    /// Cache: tick duration in milliseconds (u64) - avoid repeated conversion
+    /// Cache: tick duration in nanoseconds - avoid lossy conversions
     ///
-    /// 缓存：tick 持续时间（毫秒，u64）- 避免重复转换
-    tick_duration_ms: u64,
+    /// 缓存：tick 持续时间（纳秒）- 避免有损转换
+    tick_duration_nanos: u128,
 
     /// Cache: slot mask (slot_count - 1) - for fast modulo operation
     ///
@@ -63,7 +64,7 @@ impl WheelLayer {
             slots.push(Vec::with_capacity(4));
         }
 
-        let tick_duration_ms = tick_duration.as_millis() as u64;
+        let tick_duration_nanos = tick_duration.as_nanos();
         let slot_mask = slot_count - 1;
 
         Self {
@@ -71,7 +72,7 @@ impl WheelLayer {
             current_tick: 0,
             slot_count,
             tick_duration,
-            tick_duration_ms,
+            tick_duration_nanos,
             slot_mask,
         }
     }
@@ -80,8 +81,8 @@ impl WheelLayer {
     ///
     /// 计算延迟对应的 tick 数量
     fn delay_to_ticks(&self, delay: Duration) -> u64 {
-        let ticks = delay.as_millis() as u64 / self.tick_duration.as_millis() as u64;
-        ticks.max(1) // at least 1 tick (至少 1 个 tick)
+        let ticks = delay.as_nanos().div_ceil(self.tick_duration_nanos);
+        u64::try_from(ticks).unwrap_or(u64::MAX).max(1) // at least 1 tick (至少 1 个 tick)
     }
 }
 
@@ -127,15 +128,25 @@ pub struct Wheel {
     /// 批处理配置
     batch_config: BatchConfig,
 
-    /// Cache: L0 layer capacity in milliseconds - avoid repeated calculation
+    /// Cache: L0 layer capacity in ticks - avoid repeated calculation
     ///
-    /// 缓存：L0 层容量（毫秒）- 避免重复计算
-    l0_capacity_ms: u64,
+    /// 缓存：L0 层容量（tick）- 避免重复计算
+    l0_capacity_ticks: u64,
 
     /// Cache: L1 layer capacity in ticks - avoid repeated calculation
     ///
     /// 缓存：L1 层容量（tick 数）- 避免重复计算
     l1_capacity_ticks: u64,
+
+    /// Tokio clock time associated with the wheel's origin.
+    ///
+    /// 与时间轮起点对应的 Tokio 时钟时间。
+    clock_origin: Instant,
+
+    /// Tokio clock time associated with the most recently processed tick.
+    ///
+    /// 与最近一次处理的 tick 对应的 Tokio 时钟时间。
+    clock_at: Instant,
 }
 
 impl Wheel {
@@ -162,14 +173,16 @@ impl Wheel {
         let owner = WheelOwner::new();
         let l0 = WheelLayer::new(config.l0_slot_count, config.l0_tick_duration);
         let l1 = WheelLayer::new(config.l1_slot_count, config.l1_tick_duration);
+        let now = Instant::now();
 
         // Calculate L1 tick ratio relative to L0 tick
         // 计算 L1 tick 相对于 L0 tick 的比率
-        let l1_tick_ratio = l1.tick_duration_ms / l0.tick_duration_ms;
+        let l1_tick_ratio = u64::try_from(l1.tick_duration_nanos / l0.tick_duration_nanos)
+            .expect("L1/L0 tick ratio must fit in u64");
 
         // Pre-calculate capacity to avoid repeated calculation in insert
         // 预计算容量，避免在 insert 中重复计算
-        let l0_capacity_ms = (l0.slot_count as u64) * l0.tick_duration_ms;
+        let l0_capacity_ticks = l0.slot_count as u64;
         let l1_capacity_ticks = l1.slot_count as u64;
 
         // Estimate initial capacity for DeferredMap based on L0 slot count
@@ -183,8 +196,10 @@ impl Wheel {
             l1_tick_ratio,
             task_index: DeferredMap::with_capacity(estimated_capacity),
             batch_config,
-            l0_capacity_ms,
+            l0_capacity_ticks,
             l1_capacity_ticks,
+            clock_origin: now,
+            clock_at: now,
         }
     }
 
@@ -237,19 +252,18 @@ impl Wheel {
     /// - 轮数：轮数（仅用于 L1 层的超长延迟）
     #[inline(always)]
     fn determine_layer(&self, delay: Duration) -> (u8, u64, u32) {
-        let delay_ms = delay.as_millis() as u64;
+        let l0_ticks = self.l0.delay_to_ticks(delay);
 
         // Fast path: most tasks are within L0 range (using cached capacity)
         // 快速路径：大多数任务在 L0 范围内（使用缓存的容量）
-        if delay_ms < self.l0_capacity_ms {
-            let l0_ticks = (delay_ms / self.l0.tick_duration_ms).max(1);
+        if l0_ticks <= self.l0_capacity_ticks {
             return (0, l0_ticks, 0);
         }
 
         // Slow path: L1 layer tasks (using cached values)
         // 慢速路径：L1 层任务（使用缓存的值）
-        let l1_ticks = (delay_ms / self.l1.tick_duration_ms).max(1);
-        let rounds = ((l1_ticks - 1) / self.l1_capacity_ticks) as u32;
+        let l1_ticks = self.l1.delay_to_ticks(delay);
+        let rounds = ((l1_ticks - 1) / self.l1_capacity_ticks).min(u32::MAX as u64) as u32;
         (1, l1_ticks, rounds)
     }
 
@@ -338,13 +352,36 @@ impl Wheel {
         handle: TaskHandle,
         task: TimerTaskWithCompletionNotifier,
     ) -> Result<(), TimerError> {
+        self.insert_one(handle, task, None)
+    }
+
+    /// Insert a task using the current monotonic time.
+    ///
+    /// 使用当前单调时钟时间插入任务。
+    #[inline]
+    pub(crate) fn insert_at(
+        &mut self,
+        handle: TaskHandle,
+        task: TimerTaskWithCompletionNotifier,
+    ) -> Result<(), TimerError> {
+        self.insert_one(handle, task, Some(Instant::now()))
+    }
+
+    fn insert_one(
+        &mut self,
+        handle: TaskHandle,
+        task: TimerTaskWithCompletionNotifier,
+        now: Option<Instant>,
+    ) -> Result<(), TimerError> {
         if !handle.belongs_to(self.owner.id()) {
             return Err(TimerError::WrongWheel);
         }
 
         let task_id = handle.task_id();
+        let request_time = now.unwrap_or(self.clock_at);
 
         let (level, ticks, rounds) = self.determine_layer(task.delay);
+        let deadline_at = request_time + task.delay;
 
         // Use match to reduce branches, and use cached slot mask
         // 使用 match 减少分支，并使用缓存的槽掩码
@@ -353,12 +390,12 @@ impl Wheel {
             _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
         };
 
-        let total_ticks = current_tick + ticks;
+        let total_ticks = current_tick.saturating_add(ticks);
         let slot_index = (total_ticks as usize) & slot_mask;
 
         // Create task with the assigned TaskId
         // 使用分配的 TaskId 创建任务
-        let task = TimerTaskForWheel::new_with_id(task_id, task, total_ticks, rounds);
+        let task = TimerTaskForWheel::new_with_id(task_id, task, total_ticks, rounds, deadline_at);
 
         // Get the index position of the task in Vec (the length before insertion is the index of the new task)
         // 获取任务在 Vec 中的索引位置（插入前的长度就是新任务的索引）
@@ -413,6 +450,27 @@ impl Wheel {
         handles: Vec<TaskHandle>,
         tasks: Vec<TimerTaskWithCompletionNotifier>,
     ) -> Result<(), TimerError> {
+        self.insert_batch_with_time(handles, tasks, None)
+    }
+
+    /// Batch insert tasks using the current monotonic time.
+    ///
+    /// 使用当前单调时钟时间批量插入任务。
+    #[inline]
+    pub(crate) fn insert_batch_at(
+        &mut self,
+        handles: Vec<TaskHandle>,
+        tasks: Vec<TimerTaskWithCompletionNotifier>,
+    ) -> Result<(), TimerError> {
+        self.insert_batch_with_time(handles, tasks, Some(Instant::now()))
+    }
+
+    fn insert_batch_with_time(
+        &mut self,
+        handles: Vec<TaskHandle>,
+        tasks: Vec<TimerTaskWithCompletionNotifier>,
+        now: Option<Instant>,
+    ) -> Result<(), TimerError> {
         // Validate that handles and tasks have the same length
         // 验证 handles 和 tasks 长度相同
         if handles.len() != tasks.len() {
@@ -430,36 +488,7 @@ impl Wheel {
         }
 
         for (handle, task) in handles.into_iter().zip(tasks) {
-            let task_id = handle.task_id();
-
-            let (level, ticks, rounds) = self.determine_layer(task.delay);
-
-            // Use match to reduce branches, and use cached slot mask
-            // 使用 match 减少分支，并使用缓存的槽掩码
-            let (current_tick, slot_mask, slots) = match level {
-                0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
-                _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
-            };
-
-            let total_ticks = current_tick + ticks;
-            let slot_index = (total_ticks as usize) & slot_mask;
-
-            // Create task with the assigned TaskId
-            // 使用分配的 TaskId 创建任务
-            let task = TimerTaskForWheel::new_with_id(task_id, task, total_ticks, rounds);
-
-            // Get the index position of the task in Vec
-            // 获取任务在 Vec 中的索引位置
-            let vec_index = slots[slot_index].len();
-            let location = TaskLocation::new(level, slot_index, vec_index);
-
-            // Insert task into slot
-            // 将任务插入槽中
-            slots[slot_index].push(task);
-
-            // Insert task location into DeferredMap using handle
-            // 使用 handle 将任务位置插入 DeferredMap
-            self.task_index.insert(handle.into_handle(), location);
+            self.insert_one(handle, task, now)?;
         }
 
         Ok(())
@@ -757,7 +786,9 @@ impl Wheel {
         // This method is only called by periodic tasks, so the interval is guaranteed to be Some.
         // 确定间隔应该插入到哪一层
         // 该方法只能由周期性任务调用，所以间隔是 guaranteed 应当保证为 Some.
-        let (level, ticks, rounds) = self.determine_layer(task.get_interval().unwrap());
+        let interval = task.get_interval().unwrap();
+        let deadline_at = self.clock_at + interval;
+        let (level, ticks, rounds) = self.determine_layer(interval);
 
         // Use match to reduce branches, and use cached slot mask
         // 使用 match 减少分支，并使用缓存的槽掩码
@@ -766,7 +797,7 @@ impl Wheel {
             _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
         };
 
-        let total_ticks = current_tick + ticks;
+        let total_ticks = current_tick.saturating_add(ticks);
         let slot_index = (total_ticks as usize) & slot_mask;
 
         // Get the index position of the task in Vec
@@ -781,12 +812,36 @@ impl Wheel {
             task,
             total_ticks,
             rounds,
+            deadline_at,
         ));
 
         // Update task location in DeferredMap (doesn't remove, just updates)
         // 更新 DeferredMap 中的任务位置（不删除，仅更新）
         if let Some(location) = self.task_index.get_mut(task_key) {
             *location = new_location;
+        }
+    }
+
+    fn reinsert_task(&mut self, mut task: TimerTaskForWheel) {
+        let remaining = task
+            .deadline_at
+            .checked_duration_since(self.clock_at)
+            .unwrap_or(Duration::ZERO);
+        let (level, ticks, rounds) = self.determine_layer(remaining);
+        let (current_tick, slot_mask, slots) = match level {
+            0 => (self.l0.current_tick, self.l0.slot_mask, &mut self.l0.slots),
+            _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
+        };
+        let total_ticks = current_tick.saturating_add(ticks);
+        let slot_index = (total_ticks as usize) & slot_mask;
+        let task_id = task.task_id;
+        task.deadline_tick = total_ticks;
+        task.rounds = rounds;
+        let vec_index = slots[slot_index].len();
+        slots[slot_index].push(task);
+
+        if let Some(location) = self.task_index.get_mut(task_id.key()) {
+            *location = TaskLocation::new(level, slot_index, vec_index);
         }
     }
 
@@ -810,9 +865,39 @@ impl Wheel {
     /// - L1 层每 (L1_tick / L0_tick) 次推进一次
     /// - L1 层过期任务批量降级到 L0
     pub fn advance(&mut self) -> Vec<WheelAdvanceResult> {
+        self.clock_at += self.l0.tick_duration;
+        self.advance_one_tick()
+    }
+
+    /// Advance the wheel at a real monotonic timestamp.
+    ///
+    /// 在真实单调时钟时间点推进时间轮。
+    #[inline]
+    pub(crate) fn advance_at(&mut self, now: Instant) -> Vec<WheelAdvanceResult> {
+        let elapsed = now
+            .checked_duration_since(self.clock_origin)
+            .unwrap_or(Duration::ZERO);
+        let target_tick = u64::try_from(
+            elapsed
+                .as_nanos()
+                .checked_div(self.l0.tick_duration.as_nanos())
+                .unwrap_or_default(),
+        )
+        .unwrap_or(u64::MAX);
+        let ticks_to_advance = target_tick.saturating_sub(self.l0.current_tick).max(1);
+        self.clock_at = now;
+
+        let mut expired_tasks = Vec::new();
+        for _ in 0..ticks_to_advance {
+            expired_tasks.extend(self.advance_one_tick());
+        }
+        expired_tasks
+    }
+
+    fn advance_one_tick(&mut self) -> Vec<WheelAdvanceResult> {
         // Advance L0 layer
         // 推进 L0 层
-        self.l0.current_tick += 1;
+        self.l0.current_tick = self.l0.current_tick.saturating_add(1);
 
         let mut expired_tasks = Vec::new();
 
@@ -825,6 +910,7 @@ impl Wheel {
         // Collect periodic tasks to reinsert
         // 收集需要重新插入的周期性任务
         let mut periodic_tasks_to_reinsert = Vec::new();
+        let mut tasks_to_reinsert = Vec::new();
 
         {
             let l0_slot = &mut self.l0.slots[l0_slot_index];
@@ -865,6 +951,11 @@ impl Wheel {
                     }
                 }
 
+                if task_with_notifier.deadline_at > self.clock_at {
+                    tasks_to_reinsert.push(task_with_notifier);
+                    continue;
+                }
+
                 let TimerTaskForWheel { task_id, task, .. } = task_with_notifier;
 
                 match task.task_type {
@@ -900,6 +991,10 @@ impl Wheel {
             }
         }
 
+        for task in tasks_to_reinsert {
+            self.reinsert_task(task);
+        }
+
         // Reinsert periodic tasks for next interval
         // 重新插入周期性任务到下一个周期
         for (task_id, task) in periodic_tasks_to_reinsert {
@@ -911,7 +1006,7 @@ impl Wheel {
         // 处理 L1 层
         // 检查是否需要推进 L1 层
         if self.l0.current_tick.is_multiple_of(self.l1_tick_ratio) {
-            self.l1.current_tick += 1;
+            self.l1.current_tick = self.l1.current_tick.saturating_add(1);
             let l1_slot_index = (self.l1.current_tick as usize) & self.l1.slot_mask;
             let l1_slot = &mut self.l1.slots[l1_slot_index];
 
@@ -975,47 +1070,7 @@ impl Wheel {
     /// 更新 DeferredMap 中的任务位置而不删除/重新插入
     fn demote_tasks(&mut self, tasks: Vec<TimerTaskForWheel>) {
         for task in tasks {
-            // Calculate the remaining delay of the task in L0 layer
-            // The task's deadline_tick is based on L1 tick, needs to be converted to L0 tick
-            // 计算任务在 L0 层的剩余延迟
-            // 任务的 deadline_tick 基于 L1 tick，需要转换为 L0 tick
-            let l1_tick_ratio = self.l1_tick_ratio;
-
-            // Calculate the original expiration time of the task (L1 tick)
-            // 计算任务的原始过期时间（L1 tick）
-            let l1_deadline = task.deadline_tick;
-
-            // Convert to L0 tick expiration time
-            // 转换为 L0 tick 过期时间
-            let l0_deadline_tick = l1_deadline * l1_tick_ratio;
-            let l0_current_tick = self.l0.current_tick;
-
-            // Calculate remaining L0 ticks
-            // 计算剩余 L0 ticks
-            let remaining_l0_ticks = if l0_deadline_tick > l0_current_tick {
-                l0_deadline_tick - l0_current_tick
-            } else {
-                1 // At least trigger in next tick (至少在下一个 tick 触发)
-            };
-
-            // Calculate L0 slot index
-            // 计算 L0 槽索引
-            let target_l0_tick = l0_current_tick + remaining_l0_ticks;
-            let l0_slot_index = (target_l0_tick as usize) & self.l0.slot_mask;
-
-            let task_id = task.get_id();
-            let vec_index = self.l0.slots[l0_slot_index].len();
-            let new_location = TaskLocation::new(0, l0_slot_index, vec_index);
-
-            // Insert into L0 layer
-            // 插入到 L0 层
-            self.l0.slots[l0_slot_index].push(task);
-
-            // Update task location in DeferredMap (task already exists in index)
-            // 更新 DeferredMap 中的任务位置（任务已在索引中）
-            if let Some(location) = self.task_index.get_mut(task_id.key()) {
-                *location = new_location;
-            }
+            self.reinsert_task(task);
         }
     }
 
@@ -1071,11 +1126,35 @@ impl Wheel {
         new_delay: Duration,
         new_callback: Option<crate::task::CallbackWrapper>,
     ) -> Result<bool, TimerError> {
+        self.postpone_with_time(task_id, new_delay, new_callback, None)
+    }
+
+    /// Postpone a task using the current monotonic time.
+    ///
+    /// 使用当前单调时钟时间延期任务。
+    #[inline]
+    pub(crate) fn postpone_at(
+        &mut self,
+        task_id: TaskId,
+        new_delay: Duration,
+        new_callback: Option<crate::task::CallbackWrapper>,
+    ) -> Result<bool, TimerError> {
+        self.postpone_with_time(task_id, new_delay, new_callback, Some(Instant::now()))
+    }
+
+    fn postpone_with_time(
+        &mut self,
+        task_id: TaskId,
+        new_delay: Duration,
+        new_callback: Option<crate::task::CallbackWrapper>,
+        now: Option<Instant>,
+    ) -> Result<bool, TimerError> {
         if !task_id.belongs_to(self.owner.id()) {
             return Err(TimerError::WrongWheel);
         }
 
         let task_key = task_id.key();
+        let request_time = now.unwrap_or(self.clock_at);
 
         // Step 1: Get task location from DeferredMap (don't remove)
         // 步骤 1: 从 DeferredMap 获取任务位置（不删除）
@@ -1125,6 +1204,7 @@ impl Wheel {
         // Step 3: Recalculate layer, slot, and rounds based on new delay
         // 步骤 3: 根据新延迟重新计算层级、槽位和轮数
         let (new_level, ticks, new_rounds) = self.determine_layer(new_delay);
+        let deadline_at = request_time + new_delay;
 
         // Use match to reduce branches, and use cached slot mask
         // 使用 match 减少分支，并使用缓存的槽掩码
@@ -1133,13 +1213,14 @@ impl Wheel {
             _ => (self.l1.current_tick, self.l1.slot_mask, &mut self.l1.slots),
         };
 
-        let total_ticks = current_tick + ticks;
+        let total_ticks = current_tick.saturating_add(ticks);
         let new_slot_index = (total_ticks as usize) & slot_mask;
 
         // Update task's timing wheel parameters
         // 更新任务的时间轮参数
         task.deadline_tick = total_ticks;
         task.rounds = new_rounds;
+        task.deadline_at = deadline_at;
 
         // Step 4: Re-insert task to new layer/slot
         // 步骤 4: 将任务重新插入到新层级/槽位
@@ -1193,6 +1274,25 @@ impl Wheel {
         &mut self,
         updates: Vec<(TaskId, Duration)>,
     ) -> Result<usize, TimerError> {
+        self.postpone_batch_with_time(updates, None)
+    }
+
+    /// Batch postpone tasks using the current monotonic time.
+    ///
+    /// 使用当前单调时钟时间批量延期任务。
+    #[inline]
+    pub(crate) fn postpone_batch_at(
+        &mut self,
+        updates: Vec<(TaskId, Duration)>,
+    ) -> Result<usize, TimerError> {
+        self.postpone_batch_with_time(updates, Some(Instant::now()))
+    }
+
+    fn postpone_batch_with_time(
+        &mut self,
+        updates: Vec<(TaskId, Duration)>,
+        now: Option<Instant>,
+    ) -> Result<usize, TimerError> {
         if updates
             .iter()
             .any(|(task_id, _)| !task_id.belongs_to(self.owner.id()))
@@ -1203,7 +1303,7 @@ impl Wheel {
         let mut postponed_count = 0;
 
         for (task_id, new_delay) in updates {
-            if self.postpone(task_id, new_delay, None)? {
+            if self.postpone_with_time(task_id, new_delay, None, now)? {
                 postponed_count += 1;
             }
         }
@@ -1232,6 +1332,25 @@ impl Wheel {
         &mut self,
         updates: Vec<(TaskId, Duration, Option<crate::task::CallbackWrapper>)>,
     ) -> Result<usize, TimerError> {
+        self.postpone_batch_with_callbacks_at_time(updates, None)
+    }
+
+    /// Batch postpone tasks with callbacks using the current monotonic time.
+    ///
+    /// 使用当前单调时钟时间批量延期并替换回调。
+    #[inline]
+    pub(crate) fn postpone_batch_with_callbacks_at(
+        &mut self,
+        updates: Vec<(TaskId, Duration, Option<crate::task::CallbackWrapper>)>,
+    ) -> Result<usize, TimerError> {
+        self.postpone_batch_with_callbacks_at_time(updates, Some(Instant::now()))
+    }
+
+    fn postpone_batch_with_callbacks_at_time(
+        &mut self,
+        updates: Vec<(TaskId, Duration, Option<crate::task::CallbackWrapper>)>,
+        now: Option<Instant>,
+    ) -> Result<usize, TimerError> {
         if updates
             .iter()
             .any(|(task_id, _, _)| !task_id.belongs_to(self.owner.id()))
@@ -1242,7 +1361,7 @@ impl Wheel {
         let mut postponed_count = 0;
 
         for (task_id, new_delay, new_callback) in updates {
-            if self.postpone(task_id, new_delay, new_callback)? {
+            if self.postpone_with_time(task_id, new_delay, new_callback, now)? {
                 postponed_count += 1;
             }
         }
@@ -1323,6 +1442,13 @@ mod tests {
         let (level, _, rounds) = wheel.determine_layer(Duration::from_secs(120));
         assert_eq!(level, 1);
         assert!(rounds > 0);
+
+        // Exact L0 capacity remains in L0; the next nanosecond moves to L1.
+        let (level, ticks, _) = wheel.determine_layer(Duration::from_millis(5120));
+        assert_eq!(level, 0);
+        assert_eq!(ticks, 512);
+        let (level, _, _) = wheel.determine_layer(Duration::from_millis(5121));
+        assert_eq!(level, 1);
     }
 
     #[test]
@@ -1399,6 +1525,8 @@ mod tests {
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(100)), 10);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(50)), 5);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(1)), 1); // Minimum 1 tick (最小 1 个 tick)
+        assert_eq!(wheel.delay_to_ticks(Duration::from_millis(15)), 2);
+        assert_eq!(wheel.delay_to_ticks(Duration::from_micros(500)), 1);
     }
 
     #[test]

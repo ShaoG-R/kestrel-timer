@@ -489,7 +489,7 @@ impl TimerService {
         callback: Option<CallbackWrapper>,
     ) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
-        wheel.postpone(task_id, new_delay, callback)
+        wheel.postpone_at(task_id, new_delay, callback)
     }
 
     /// Batch postpone tasks (keep original callbacks)
@@ -549,7 +549,7 @@ impl TimerService {
         }
 
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch(updates)
+        wheel.postpone_batch_at(updates)
     }
 
     /// Batch postpone tasks (replace callbacks)
@@ -618,7 +618,7 @@ impl TimerService {
         }
 
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch_with_callbacks(updates)
+        wheel.postpone_batch_with_callbacks_at(updates)
     }
 
     /// Register timer task to service (registration phase)
@@ -679,7 +679,7 @@ impl TimerService {
         // 单次锁定，完成所有操作
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert(handle, task)?;
+            wheel_guard.insert_at(handle, task)?;
         }
 
         // The wheel insertion is provisional until the actor accepts this command.
@@ -786,7 +786,7 @@ impl TimerService {
         // 步骤 2: 单次锁定，批量插入
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert_batch(prepared_handles, prepared_tasks)?;
+            wheel_guard.insert_batch_at(prepared_handles, prepared_tasks)?;
         }
 
         // The batch insertion is provisional until the actor accepts this command.
@@ -882,6 +882,18 @@ impl ServiceActor {
         }
     }
 
+    async fn send_notification(
+        timeout_tx: &spsc::Sender<TaskNotification, 32>,
+        notification: TaskNotification,
+        shutdown_rx: &mut Receiver<()>,
+    ) -> bool {
+        tokio::select! {
+            biased;
+            _ = &mut *shutdown_rx => false,
+            result = timeout_tx.send(notification) => result.is_ok(),
+        }
+    }
+
     /// Run Actor event loop
     ///
     /// 运行 Actor 事件循环
@@ -908,6 +920,7 @@ impl ServiceActor {
 
         // Move shutdown_rx out of self, so it can be used in select! with &mut
         // 将 shutdown_rx 从 self 中移出，以便在 select! 中使用 &mut
+        let timeout_tx = self.timeout_tx;
         let mut shutdown_rx = self.shutdown_rx;
 
         loop {
@@ -925,8 +938,15 @@ impl ServiceActor {
                 Some((task_id, completion)) = oneshot_futures.next() => {
                     // Check completion reason, only forward Called events, do not forward Cancelled events
                     // 检查完成原因，只转发 Called 事件，不转发 Cancelled 事件
-                    if completion == TaskCompletion::Called {
-                        let _ = self.timeout_tx.send(TaskNotification::OneShot(task_id)).await;
+                    if completion == TaskCompletion::Called
+                        && !Self::send_notification(
+                            &timeout_tx,
+                            TaskNotification::OneShot(task_id),
+                            &mut shutdown_rx,
+                        )
+                        .await
+                    {
+                        break;
                     }
                     // Task will be automatically removed from FuturesUnordered
                     // 任务将自动从 FuturesUnordered 中移除
@@ -938,7 +958,15 @@ impl ServiceActor {
                     // Check completion reason, only forward Called events, do not forward Cancelled events
                     // 检查完成原因，只转发 Called 事件，不转发 Cancelled 事件
                     if let Some(TaskCompletion::Called) = reason {
-                        let _ = self.timeout_tx.send(TaskNotification::Periodic(task_id)).await;
+                        if !Self::send_notification(
+                            &timeout_tx,
+                            TaskNotification::Periodic(task_id),
+                            &mut shutdown_rx,
+                        )
+                        .await
+                        {
+                            break;
+                        }
 
                         // Re-add the receiver to continue listening for next periodic event
                         // 重新添加接收器以继续监听下一个周期性事件
@@ -1079,6 +1107,40 @@ mod tests {
 
         // Immediately shutdown (without waiting for timers to trigger) (立即关闭（不等待定时器触发）)
         service.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_shutdown_when_timeout_channel_is_full() {
+        let config = ServiceConfig::builder()
+            .timeout_channel_capacity(NonZeroUsize::new(1).unwrap())
+            .build();
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(config);
+
+        let first_handle = service.allocate_handle();
+        service
+            .register(
+                first_handle,
+                TimerTask::new_oneshot(Duration::from_millis(10), None),
+            )
+            .unwrap();
+
+        let second_handle = service.allocate_handle();
+        service
+            .register(
+                second_handle,
+                TimerTask::new_oneshot(Duration::from_millis(20), None),
+            )
+            .unwrap();
+
+        // Keep the receiver alive without consuming it so the second notification
+        // fills the output channel and blocks the actor's normal send path.
+        let _receiver = service.take_receiver().unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        tokio::time::timeout(Duration::from_millis(100), service.shutdown())
+            .await
+            .expect("shutdown should not wait for a full timeout channel");
     }
 
     #[tokio::test]

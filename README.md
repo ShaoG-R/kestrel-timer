@@ -6,7 +6,7 @@
 [![Tokio](https://img.shields.io/badge/tokio-1.48-blue.svg)](https://tokio.rs/)
 [![Crates.io](https://img.shields.io/crates/v/kestrel-timer.svg)](https://crates.io/crates/kestrel-timer)
 [![Documentation](https://docs.rs/kestrel-timer/badge.svg)](https://docs.rs/kestrel-timer)
-[![License](https://img.shields.io/crates/l/kestrel-timer.svg)](https://github.com/ShaoG-R/kestrel-timer#license)
+[![License](https://img.shields.io/crates/l/kestrel-timer.svg)](https://github.com/shaogme/kestrel-timer#license)
 
 [中文文档](README_CN.md)
 

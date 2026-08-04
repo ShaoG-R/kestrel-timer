@@ -1,14 +1,14 @@
 [package]
 name = "kestrel-timer"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.88"
-authors = ["ShaoG-R"]
+authors = ["shaogme"]
 license = "MIT OR Apache-2.0"
 description = "High-performance async timer library based on Hierarchical Timing Wheel algorithm"
 readme = "README.md"
-repository = "https://github.com/ShaoG-R/kestrel-timer"
-homepage = "https://github.com/ShaoG-R/kestrel-timer"
+repository = "https://github.com/shaogme/kestrel-timer"
+homepage = "https://github.com/shaogme/kestrel-timer"
 documentation = "https://docs.rs/kestrel-timer"
 keywords = ["timer", "timing-wheel", "async", "tokio", "scheduler"]
 categories = ["asynchronous", "concurrency", "data-structures"]

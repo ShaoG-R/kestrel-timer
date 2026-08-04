@@ -25,13 +25,13 @@ async fn test_postpone_batch() {
         );
         let allocate_handle = timer.allocate_handle();
         let task_id = allocate_handle.task_id();
-        let _handle = timer.register(allocate_handle, task);
+        let _handle = timer.register(allocate_handle, task).unwrap();
         task_ids.push((task_id, Duration::from_millis(150)));
     }
 
     // Batch postpone
     // 批量推迟
-    let postponed = timer.postpone_batch(task_ids);
+    let postponed = timer.postpone_batch(task_ids).unwrap();
     assert_eq!(postponed, 3);
 
     // Wait for original time 50ms, task should not trigger
@@ -61,7 +61,7 @@ async fn test_postpone_batch_with_callbacks() {
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         let allocate_handle = timer.allocate_handle();
         let task_id = allocate_handle.task_id();
-        let _handle = timer.register(allocate_handle, task);
+        let _handle = timer.register(allocate_handle, task).unwrap();
         task_ids.push(task_id);
     }
 
@@ -86,7 +86,7 @@ async fn test_postpone_batch_with_callbacks() {
 
     // Batch postpone and replace callbacks
     // 批量推迟并替换回调
-    let postponed = timer.postpone_batch_with_callbacks(updates);
+    let postponed = timer.postpone_batch_with_callbacks(updates).unwrap();
     assert_eq!(postponed, 3);
 
     // Wait for original time 50ms, task should not trigger
@@ -128,7 +128,7 @@ async fn test_periodic_batch_cancel() {
         let allocate_handle = timer.allocate_handle();
         let task_id = allocate_handle.task_id();
         task_ids.push(task_id);
-        let _handle = timer.register(allocate_handle, task);
+        let _handle = timer.register(allocate_handle, task).unwrap();
     }
 
     // Wait for first execution
@@ -142,7 +142,7 @@ async fn test_periodic_batch_cancel() {
 
     // Batch cancel
     // 批量取消
-    let cancelled = timer.cancel_batch(&task_ids);
+    let cancelled = timer.cancel_batch(&task_ids).unwrap();
     assert_eq!(cancelled, 3);
 
     // Wait and verify tasks stopped
@@ -183,13 +183,13 @@ async fn test_periodic_batch_postpone() {
         );
         let allocate_handle = timer.allocate_handle();
         let task_id = allocate_handle.task_id();
-        let _handle = timer.register(allocate_handle, task);
+        let _handle = timer.register(allocate_handle, task).unwrap();
         postpone_updates.push((task_id, Duration::from_millis(150)));
     }
 
     // Batch postpone
     // 批量推迟
-    let postponed = timer.postpone_batch(postpone_updates);
+    let postponed = timer.postpone_batch(postpone_updates).unwrap();
     assert_eq!(postponed, 3);
 
     // Wait original time, should not trigger

@@ -124,7 +124,7 @@ let tasks: Vec<_> = (0..100)
 let batch_handle = timer.register_batch(handles, tasks).unwrap();
 
 // 批量取消
-batch_handle.cancel_all();
+batch_handle.cancel_all().unwrap();
 ```
 
 ### 推迟定时器
@@ -147,13 +147,13 @@ let task = TimerTask::new_oneshot(Duration::from_millis(50), callback);
 let timer_handle = timer.register(handle, task).unwrap();
 
 // 推迟并保持原回调
-timer.postpone(task_id, Duration::from_millis(150), None);
+timer.postpone(task_id, Duration::from_millis(150), None).unwrap();
 
 // 推迟并替换回调
 let new_callback = Some(CallbackWrapper::new(|| async {
     println!("新回调");
 }));
-timer.postpone(task_id, Duration::from_millis(200), new_callback);
+timer.postpone(task_id, Duration::from_millis(200), new_callback).unwrap();
 ```
 
 ### TimerService 使用
@@ -478,7 +478,7 @@ async fn apply_buff(
 }
 
 // 延长 Buff
-timer.postpone(task_id, new_duration, None);
+timer.postpone(task_id, new_duration, None).unwrap();
 ```
 
 ### 5. 重试机制

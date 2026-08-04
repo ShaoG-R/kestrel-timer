@@ -20,11 +20,11 @@ async fn test_cancel_timer() {
         })),
     );
     let allocate_handle = timer.allocate_handle();
-    let handle = timer.register(allocate_handle, task);
+    let handle = timer.register(allocate_handle, task).unwrap();
 
     // Immediately cancel
     // 立即取消
-    let cancel_result = handle.cancel();
+    let cancel_result = handle.cancel().unwrap();
     assert!(cancel_result);
 
     // Wait for enough time to ensure timer does not trigger
@@ -49,11 +49,11 @@ async fn test_cancel_immediate() {
         })),
     );
     let allocate_handle = timer.allocate_handle();
-    let handle = timer.register(allocate_handle, task);
+    let handle = timer.register(allocate_handle, task).unwrap();
 
     // Immediately cancel
     // 立即取消
-    let cancel_result = handle.cancel();
+    let cancel_result = handle.cancel().unwrap();
     assert!(cancel_result);
 
     // Wait for enough time to ensure timer does not trigger

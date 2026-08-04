@@ -62,7 +62,7 @@ async fn test_periodic_task_basic() {
     );
 
     // Cancel the periodic task (取消周期性任务)
-    let cancelled = service.cancel_task(task_id);
+    let cancelled = service.cancel_task(task_id).unwrap();
     assert!(cancelled, "Should be able to cancel periodic task");
 }
 
@@ -92,7 +92,7 @@ async fn test_periodic_task_cancel_no_notification() {
     assert_eq!(notification, TaskNotification::Periodic(task_id));
 
     // Cancel the task (取消任务)
-    let cancelled = service.cancel_task(task_id);
+    let cancelled = service.cancel_task(task_id).unwrap();
     assert!(cancelled, "Should be able to cancel task");
 
     // Should not receive cancelled notification (不应该接收到取消通知)
@@ -154,7 +154,7 @@ async fn test_mixed_oneshot_and_periodic_tasks() {
     );
 
     // Cancel periodic task (取消周期性任务)
-    service.cancel_task(periodic_id);
+    service.cancel_task(periodic_id).unwrap();
 }
 
 #[tokio::test]
@@ -224,6 +224,6 @@ async fn test_periodic_task_batch_register() {
     );
 
     // Cancel all periodic tasks (取消所有周期性任务)
-    let cancelled = service.cancel_batch(&task_ids);
+    let cancelled = service.cancel_batch(&task_ids).unwrap();
     assert_eq!(cancelled, 3, "Should cancel all 3 tasks");
 }

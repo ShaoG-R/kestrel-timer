@@ -44,7 +44,7 @@
 //!     let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
 //!     
 //!     // Step 3: Register timer task and get completion notification (注册定时器任务并获取完成通知)
-//!     let timer_handle = timer.register(handle, task);
+//!     let timer_handle = timer.register(handle, task).unwrap();
 //!     
 //!     // Wait for timer completion (等待定时器完成)
 //!     use kestrel_timer::CompletionReceiver;
@@ -86,6 +86,7 @@
 //!   2. Insert task using the handle (with completion notifiers)
 //!
 //! - **Generational Safety**: Each task ID includes:
+//!   - Owning timing wheel identity: prevents cross-wheel operations
 //!   - Lower 32 bits: Slot index
 //!   - Upper 32 bits: Generation counter
 //!   - Prevents use-after-free and ABA problems
@@ -134,6 +135,7 @@
 //!   2. 使用 handle 插入任务（携带完成通知器）
 //!
 //! - **代数安全**: 每个任务 ID 包含：
+//!   - 所属时间轮身份：阻止跨时间轮操作
 //!   - 低 32 位：槽位索引
 //!   - 高 32 位：代数计数器
 //!   - 防止释放后使用和 ABA 问题
@@ -165,6 +167,7 @@ pub mod wheel;
 mod tests;
 
 // Re-export public API
+pub use error::TimerError;
 pub use lite_sync::spsc;
 pub use service::{TaskNotification, TimerService};
 pub use task::CompletionReceiver;
@@ -197,7 +200,7 @@ mod integration_tests {
                 }
             })),
         );
-        timer.register(handle, task);
+        timer.register(handle, task).unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -221,7 +224,7 @@ mod integration_tests {
                     }
                 })),
             );
-            timer.register(handle, task);
+            timer.register(handle, task).unwrap();
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -247,13 +250,13 @@ mod integration_tests {
                     }
                 })),
             );
-            let handle = timer.register(alloc_handle, task);
+            let handle = timer.register(alloc_handle, task).unwrap();
             handles.push(handle);
         }
 
         // Cancel first 3 timers
         for handle in handles.iter().take(3) {
-            let cancel_result = handle.cancel();
+            let cancel_result = handle.cancel().unwrap();
             assert!(cancel_result);
         }
 
@@ -278,7 +281,7 @@ mod integration_tests {
                 }
             })),
         );
-        let handle = timer.register(alloc_handle, task);
+        let handle = timer.register(alloc_handle, task).unwrap();
 
         // Wait for completion notification
         let (rx, _handle) = handle.into_parts();
@@ -300,7 +303,7 @@ mod integration_tests {
 
         let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
-        let handle = timer.register(alloc_handle, task);
+        let handle = timer.register(alloc_handle, task).unwrap();
 
         // Wait for completion notification (no callback, only notification)
         let (rx, _handle) = handle.into_parts();
@@ -364,7 +367,7 @@ mod integration_tests {
 
         let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
-        let handle = timer.register(alloc_handle, task);
+        let handle = timer.register(alloc_handle, task).unwrap();
 
         // Wait for completion notification and verify reason is Expired
         let (rx, _handle) = handle.into_parts();
@@ -381,10 +384,10 @@ mod integration_tests {
 
         let alloc_handle = timer.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
-        let handle = timer.register(alloc_handle, task);
+        let handle = timer.register(alloc_handle, task).unwrap();
 
         // Cancel task
-        let cancelled = handle.cancel();
+        let cancelled = handle.cancel().unwrap();
         assert!(cancelled);
 
         // Wait for completion notification and verify reason is Cancelled
@@ -416,7 +419,7 @@ mod integration_tests {
         let (mut receivers, _batch_handle) = batch.into_parts();
 
         // Cancel first 3 tasks
-        timer.cancel_batch(&task_ids[0..3]);
+        timer.cancel_batch(&task_ids[0..3]).unwrap();
 
         // Verify first 3 tasks received Cancelled notification
         for rx in receivers.drain(0..3) {
@@ -428,7 +431,7 @@ mod integration_tests {
         }
 
         // Cancel remaining tasks and verify
-        timer.cancel_batch(&task_ids[3..5]);
+        timer.cancel_batch(&task_ids[3..5]).unwrap();
         for rx in receivers {
             let result = match rx {
                 task::CompletionReceiver::OneShot(receiver) => receiver.recv().await.unwrap(),
@@ -436,5 +439,84 @@ mod integration_tests {
             };
             assert_eq!(result, TaskCompletion::Cancelled);
         }
+    }
+
+    #[tokio::test]
+    async fn test_task_ids_and_handles_are_bound_to_their_wheel() {
+        let source = TimerWheel::with_defaults();
+        let target = TimerWheel::with_defaults();
+
+        let foreign_handle = source.allocate_handle();
+        let foreign_id = foreign_handle.task_id();
+        let registration = target.register(
+            foreign_handle,
+            TimerTask::new_oneshot(Duration::from_secs(10), None),
+        );
+        assert!(matches!(registration, Err(TimerError::WrongWheel)));
+
+        let target_handle = target.allocate_handle();
+        let target_id = target_handle.task_id();
+        let target_timer = target
+            .register(
+                target_handle,
+                TimerTask::new_oneshot(Duration::from_secs(10), None),
+            )
+            .unwrap();
+
+        assert_eq!(foreign_id.raw(), target_id.raw());
+        assert_ne!(foreign_id, target_id);
+        assert!(matches!(
+            target.cancel(foreign_id),
+            Err(TimerError::WrongWheel)
+        ));
+        assert!(matches!(
+            target.postpone(foreign_id, Duration::from_secs(1), None),
+            Err(TimerError::WrongWheel)
+        ));
+        assert!(target.cancel(target_id).unwrap());
+        drop(target_timer);
+
+        // Dropping the rejected handle must not poison future allocations in
+        // its original wheel.
+        let _next_handle = source.allocate_handle();
+    }
+
+    #[tokio::test]
+    async fn test_batch_operations_reject_foreign_task_ids_atomically() {
+        let source = TimerWheel::with_defaults();
+        let target = TimerWheel::with_defaults();
+
+        let source_handle = source.allocate_handle();
+        let source_id = source_handle.task_id();
+        source
+            .register(
+                source_handle,
+                TimerTask::new_oneshot(Duration::from_secs(10), None),
+            )
+            .unwrap();
+
+        let target_handle = target.allocate_handle();
+        let target_id = target_handle.task_id();
+        let target_timer = target
+            .register(
+                target_handle,
+                TimerTask::new_oneshot(Duration::from_secs(10), None),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            target.cancel_batch(&[target_id, source_id]),
+            Err(TimerError::WrongWheel)
+        ));
+        assert!(matches!(
+            target.postpone_batch(vec![
+                (target_id, Duration::from_secs(1)),
+                (source_id, Duration::from_secs(1)),
+            ]),
+            Err(TimerError::WrongWheel)
+        ));
+        assert!(target.cancel(target_id).unwrap());
+        drop(target_timer);
+        assert!(source.cancel(source_id).unwrap());
     }
 }

@@ -25,7 +25,7 @@ fn test_periodic_task_basic() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -67,7 +67,7 @@ fn test_periodic_task_basic() {
     // Cancel the periodic task
     // 取消周期性任务
     assert!(
-        wheel.cancel(task_id),
+        wheel.cancel(task_id).unwrap(),
         "Should be able to cancel periodic task"
     );
     assert!(wheel.is_empty(), "Wheel should be empty after cancellation");
@@ -89,7 +89,7 @@ fn test_periodic_task_cancel() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -97,7 +97,7 @@ fn test_periodic_task_cancel() {
     };
 
     // Cancel immediately (立即取消)
-    assert!(wheel.cancel(task_id), "Should successfully cancel");
+    assert!(wheel.cancel(task_id).unwrap(), "Should successfully cancel");
 
     // Check cancellation notification
     // 检查取消通知
@@ -142,7 +142,7 @@ fn test_periodic_task_multiple_triggers() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -171,7 +171,7 @@ fn test_periodic_task_multiple_triggers() {
 
     // Cancel the task
     // 取消任务
-    wheel.cancel(task_id);
+    wheel.cancel(task_id).unwrap();
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn test_periodic_task_cross_layer() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -225,7 +225,7 @@ fn test_periodic_task_cross_layer() {
 
     // Cancel the task
     // 取消任务
-    wheel.cancel(task_id);
+    wheel.cancel(task_id).unwrap();
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn test_periodic_task_batch_cancel() {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         task_ids.push(task_id);
 
         if let CompletionReceiver::Periodic(rx) = completion_receiver {
@@ -257,7 +257,7 @@ fn test_periodic_task_batch_cancel() {
     }
 
     // Batch cancel all tasks (批量取消所有任务)
-    let cancelled_count = wheel.cancel_batch(&task_ids);
+    let cancelled_count = wheel.cancel_batch(&task_ids).unwrap();
     assert_eq!(cancelled_count, 5, "Should cancel all 5 tasks");
 
     // Verify all receive cancellation notifications
@@ -290,7 +290,7 @@ fn test_periodic_task_with_initial_delay() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -321,7 +321,7 @@ fn test_periodic_task_with_initial_delay() {
 
     // Cancel the task
     // 取消任务
-    wheel.cancel(task_id);
+    wheel.cancel(task_id).unwrap();
 }
 
 #[test]
@@ -341,7 +341,7 @@ fn test_periodic_task_postpone() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -351,7 +351,9 @@ fn test_periodic_task_postpone() {
     // Postpone the periodic task to 100ms
     // 延期周期任务到 100毫秒
     assert!(
-        wheel.postpone(task_id, Duration::from_millis(100), None),
+        wheel
+            .postpone(task_id, Duration::from_millis(100), None)
+            .unwrap(),
         "Should postpone periodic task"
     );
 
@@ -385,7 +387,7 @@ fn test_periodic_task_postpone() {
         "Should receive second notification after interval"
     );
 
-    wheel.cancel(task_id);
+    wheel.cancel(task_id).unwrap();
 }
 
 #[test]
@@ -405,7 +407,7 @@ fn test_periodic_task_postpone_cross_layer() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -419,7 +421,11 @@ fn test_periodic_task_postpone_cross_layer() {
     // Postpone to long delay (should migrate to L1)
     // 延期到长延迟（应该迁移到 L1）
     // L0 range: 512 slots * 10ms = 5120ms
-    assert!(wheel.postpone(task_id, Duration::from_secs(10), None));
+    assert!(
+        wheel
+            .postpone(task_id, Duration::from_secs(10), None)
+            .unwrap()
+    );
 
     // Verify task migrated to L1
     // 验证任务迁移到 L1
@@ -427,7 +433,11 @@ fn test_periodic_task_postpone_cross_layer() {
 
     // Postpone back to short delay (should migrate back to L0)
     // 延期回短延迟（应该迁移回 L0）
-    assert!(wheel.postpone(task_id, Duration::from_millis(200), None));
+    assert!(
+        wheel
+            .postpone(task_id, Duration::from_millis(200), None)
+            .unwrap()
+    );
 
     // Verify task migrated back to L0
     // 验证任务迁移回 L0
@@ -440,7 +450,7 @@ fn test_periodic_task_postpone_cross_layer() {
     }
     assert!(rx.try_recv().is_ok(), "Should receive notification");
 
-    wheel.cancel(task_id);
+    wheel.cancel(task_id).unwrap();
 }
 
 #[test]
@@ -489,7 +499,7 @@ fn test_periodic_task_batch_insert() {
 
     // Batch cancel all
     // 批量取消所有
-    let cancelled = wheel.cancel_batch(&task_ids);
+    let cancelled = wheel.cancel_batch(&task_ids).unwrap();
     assert_eq!(cancelled, 10, "Should cancel all periodic tasks");
     assert!(wheel.is_empty());
 }
@@ -512,7 +522,7 @@ fn test_periodic_task_batch_postpone() {
         let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         task_ids.push(task_id);
     }
 
@@ -522,7 +532,7 @@ fn test_periodic_task_batch_postpone() {
         .iter()
         .map(|&id| (id, Duration::from_millis(150)))
         .collect();
-    let postponed_count = wheel.postpone_batch(updates);
+    let postponed_count = wheel.postpone_batch(updates).unwrap();
     assert_eq!(postponed_count, 5, "Should postpone all 5 periodic tasks");
 
     // Advance 5 ticks (50ms), tasks should not trigger
@@ -549,7 +559,7 @@ fn test_periodic_task_batch_postpone() {
 
     // Clean up
     // 清理
-    wheel.cancel_batch(&task_ids);
+    wheel.cancel_batch(&task_ids).unwrap();
 }
 
 #[test]
@@ -565,7 +575,7 @@ fn test_mixed_oneshot_and_periodic_tasks() {
         let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         oneshot_ids.push(task_id);
     }
 
@@ -585,7 +595,7 @@ fn test_mixed_oneshot_and_periodic_tasks() {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         periodic_ids.push(task_id);
 
         if let CompletionReceiver::Periodic(rx) = completion_receiver {
@@ -638,7 +648,7 @@ fn test_mixed_oneshot_and_periodic_tasks() {
 
     // Clean up periodic tasks
     // 清理周期性任务
-    wheel.cancel_batch(&periodic_ids);
+    wheel.cancel_batch(&periodic_ids).unwrap();
     assert!(wheel.is_empty());
 }
 
@@ -659,7 +669,7 @@ fn test_periodic_task_postpone_with_callback() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     let mut rx = match completion_receiver {
         CompletionReceiver::Periodic(receiver) => receiver,
@@ -669,7 +679,11 @@ fn test_periodic_task_postpone_with_callback() {
     // Postpone with new callback
     // 使用新回调延期
     let new_callback = CallbackWrapper::new(|| async {});
-    assert!(wheel.postpone(task_id, Duration::from_millis(100), Some(new_callback)));
+    assert!(
+        wheel
+            .postpone(task_id, Duration::from_millis(100), Some(new_callback))
+            .unwrap()
+    );
 
     // Advance to trigger
     // 前进到触发
@@ -682,5 +696,5 @@ fn test_periodic_task_postpone_with_callback() {
         "Should receive notification with new callback"
     );
 
-    wheel.cancel(task_id);
+    wheel.cancel(task_id).unwrap();
 }

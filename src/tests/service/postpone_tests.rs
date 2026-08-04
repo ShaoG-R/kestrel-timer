@@ -30,16 +30,18 @@ async fn test_postpone() {
     // Postpone task and replace callback, new callback increases 10
     // 延期任务并替换回调，新回调增加 10
     let counter_clone2 = Arc::clone(&counter);
-    let postponed = service.postpone(
-        task_id,
-        Duration::from_millis(100),
-        Some(CallbackWrapper::new(move || {
-            let counter = Arc::clone(&counter_clone2);
-            async move {
-                counter.fetch_add(10, Ordering::SeqCst);
-            }
-        })),
-    );
+    let postponed = service
+        .postpone(
+            task_id,
+            Duration::from_millis(100),
+            Some(CallbackWrapper::new(move || {
+                let counter = Arc::clone(&counter_clone2);
+                async move {
+                    counter.fetch_add(10, Ordering::SeqCst);
+                }
+            })),
+        )
+        .unwrap();
     assert!(postponed, "Task should be postponed successfully");
 
     // Receive timeout notification (after postponing, need to wait 100ms, plus margin)
@@ -72,7 +74,9 @@ async fn test_postpone_nonexistent_task() {
     let fake_task_id = fake_handle.task_id();
     // Do not register this task
     // 不注册这个任务
-    let postponed = service.postpone(fake_task_id, Duration::from_millis(100), None);
+    let postponed = service
+        .postpone(fake_task_id, Duration::from_millis(100), None)
+        .unwrap();
     assert!(!postponed, "Nonexistent task should not be postponed");
 }
 
@@ -104,7 +108,7 @@ async fn test_postpone_batch() {
 
     // Batch postpone
     // 批量延期
-    let postponed = service.postpone_batch_with_callbacks(task_ids);
+    let postponed = service.postpone_batch_with_callbacks(task_ids).unwrap();
     assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
     // Wait for original time 50ms, task should not trigger
@@ -171,7 +175,7 @@ async fn test_postpone_batch_with_callbacks() {
         })
         .collect();
 
-    let postponed = service.postpone_batch_with_callbacks(updates);
+    let postponed = service.postpone_batch_with_callbacks(updates).unwrap();
     assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
     // Wait for original time 50ms, task should not trigger
@@ -209,7 +213,7 @@ async fn test_postpone_batch_empty() {
 
     // Postpone empty list
     let empty: Vec<(TaskId, Duration, Option<CallbackWrapper>)> = vec![];
-    let postponed = service.postpone_batch_with_callbacks(empty);
+    let postponed = service.postpone_batch_with_callbacks(empty).unwrap();
     assert_eq!(postponed, 0, "No tasks should be postponed");
 }
 
@@ -237,7 +241,9 @@ async fn test_postpone_keeps_timeout_notification_valid() {
 
     // Postpone task
     // 延期任务
-    service.postpone(task_id, Duration::from_millis(100), None);
+    service
+        .postpone(task_id, Duration::from_millis(100), None)
+        .unwrap();
 
     // Verify timeout notification is still valid (after postponing, need to wait 100ms, plus margin)
     // 验证超时通知是否仍然有效（延期后，需要等待 100ms，加上余量）
@@ -291,7 +297,7 @@ async fn test_postpone_batch_without_callbacks() {
         .iter()
         .map(|&id| (id, Duration::from_millis(150)))
         .collect();
-    let postponed = service.postpone_batch(updates);
+    let postponed = service.postpone_batch(updates).unwrap();
     assert_eq!(postponed, 3, "All 3 tasks should be postponed");
 
     // Wait for original time 50ms, task should not trigger

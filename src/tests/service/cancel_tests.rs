@@ -18,11 +18,11 @@ async fn test_cancel_task() {
     service.register(handle, task).unwrap();
 
     // Cancel task (取消任务)
-    let cancelled = service.cancel_task(task_id);
+    let cancelled = service.cancel_task(task_id).unwrap();
     assert!(cancelled, "Task should be cancelled successfully");
 
     // Try to cancel the same task again, should return false (再次尝试取消同一任务，应返回 false)
-    let cancelled_again = service.cancel_task(task_id);
+    let cancelled_again = service.cancel_task(task_id).unwrap();
     assert!(!cancelled_again, "Task should not exist anymore");
 }
 
@@ -41,7 +41,7 @@ async fn test_cancel_nonexistent_task() {
     let fake_handle = service.allocate_handle();
     let fake_task_id = fake_handle.task_id();
     // Do not register fake_task (不注册 fake_task)
-    let cancelled = service.cancel_task(fake_task_id);
+    let cancelled = service.cancel_task(fake_task_id).unwrap();
     assert!(!cancelled, "Nonexistent task should not be cancelled");
 }
 
@@ -69,7 +69,7 @@ async fn test_cancel_task_spawns_background_task() {
 
     // Use cancel_task (will wait for result, but processed in background coroutine)
     // 使用 cancel_task（将等待结果，但在后台协程中处理）
-    let cancelled = service.cancel_task(task_id);
+    let cancelled = service.cancel_task(task_id).unwrap();
     assert!(cancelled, "Task should be cancelled successfully");
 
     // Wait long enough to ensure callback is not executed (等待足够长时间以确保回调未执行)
@@ -81,7 +81,7 @@ async fn test_cancel_task_spawns_background_task() {
     );
 
     // Verify task has been removed from active_tasks (验证任务已从 active_tasks 中移除)
-    let cancelled_again = service.cancel_task(task_id);
+    let cancelled_again = service.cancel_task(task_id).unwrap();
     assert!(
         !cancelled_again,
         "Task should have been removed from active_tasks"
@@ -112,7 +112,7 @@ async fn test_schedule_and_cancel_direct() {
 
     // Immediately cancel
     // 立即取消
-    let cancelled = service.cancel_task(task_id);
+    let cancelled = service.cancel_task(task_id).unwrap();
     assert!(cancelled, "Task should be cancelled successfully");
 
     // Wait to ensure callback is not executed
@@ -155,7 +155,7 @@ async fn test_cancel_batch_direct() {
 
     // Batch cancel all tasks
     // 批量取消所有任务
-    let cancelled = service.cancel_batch(&task_ids);
+    let cancelled = service.cancel_batch(&task_ids).unwrap();
     assert_eq!(cancelled, 10, "All 10 tasks should be cancelled");
 
     // Wait to ensure callback is not executed
@@ -198,7 +198,7 @@ async fn test_cancel_batch_partial() {
     // Only cancel first 5 tasks
     // 只取消前 5 个任务
     let to_cancel: Vec<_> = task_ids.iter().take(5).copied().collect();
-    let cancelled = service.cancel_batch(&to_cancel);
+    let cancelled = service.cancel_batch(&to_cancel).unwrap();
     assert_eq!(cancelled, 5, "5 tasks should be cancelled");
 
     // Wait to ensure first 5 callbacks are not executed
@@ -219,7 +219,7 @@ async fn test_cancel_batch_empty() {
     // Cancel empty list
     // 取消空列表
     let empty: Vec<TaskId> = vec![];
-    let cancelled = service.cancel_batch(&empty);
+    let cancelled = service.cancel_batch(&empty).unwrap();
     assert_eq!(cancelled, 0, "No tasks should be cancelled");
 }
 
@@ -242,7 +242,7 @@ async fn test_cancelled_task_not_forwarded_to_timeout_rx() {
 
     // Cancel first task
     // 取消第一个任务
-    let cancelled = service.cancel_task(task1_id);
+    let cancelled = service.cancel_task(task1_id).unwrap();
     assert!(cancelled, "Task should be cancelled");
 
     // Wait for second task to expire

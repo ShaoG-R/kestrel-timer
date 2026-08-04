@@ -28,7 +28,7 @@ fn test_hierarchical_l1_to_l0_demotion() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     // Verify task is in L1 layer (验证任务在 L1 层)
     let location = wheel.task_index.get(task_id.key()).unwrap();
@@ -66,7 +66,7 @@ fn test_multi_round_tasks() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     // 120000ms / 1000ms = 120 L1 ticks (120000毫秒 / 1000毫秒 = 120个L1 tick)
     // 120 ticks / 64 slots = 1 round + 56 ticks (120个tick / 64个槽 = 1轮 + 56个tick)

@@ -42,7 +42,7 @@ fn test_cancel_batch() {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         task_ids.push(task_id);
     }
 
@@ -50,17 +50,17 @@ fn test_cancel_batch() {
 
     // Batch cancel first 5 tasks
     let to_cancel = &task_ids[0..5];
-    let cancelled_count = wheel.cancel_batch(to_cancel);
+    let cancelled_count = wheel.cancel_batch(to_cancel).unwrap();
 
     assert_eq!(cancelled_count, 5);
 
     // Try to cancel the same tasks again, should return 0
-    let cancelled_again = wheel.cancel_batch(to_cancel);
+    let cancelled_again = wheel.cancel_batch(to_cancel).unwrap();
     assert_eq!(cancelled_again, 0);
 
     // Cancel remaining tasks
     let remaining = &task_ids[5..10];
-    let cancelled_remaining = wheel.cancel_batch(remaining);
+    let cancelled_remaining = wheel.cancel_batch(remaining).unwrap();
     assert_eq!(cancelled_remaining, 5);
 
     assert!(wheel.is_empty());
@@ -79,12 +79,12 @@ fn test_batch_operations_same_slot() {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         task_ids.push(task_id);
     }
 
     // Batch cancel all tasks (批量取消所有任务)
-    let cancelled_count = wheel.cancel_batch(&task_ids);
+    let cancelled_count = wheel.cancel_batch(&task_ids).unwrap();
     assert_eq!(cancelled_count, 20);
     assert!(wheel.is_empty());
 }
@@ -105,16 +105,16 @@ fn test_batch_cancel_small_threshold() {
         let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         task_ids.push(task_id);
     }
 
     // Small batch cancel (should use direct cancel path) (小批量取消 (应该使用直接取消路径))
-    let cancelled = wheel.cancel_batch(&task_ids[0..3]);
+    let cancelled = wheel.cancel_batch(&task_ids[0..3]).unwrap();
     assert_eq!(cancelled, 3);
 
     // Large batch cancel (should use grouped optimization path) (大批量取消 (应该使用分组优化路径))
-    let cancelled = wheel.cancel_batch(&task_ids[3..10]);
+    let cancelled = wheel.cancel_batch(&task_ids[3..10]).unwrap();
     assert_eq!(cancelled, 7);
 
     assert!(wheel.is_empty()); // 时间轮应该为空
@@ -130,11 +130,11 @@ fn test_empty_batch_operations() {
         .expect("empty insert_batch should succeed");
 
     // Test empty batch cancel (测试空批量取消)
-    let cancelled = wheel.cancel_batch(&[]);
+    let cancelled = wheel.cancel_batch(&[]).unwrap();
     assert_eq!(cancelled, 0);
 
     // Test empty batch postpone (测试空批量延期)
-    let postponed = wheel.postpone_batch(vec![]);
+    let postponed = wheel.postpone_batch(vec![]).unwrap();
     assert_eq!(postponed, 0);
 }
 

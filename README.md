@@ -126,7 +126,7 @@ let tasks: Vec<_> = (0..100)
 let batch_handle = timer.register_batch(handles, tasks).unwrap();
 
 // Batch cancel
-batch_handle.cancel_all();
+batch_handle.cancel_all().unwrap();
 ```
 
 ### Postpone Timer
@@ -149,13 +149,13 @@ let task = TimerTask::new_oneshot(Duration::from_millis(50), callback);
 let timer_handle = timer.register(handle, task).unwrap();
 
 // Postpone and keep original callback
-timer.postpone(task_id, Duration::from_millis(150), None);
+timer.postpone(task_id, Duration::from_millis(150), None).unwrap();
 
 // Postpone and replace callback
 let new_callback = Some(CallbackWrapper::new(|| async {
     println!("New callback");
 }));
-timer.postpone(task_id, Duration::from_millis(200), new_callback);
+timer.postpone(task_id, Duration::from_millis(200), new_callback).unwrap();
 ```
 
 ### TimerService Usage
@@ -480,7 +480,7 @@ async fn apply_buff(
 }
 
 // Extend buff duration
-timer.postpone(task_id, new_duration, None);
+timer.postpone(task_id, new_duration, None).unwrap();
 ```
 
 ### 5. Retry Mechanism
@@ -520,4 +520,3 @@ The timing wheel algorithm was first proposed by George Varghese and Tony Lauck 
 ---
 
 **Full Documentation**: [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
-

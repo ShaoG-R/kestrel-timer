@@ -1,3 +1,4 @@
+use crate::error::TimerError;
 use crate::task::{CompletionReceiver, TaskId};
 use crate::wheel::Wheel;
 use parking_lot::Mutex;
@@ -42,15 +43,15 @@ impl TimerHandle {
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let allocated_handle = timer.allocate_handle();
-    /// let handle = timer.register(allocated_handle, task);
+    /// let handle = timer.register(allocated_handle, task).unwrap();
     ///
     /// // Cancel the timer
-    /// let success = handle.cancel();
+    /// let success = handle.cancel().unwrap();
     /// println!("Canceled successfully: {}", success);
     /// # }
     /// ```
     #[inline]
-    pub fn cancel(&self) -> bool {
+    pub fn cancel(&self) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.cancel(self.task_id)
     }
@@ -84,10 +85,10 @@ impl TimerHandle {
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let allocated_handle = timer.allocate_handle();
-    /// let handle = timer.register(allocated_handle, task);
+    /// let handle = timer.register(allocated_handle, task).unwrap();
     ///
     /// // Postpone to 5 seconds
-    /// let success = handle.postpone(Duration::from_secs(5), None);
+    /// let success = handle.postpone(Duration::from_secs(5), None).unwrap();
     /// println!("Postponed successfully: {}", success);
     /// # }
     /// ```
@@ -96,7 +97,7 @@ impl TimerHandle {
         &self,
         new_delay: std::time::Duration,
         callback: Option<crate::task::CallbackWrapper>,
-    ) -> bool {
+    ) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.postpone(self.task_id, new_delay, callback)
     }
@@ -143,14 +144,14 @@ impl TimerHandleWithCompletion {
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let allocated_handle = timer.allocate_handle();
-    /// let handle = timer.register(allocated_handle, task);
+    /// let handle = timer.register(allocated_handle, task).unwrap();
     ///
     /// // Cancel the timer
-    /// let success = handle.cancel();
+    /// let success = handle.cancel().unwrap();
     /// println!("Canceled successfully: {}", success);
     /// # }
     /// ```
-    pub fn cancel(&self) -> bool {
+    pub fn cancel(&self) -> Result<bool, TimerError> {
         self.handle.cancel()
     }
 
@@ -183,10 +184,10 @@ impl TimerHandleWithCompletion {
     /// let callback = Some(CallbackWrapper::new(|| async {}));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let allocated_handle = timer.allocate_handle();
-    /// let handle = timer.register(allocated_handle, task);
+    /// let handle = timer.register(allocated_handle, task).unwrap();
     ///
     /// // Postpone to 5 seconds
-    /// let success = handle.postpone(Duration::from_secs(5), None);
+    /// let success = handle.postpone(Duration::from_secs(5), None).unwrap();
     /// println!("Postponed successfully: {}", success);
     /// # }
     /// ```
@@ -194,7 +195,7 @@ impl TimerHandleWithCompletion {
         &self,
         new_delay: std::time::Duration,
         callback: Option<crate::task::CallbackWrapper>,
-    ) -> bool {
+    ) -> Result<bool, TimerError> {
         self.handle.postpone(new_delay, callback)
     }
 
@@ -215,7 +216,7 @@ impl TimerHandleWithCompletion {
     /// }));
     /// let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     /// let allocated_handle = timer.allocate_handle();
-    /// let handle = timer.register(allocated_handle, task);
+    /// let handle = timer.register(allocated_handle, task).unwrap();
     ///
     /// // Split into receiver and handle
     /// // 拆分为接收器和句柄
@@ -280,12 +281,12 @@ impl BatchHandle {
     ///     .collect();
     /// let batch = timer.register_batch(handles, tasks).unwrap();
     ///
-    /// let cancelled = batch.cancel_all();
+    /// let cancelled = batch.cancel_all().unwrap();
     /// println!("Canceled {} timers", cancelled);
     /// # }
     /// ```
     #[inline]
-    pub fn cancel_all(self) -> usize {
+    pub fn cancel_all(self) -> Result<usize, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.cancel_batch(&self.task_ids)
     }
@@ -386,12 +387,12 @@ impl BatchHandle {
     /// let (rxs, batch) = batch_with_completion.into_parts();
     ///
     /// // Postpone all timers to 5 seconds
-    /// let postponed = batch.postpone_all(Duration::from_secs(5));
+    /// let postponed = batch.postpone_all(Duration::from_secs(5)).unwrap();
     /// println!("Postponed {} timers", postponed);
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_all(self, new_delay: std::time::Duration) -> usize {
+    pub fn postpone_all(self, new_delay: std::time::Duration) -> Result<usize, TimerError> {
         let updates: Vec<_> = self.task_ids.iter().map(|&id| (id, new_delay)).collect();
         let mut wheel = self.wheel.lock();
         wheel.postpone_batch(updates)
@@ -434,12 +435,12 @@ impl BatchHandle {
     ///     Duration::from_secs(3),
     ///     Duration::from_secs(4),
     /// ];
-    /// let postponed = batch.postpone_each(new_delays);
+    /// let postponed = batch.postpone_each(new_delays).unwrap();
     /// println!("Postponed {} timers", postponed);
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> usize {
+    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> Result<usize, TimerError> {
         let updates: Vec<_> = self.task_ids.into_iter().zip(delays).collect();
         let mut wheel = self.wheel.lock();
         wheel.postpone_batch(updates)
@@ -482,7 +483,7 @@ impl BatchHandle {
     ///     (Duration::from_secs(3), None),
     ///     (Duration::from_secs(4), Some(CallbackWrapper::new(|| async {}))),
     /// ];
-    /// let postponed = batch.postpone_each_with_callbacks(updates);
+    /// let postponed = batch.postpone_each_with_callbacks(updates).unwrap();
     /// println!("Postponed {} timers", postponed);
     /// # }
     /// ```
@@ -490,7 +491,7 @@ impl BatchHandle {
     pub fn postpone_each_with_callbacks(
         self,
         updates: Vec<(std::time::Duration, Option<crate::task::CallbackWrapper>)>,
-    ) -> usize {
+    ) -> Result<usize, TimerError> {
         let updates_with_ids: Vec<_> = self
             .task_ids
             .into_iter()
@@ -547,12 +548,12 @@ impl BatchHandleWithCompletion {
     ///     .collect();
     /// let batch = timer.register_batch(handles, tasks).unwrap();
     ///
-    /// let cancelled = batch.cancel_all();
+    /// let cancelled = batch.cancel_all().unwrap();
     /// println!("Canceled {} timers", cancelled);
     /// # }
     /// ```
     #[inline]
-    pub fn cancel_all(self) -> usize {
+    pub fn cancel_all(self) -> Result<usize, TimerError> {
         self.handles.cancel_all()
     }
 
@@ -693,12 +694,12 @@ impl BatchHandleWithCompletion {
     /// let batch = timer.register_batch(handles, tasks).unwrap();
     ///
     /// // Postpone all timers to 5 seconds
-    /// let postponed = batch.postpone_all(Duration::from_secs(5));
+    /// let postponed = batch.postpone_all(Duration::from_secs(5)).unwrap();
     /// println!("Postponed {} timers", postponed);
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_all(self, new_delay: std::time::Duration) -> usize {
+    pub fn postpone_all(self, new_delay: std::time::Duration) -> Result<usize, TimerError> {
         self.handles.postpone_all(new_delay)
     }
 
@@ -738,12 +739,12 @@ impl BatchHandleWithCompletion {
     ///     Duration::from_secs(3),
     ///     Duration::from_secs(4),
     /// ];
-    /// let postponed = batch.postpone_each(new_delays);
+    /// let postponed = batch.postpone_each(new_delays).unwrap();
     /// println!("Postponed {} timers", postponed);
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> usize {
+    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> Result<usize, TimerError> {
         self.handles.postpone_each(delays)
     }
 
@@ -783,7 +784,7 @@ impl BatchHandleWithCompletion {
     ///     (Duration::from_secs(3), None),
     ///     (Duration::from_secs(4), Some(CallbackWrapper::new(|| async {}))),
     /// ];
-    /// let postponed = batch.postpone_each_with_callbacks(updates);
+    /// let postponed = batch.postpone_each_with_callbacks(updates).unwrap();
     /// println!("Postponed {} timers", postponed);
     /// # }
     /// ```
@@ -791,7 +792,7 @@ impl BatchHandleWithCompletion {
     pub fn postpone_each_with_callbacks(
         self,
         updates: Vec<(std::time::Duration, Option<crate::task::CallbackWrapper>)>,
-    ) -> usize {
+    ) -> Result<usize, TimerError> {
         self.handles.postpone_each_with_callbacks(updates)
     }
 }

@@ -1,8 +1,9 @@
 use crate::CallbackWrapper;
 use crate::config::{BatchConfig, WheelConfig};
+use crate::error::TimerError;
 use crate::task::{
     TaskCompletion, TaskHandle, TaskId, TaskLocation, TaskTypeWithCompletionNotifier,
-    TimerTaskForWheel, TimerTaskWithCompletionNotifier,
+    TimerTaskForWheel, TimerTaskWithCompletionNotifier, WheelOwner,
 };
 use deferred_map::DeferredMap;
 use std::time::Duration;
@@ -92,6 +93,11 @@ impl WheelLayer {
 ///
 /// 现在使用 DeferredMap 实现 O(1) 任务查找和代数安全
 pub struct Wheel {
+    /// Identity shared by all handles and IDs allocated by this wheel
+    ///
+    /// 此时间轮分配的所有 handle 和 ID 共享的身份
+    owner: std::sync::Arc<WheelOwner>,
+
     /// L0 layer (bottom layer)
     ///
     /// L0 层（底层）
@@ -153,6 +159,7 @@ impl Wheel {
     /// 配置参数已在 WheelConfig::builder().build() 中验证，因此此方法不会失败。
     /// 现在使用 DeferredMap 进行任务索引，具有代数安全特性。
     pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
+        let owner = WheelOwner::new();
         let l0 = WheelLayer::new(config.l0_slot_count, config.l0_tick_duration);
         let l1 = WheelLayer::new(config.l1_slot_count, config.l1_tick_duration);
 
@@ -170,6 +177,7 @@ impl Wheel {
         let estimated_capacity = (l0.slot_count / 4).max(64);
 
         Self {
+            owner,
             l0,
             l1,
             l1_tick_ratio,
@@ -255,7 +263,8 @@ impl Wheel {
     /// # 返回值
     /// 用于后续插入的唯一 handle
     pub fn allocate_handle(&mut self) -> TaskHandle {
-        TaskHandle::new(self.task_index.allocate_handle())
+        self.reclaim_dropped_handles();
+        TaskHandle::new(self.owner.clone(), self.task_index.allocate_handle())
     }
 
     /// Batch allocate handles from DeferredMap
@@ -274,11 +283,21 @@ impl Wheel {
     /// # 返回值
     /// 用于后续批量插入的唯一 handles 向量
     pub fn allocate_handles(&mut self, count: usize) -> Vec<TaskHandle> {
+        self.reclaim_dropped_handles();
         let mut handles = Vec::with_capacity(count);
         for _ in 0..count {
-            handles.push(TaskHandle::new(self.task_index.allocate_handle()));
+            handles.push(TaskHandle::new(
+                self.owner.clone(),
+                self.task_index.allocate_handle(),
+            ));
         }
         handles
+    }
+
+    fn reclaim_dropped_handles(&mut self) {
+        for handle in self.owner.take_released_handles() {
+            self.task_index.release_handle(handle);
+        }
     }
 
     /// Insert timer task
@@ -288,7 +307,8 @@ impl Wheel {
     /// - `task`: Timer task with completion notifier
     ///
     /// # Returns
-    /// Unique identifier of the task (TaskId) - now generated from DeferredMap
+    /// `Ok(())` when inserted, or `Err(TimerError::WrongWheel)` when the handle
+    /// belongs to another timing wheel.
     ///
     /// # Implementation Details
     /// - Allocates Handle from DeferredMap to generate TaskId with generational safety
@@ -304,7 +324,8 @@ impl Wheel {
     /// - `task`: 带完成通知器的定时器任务
     ///
     /// # 返回值
-    /// 任务的唯一标识符（TaskId）- 现在从 DeferredMap 生成
+    /// 插入成功返回 `Ok(())`；handle 属于其他时间轮时返回
+    /// `Err(TimerError::WrongWheel)`。
     ///
     /// # 实现细节
     /// - 自动计算任务应该插入的层级和槽位
@@ -312,7 +333,15 @@ impl Wheel {
     /// - 使用位运算优化槽索引计算
     /// - 使用 DeferredMap 实现 O(1) 查找和取消，带代数检查
     #[inline]
-    pub fn insert(&mut self, handle: TaskHandle, task: TimerTaskWithCompletionNotifier) {
+    pub fn insert(
+        &mut self,
+        handle: TaskHandle,
+        task: TimerTaskWithCompletionNotifier,
+    ) -> Result<(), TimerError> {
+        if !handle.belongs_to(self.owner.id()) {
+            return Err(TimerError::WrongWheel);
+        }
+
         let task_id = handle.task_id();
 
         let (level, ticks, rounds) = self.determine_layer(task.delay);
@@ -343,6 +372,8 @@ impl Wheel {
         // Insert task location into DeferredMap using handle
         // 使用 handle 将任务位置插入 DeferredMap
         self.task_index.insert(handle.into_handle(), location);
+
+        Ok(())
     }
 
     /// Batch insert timer tasks
@@ -354,6 +385,7 @@ impl Wheel {
     /// # Returns
     /// - `Ok(())` if all tasks are successfully inserted
     /// - `Err(TimerError::BatchLengthMismatch)` if handles and tasks lengths don't match
+    /// - `Err(TimerError::WrongWheel)` if any handle belongs to another wheel
     ///
     /// # Performance Advantages
     /// - Reduce repeated boundary checks and capacity adjustments
@@ -369,6 +401,7 @@ impl Wheel {
     /// # 返回值
     /// - `Ok(())` 如果所有任务成功插入
     /// - `Err(TimerError::BatchLengthMismatch)` 如果 handles 和 tasks 长度不匹配
+    /// - `Err(TimerError::WrongWheel)` 如果任一 handle 属于其他时间轮
     ///
     /// # 性能优势
     /// - 减少重复的边界检查和容量调整
@@ -379,14 +412,21 @@ impl Wheel {
         &mut self,
         handles: Vec<TaskHandle>,
         tasks: Vec<TimerTaskWithCompletionNotifier>,
-    ) -> Result<(), crate::error::TimerError> {
+    ) -> Result<(), TimerError> {
         // Validate that handles and tasks have the same length
         // 验证 handles 和 tasks 长度相同
         if handles.len() != tasks.len() {
-            return Err(crate::error::TimerError::BatchLengthMismatch {
+            return Err(TimerError::BatchLengthMismatch {
                 handles_len: handles.len(),
                 tasks_len: tasks.len(),
             });
+        }
+
+        if handles
+            .iter()
+            .any(|handle| !handle.belongs_to(self.owner.id()))
+        {
+            return Err(TimerError::WrongWheel);
         }
 
         for (handle, task) in handles.into_iter().zip(tasks) {
@@ -431,7 +471,8 @@ impl Wheel {
     /// - `task_id`: Task ID
     ///
     /// # Returns
-    /// Returns true if the task exists and is successfully cancelled, otherwise returns false
+    /// `Ok(true)` when cancelled, `Ok(false)` when the task is absent, or
+    /// `Err(TimerError::WrongWheel)` for an ID from another timing wheel.
     ///
     /// Now uses DeferredMap for safe task removal with generational checking
     ///
@@ -441,16 +482,21 @@ impl Wheel {
     /// - `task_id`: 任务 ID
     ///
     /// # 返回值
-    /// 如果任务存在且成功取消则返回 true，否则返回 false
+    /// 任务存在且取消成功时返回 `Ok(true)`，任务不存在时返回 `Ok(false)`，
+    /// ID 属于其他时间轮时返回 `Err(TimerError::WrongWheel)`。
     ///
     /// 现在使用 DeferredMap 实现安全的任务移除，带代数检查
     #[inline]
-    pub fn cancel(&mut self, task_id: TaskId) -> bool {
+    pub fn cancel(&mut self, task_id: TaskId) -> Result<bool, TimerError> {
+        if !task_id.belongs_to(self.owner.id()) {
+            return Err(TimerError::WrongWheel);
+        }
+
         // Remove task location from DeferredMap using TaskId as key
         // 使用 TaskId 作为 key 从 DeferredMap 中移除任务位置
         let location = match self.task_index.remove(task_id.key()) {
             Some(loc) => loc,
-            None => return false, // Task not found or already removed (generation mismatch)
+            None => return Ok(false), // Task not found or already removed (generation mismatch)
         };
 
         // Use match to get slot reference, reduce branches
@@ -465,7 +511,7 @@ impl Wheel {
         if location.vec_index >= slot.len() || slot[location.vec_index].get_id() != task_id {
             // Index inconsistent - this shouldn't happen with DeferredMap, but handle it anyway
             // 索引不一致 - DeferredMap 不应该出现这种情况，但还是处理一下
-            return false;
+            return Ok(false);
         }
 
         // Use swap_remove to remove task, record swapped task ID
@@ -505,7 +551,7 @@ impl Wheel {
             }
         }
 
-        true
+        Ok(true)
     }
 
     /// Batch cancel timer tasks
@@ -514,7 +560,8 @@ impl Wheel {
     /// - `task_ids`: List of task IDs to cancel
     ///
     /// # Returns
-    /// Number of successfully cancelled tasks
+    /// Number of successfully cancelled tasks, or `Err(TimerError::WrongWheel)`
+    /// if any ID belongs to another timing wheel.
     ///
     /// # Performance Advantages
     /// - Reduce repeated HashMap lookup overhead
@@ -528,7 +575,8 @@ impl Wheel {
     /// - `task_ids`: 要取消的任务 ID 列表
     ///
     /// # 返回值
-    /// 成功取消的任务数量
+    /// 成功取消的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # 性能优势
     /// - 减少重复的 HashMap 查找开销
@@ -536,18 +584,25 @@ impl Wheel {
     /// - 使用不稳定排序提高性能
     /// - 小批量优化：根据配置阈值跳过排序，直接处理
     #[inline]
-    pub fn cancel_batch(&mut self, task_ids: &[TaskId]) -> usize {
+    pub fn cancel_batch(&mut self, task_ids: &[TaskId]) -> Result<usize, TimerError> {
+        if task_ids
+            .iter()
+            .any(|task_id| !task_id.belongs_to(self.owner.id()))
+        {
+            return Err(TimerError::WrongWheel);
+        }
+
         let mut cancelled_count = 0;
 
         // Small batch optimization: cancel one by one to avoid grouping and sorting overhead
         // 小批量优化：逐个取消以避免分组和排序开销
         if task_ids.len() <= self.batch_config.small_batch_threshold {
-            for &task_id in task_ids {
-                if self.cancel(task_id) {
+            for task_id in task_ids.iter().copied() {
+                if self.cancel(task_id)? {
                     cancelled_count += 1;
                 }
             }
-            return cancelled_count;
+            return Ok(cancelled_count);
         }
 
         // Group by layer and slot to optimize batch cancellation
@@ -562,7 +617,7 @@ impl Wheel {
 
         // Collect information of tasks to be cancelled
         // 收集要取消的任务信息
-        for &task_id in task_ids {
+        for task_id in task_ids.iter().copied() {
             // Use DeferredMap's get with TaskId key
             // 使用 DeferredMap 的 get，传入 TaskId key
             if let Some(location) = self.task_index.get(task_id.key()) {
@@ -681,7 +736,7 @@ impl Wheel {
             }
         }
 
-        cancelled_count
+        Ok(cancelled_count)
     }
 
     /// Reinsert periodic task with the same TaskId
@@ -696,6 +751,8 @@ impl Wheel {
     ///
     /// TaskId 保持不变，只更新 DeferredMap 中的位置
     fn reinsert_periodic_task(&mut self, task_id: TaskId, task: TimerTaskWithCompletionNotifier) {
+        let task_key = task_id.key();
+
         // Determine which layer the interval should be inserted into
         // This method is only called by periodic tasks, so the interval is guaranteed to be Some.
         // 确定间隔应该插入到哪一层
@@ -728,7 +785,7 @@ impl Wheel {
 
         // Update task location in DeferredMap (doesn't remove, just updates)
         // 更新 DeferredMap 中的任务位置（不删除，仅更新）
-        if let Some(location) = self.task_index.get_mut(task_id.key()) {
+        if let Some(location) = self.task_index.get_mut(task_key) {
             *location = new_location;
         }
     }
@@ -978,7 +1035,8 @@ impl Wheel {
     /// - `new_callback`: New callback function (if None, keep original callback)
     ///
     /// # Returns
-    /// Returns true if the task exists and is successfully postponed, otherwise returns false
+    /// `Ok(true)` when postponed, `Ok(false)` when the task is absent, or
+    /// `Err(TimerError::WrongWheel)` for an ID from another timing wheel.
     ///
     /// # Implementation Details
     /// - Remove task from original layer/slot, keep its completion_notifier (will not trigger cancellation notification)
@@ -996,7 +1054,8 @@ impl Wheel {
     /// - `new_callback`: 新回调函数（如果为 None，则保留原回调）
     ///
     /// # 返回值
-    /// 如果任务存在且成功延期则返回 true，否则返回 false
+    /// 任务存在且延期成功时返回 `Ok(true)`，任务不存在时返回 `Ok(false)`，
+    /// ID 属于其他时间轮时返回 `Err(TimerError::WrongWheel)`。
     ///
     /// # 实现细节
     /// - 从原层级/槽位移除任务，保留其 completion_notifier（不会触发取消通知）
@@ -1011,12 +1070,18 @@ impl Wheel {
         task_id: TaskId,
         new_delay: Duration,
         new_callback: Option<crate::task::CallbackWrapper>,
-    ) -> bool {
+    ) -> Result<bool, TimerError> {
+        if !task_id.belongs_to(self.owner.id()) {
+            return Err(TimerError::WrongWheel);
+        }
+
+        let task_key = task_id.key();
+
         // Step 1: Get task location from DeferredMap (don't remove)
         // 步骤 1: 从 DeferredMap 获取任务位置（不删除）
-        let old_location = match self.task_index.get(task_id.key()) {
+        let old_location = match self.task_index.get(task_key) {
             Some(loc) => *loc,
-            None => return false,
+            None => return Ok(false),
         };
 
         // Use match to get slot reference
@@ -1032,7 +1097,7 @@ impl Wheel {
         {
             // Index inconsistent, return failure
             // 索引不一致，返回失败
-            return false;
+            return Ok(false);
         }
 
         // Use swap_remove to remove task from slot
@@ -1085,11 +1150,11 @@ impl Wheel {
 
         // Update task location in DeferredMap (task already exists in index)
         // 更新 DeferredMap 中的任务位置（任务已在索引中）
-        if let Some(location) = self.task_index.get_mut(task_id.key()) {
+        if let Some(location) = self.task_index.get_mut(task_key) {
             *location = new_location;
         }
 
-        true
+        Ok(true)
     }
 
     /// Batch postpone timer tasks
@@ -1098,7 +1163,8 @@ impl Wheel {
     /// - `updates`: List of tuples of (task ID, new delay)
     ///
     /// # Returns
-    /// Number of successfully postponed tasks
+    /// Number of successfully postponed tasks, or `Err(TimerError::WrongWheel)`
+    /// if any ID belongs to another timing wheel.
     ///
     /// # Performance Advantages
     /// - Batch processing reduces function call overhead
@@ -1113,7 +1179,8 @@ impl Wheel {
     /// - `updates`: (任务 ID, 新延迟) 元组列表
     ///
     /// # 返回值
-    /// 成功延期的任务数量
+    /// 成功延期的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # 性能优势
     /// - 批处理减少函数调用开销
@@ -1122,16 +1189,26 @@ impl Wheel {
     /// # 注意
     /// - 如果任务 ID 不存在，该任务将被跳过，不影响其他任务的延期
     #[inline]
-    pub fn postpone_batch(&mut self, updates: Vec<(TaskId, Duration)>) -> usize {
+    pub fn postpone_batch(
+        &mut self,
+        updates: Vec<(TaskId, Duration)>,
+    ) -> Result<usize, TimerError> {
+        if updates
+            .iter()
+            .any(|(task_id, _)| !task_id.belongs_to(self.owner.id()))
+        {
+            return Err(TimerError::WrongWheel);
+        }
+
         let mut postponed_count = 0;
 
         for (task_id, new_delay) in updates {
-            if self.postpone(task_id, new_delay, None) {
+            if self.postpone(task_id, new_delay, None)? {
                 postponed_count += 1;
             }
         }
 
-        postponed_count
+        Ok(postponed_count)
     }
 
     /// Batch postpone timer tasks (replace callbacks)
@@ -1140,7 +1217,8 @@ impl Wheel {
     /// - `updates`: List of tuples of (task ID, new delay, new callback)
     ///
     /// # Returns
-    /// Number of successfully postponed tasks
+    /// Number of successfully postponed tasks, or `Err(TimerError::WrongWheel)`
+    /// if any ID belongs to another timing wheel.
     ///
     /// 批量延期定时器任务（替换回调）
     ///
@@ -1148,20 +1226,28 @@ impl Wheel {
     /// - `updates`: (任务 ID, 新延迟, 新回调) 元组列表
     ///
     /// # 返回值
-    /// 成功延期的任务数量
+    /// 成功延期的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     pub fn postpone_batch_with_callbacks(
         &mut self,
         updates: Vec<(TaskId, Duration, Option<crate::task::CallbackWrapper>)>,
-    ) -> usize {
+    ) -> Result<usize, TimerError> {
+        if updates
+            .iter()
+            .any(|(task_id, _, _)| !task_id.belongs_to(self.owner.id()))
+        {
+            return Err(TimerError::WrongWheel);
+        }
+
         let mut postponed_count = 0;
 
         for (task_id, new_delay, new_callback) in updates {
-            if self.postpone(task_id, new_delay, new_callback) {
+            if self.postpone(task_id, new_delay, new_callback)? {
                 postponed_count += 1;
             }
         }
 
-        postponed_count
+        Ok(postponed_count)
     }
 }
 
@@ -1252,7 +1338,7 @@ mod tests {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
 
         // Verify task is in L0 layer (验证任务在 L0 层)
         let location = wheel.task_index.get(task_id.key()).unwrap();
@@ -1282,7 +1368,7 @@ mod tests {
         let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1);
         let handle1 = wheel.allocate_handle();
         let task_id1 = handle1.task_id();
-        wheel.insert(handle1, task_with_notifier1);
+        wheel.insert(handle1, task_with_notifier1).unwrap();
 
         // Insert L1 task (插入 L1 任务)
         let callback2 = CallbackWrapper::new(|| async {});
@@ -1290,18 +1376,18 @@ mod tests {
         let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2);
         let handle2 = wheel.allocate_handle();
         let task_id2 = handle2.task_id();
-        wheel.insert(handle2, task_with_notifier2);
+        wheel.insert(handle2, task_with_notifier2).unwrap();
 
         // Verify levels (验证层级)
         assert_eq!(wheel.task_index.get(task_id1.key()).unwrap().level, 0);
         assert_eq!(wheel.task_index.get(task_id2.key()).unwrap().level, 1);
 
         // Cancel L0 task (取消 L0 任务)
-        assert!(wheel.cancel(task_id1));
+        assert!(wheel.cancel(task_id1).unwrap());
         assert!(wheel.task_index.get(task_id1.key()).is_none());
 
         // Cancel L1 task (取消 L1 任务)
-        assert!(wheel.cancel(task_id2));
+        assert!(wheel.cancel(task_id2).unwrap());
         assert!(wheel.task_index.get(task_id2.key()).is_none());
 
         assert!(wheel.is_empty()); // 时间轮应该为空
@@ -1338,7 +1424,7 @@ mod tests {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id: TaskId = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
 
         // Advance 1 tick, task should trigger (前进 1 个 tick，任务应该触发)
         let expired = wheel.advance();
@@ -1381,7 +1467,7 @@ mod tests {
         let (task_with_notifier1, _rx1) = TimerTaskWithCompletionNotifier::from_timer_task(task1);
         let handle1 = wheel.allocate_handle();
         let task_id_1 = handle1.task_id();
-        wheel.insert(handle1, task_with_notifier1);
+        wheel.insert(handle1, task_with_notifier1).unwrap();
 
         // Second task: delay 5110ms (511 ticks), should trigger on slot 511 (第二个任务：延迟 5110毫秒 (511个tick)，应该在槽 511 触发)
         let callback2 = CallbackWrapper::new(|| async {});
@@ -1389,7 +1475,7 @@ mod tests {
         let (task_with_notifier2, _rx2) = TimerTaskWithCompletionNotifier::from_timer_task(task2);
         let handle2 = wheel.allocate_handle();
         let task_id_2 = handle2.task_id();
-        wheel.insert(handle2, task_with_notifier2);
+        wheel.insert(handle2, task_with_notifier2).unwrap();
 
         // Advance 1 tick, first task should trigger (前进 1 个 tick，第一个任务应该触发)
         let expired = wheel.advance();
@@ -1429,11 +1515,31 @@ mod tests {
             let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             let handle = wheel.allocate_handle();
             let task_id = handle.task_id();
-            wheel.insert(handle, task_with_notifier);
+            wheel.insert(handle, task_with_notifier).unwrap();
 
             assert!(task_ids.insert(task_id), "TaskId should be unique"); // TaskId 应该唯一
         }
 
         assert_eq!(task_ids.len(), 100);
+    }
+
+    #[test]
+    fn test_cross_wheel_handle_is_rejected() {
+        let mut source = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let mut target = Wheel::new(WheelConfig::default(), BatchConfig::default());
+
+        let handle = source.allocate_handle();
+        let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
+        let (task_with_notifier, _receiver) =
+            TimerTaskWithCompletionNotifier::from_timer_task(task);
+
+        assert_eq!(
+            target.insert(handle, task_with_notifier),
+            Err(TimerError::WrongWheel)
+        );
+
+        // The rejected handle is reclaimed by its original wheel before the
+        // next allocation.
+        let _next_handle = source.allocate_handle();
     }
 }

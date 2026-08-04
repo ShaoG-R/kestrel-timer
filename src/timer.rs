@@ -1,6 +1,7 @@
 pub mod handle;
 
 use crate::config::{BatchConfig, ServiceConfig, WheelConfig};
+use crate::error::TimerError;
 use crate::task::{CallbackWrapper, TaskHandle, TaskId};
 use crate::wheel::Wheel;
 use handle::{BatchHandle, BatchHandleWithCompletion, TimerHandle, TimerHandleWithCompletion};
@@ -57,7 +58,7 @@ impl TimerWheel {
     ///     // 使用两步 API：先分配 handle，再注册
     ///     let handle = timer.allocate_handle();
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(1), None);
-    ///     let _timer_handle = timer.register(handle, task);
+    ///     let _timer_handle = timer.register(handle, task).unwrap();
     /// }
     /// ```
     pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
@@ -232,7 +233,8 @@ impl TimerWheel {
     /// - `task`: Task created via `create_task()`
     ///
     /// # Returns
-    /// Return timer handle with completion receiver that can be used to cancel timer and receive completion notifications
+    /// Return `Ok` with a timer handle and completion receiver. Returns
+    /// `Err(TimerError::WrongWheel)` when the handle belongs to another wheel.
     ///
     /// 注册定时器任务到时间轮 (注册阶段)
     ///
@@ -240,7 +242,8 @@ impl TimerWheel {
     /// - `task`: 通过 `create_task()` 创建的任务
     ///
     /// # 返回值
-    /// 返回包含完成通知接收器的定时器句柄，可用于取消定时器和接收完成通知
+    /// 成功时返回包含完成通知接收器的定时器句柄；handle 属于其他时间轮时
+    /// 返回 `Err(TimerError::WrongWheel)`。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -262,7 +265,7 @@ impl TimerWheel {
     ///     })));
     ///     
     ///     // Step 3: Register task
-    ///     let handle = timer.register(allocated_handle, task);
+    ///     let handle = timer.register(allocated_handle, task).unwrap();
     ///     
     ///     // Wait for timer completion
     ///     // 等待定时器完成
@@ -281,7 +284,7 @@ impl TimerWheel {
         &self,
         handle: TaskHandle,
         task: crate::task::TimerTask,
-    ) -> TimerHandleWithCompletion {
+    ) -> Result<TimerHandleWithCompletion, TimerError> {
         let task_id = handle.task_id();
 
         let (task, completion_rx) =
@@ -290,9 +293,12 @@ impl TimerWheel {
         // Single lock to complete all operations
         // 单次加锁完成所有操作
         let mut wheel_guard = self.wheel.lock();
-        wheel_guard.insert(handle, task);
+        wheel_guard.insert(handle, task)?;
 
-        TimerHandleWithCompletion::new(TimerHandle::new(task_id, self.wheel.clone()), completion_rx)
+        Ok(TimerHandleWithCompletion::new(
+            TimerHandle::new(task_id, self.wheel.clone()),
+            completion_rx,
+        ))
     }
 
     /// Batch register timer tasks to timing wheel (registration phase)
@@ -304,6 +310,7 @@ impl TimerWheel {
     /// # Returns
     /// - `Ok(BatchHandleWithCompletion)` if all tasks are successfully registered
     /// - `Err(TimerError::BatchLengthMismatch)` if handles and tasks lengths don't match
+    /// - `Err(TimerError::WrongWheel)` if any handle belongs to another wheel
     ///
     /// 批量注册定时器任务到时间轮 (注册阶段)
     ///
@@ -314,6 +321,7 @@ impl TimerWheel {
     /// # 返回值
     /// - `Ok(BatchHandleWithCompletion)` 如果所有任务成功注册
     /// - `Err(TimerError::BatchLengthMismatch)` 如果 handles 和 tasks 长度不匹配
+    /// - `Err(TimerError::WrongWheel)` 如果任一 handle 属于其他时间轮
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -343,10 +351,10 @@ impl TimerWheel {
         &self,
         handles: Vec<TaskHandle>,
         tasks: Vec<crate::task::TimerTask>,
-    ) -> Result<BatchHandleWithCompletion, crate::error::TimerError> {
+    ) -> Result<BatchHandleWithCompletion, TimerError> {
         // Validate lengths match
         if handles.len() != tasks.len() {
-            return Err(crate::error::TimerError::BatchLengthMismatch {
+            return Err(TimerError::BatchLengthMismatch {
                 handles_len: handles.len(),
                 tasks_len: tasks.len(),
             });
@@ -387,7 +395,8 @@ impl TimerWheel {
     /// - `task_id`: Task ID
     ///
     /// # Returns
-    /// Returns true if task exists and is successfully cancelled, otherwise false
+    /// Returns `Ok(true)` when cancelled, `Ok(false)` when absent, or
+    /// `Err(TimerError::WrongWheel)` for an ID from another wheel.
     ///
     /// 取消定时器
     ///
@@ -395,7 +404,8 @@ impl TimerWheel {
     /// - `task_id`: 任务 ID
     ///
     /// # 返回值
-    /// 如果任务存在且成功取消则返回 true，否则返回 false
+    /// 任务存在且取消成功时返回 `Ok(true)`，任务不存在时返回 `Ok(false)`，
+    /// ID 属于其他时间轮时返回 `Err(TimerError::WrongWheel)`。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -415,16 +425,16 @@ impl TimerWheel {
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(10), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
     ///     })));
-    ///     let _handle = timer.register(allocated_handle, task);
+    ///     let _handle = timer.register(allocated_handle, task).unwrap();
     ///     
     ///     // Cancel task using task ID
     ///     // 使用任务 ID 取消任务
-    ///     let cancelled = timer.cancel(task_id);
+    ///     let cancelled = timer.cancel(task_id).unwrap();
     ///     println!("Canceled successfully: {}", cancelled);
     /// }
     /// ```
     #[inline]
-    pub fn cancel(&self, task_id: TaskId) -> bool {
+    pub fn cancel(&self, task_id: TaskId) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.cancel(task_id)
     }
@@ -435,7 +445,8 @@ impl TimerWheel {
     /// - `task_ids`: List of task IDs to cancel
     ///
     /// # Returns
-    /// Number of successfully cancelled tasks
+    /// Number of successfully cancelled tasks, or
+    /// `Err(TimerError::WrongWheel)` if any ID belongs to another wheel.
     ///
     /// 批量取消定时器
     ///
@@ -443,7 +454,8 @@ impl TimerWheel {
     /// - `task_ids`: 要取消的任务 ID 列表
     ///
     /// # 返回值
-    /// 成功取消的任务数量
+    /// 成功取消的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # Performance Advantages
     /// - Batch processing reduces lock contention
@@ -470,18 +482,18 @@ impl TimerWheel {
     ///     let h3 = timer.allocate_handle();
     ///     let task_ids = vec![h1.task_id(), h2.task_id(), h3.task_id()];
     ///     
-    ///     let _h1 = timer.register(h1, task1);
-    ///     let _h2 = timer.register(h2, task2);
-    ///     let _h3 = timer.register(h3, task3);
+    ///     let _h1 = timer.register(h1, task1).unwrap();
+    ///     let _h2 = timer.register(h2, task2).unwrap();
+    ///     let _h3 = timer.register(h3, task3).unwrap();
     ///     
     ///     // Batch cancel
     ///     // 批量取消
-    ///     let cancelled = timer.cancel_batch(&task_ids);
+    ///     let cancelled = timer.cancel_batch(&task_ids).unwrap();
     ///     println!("Canceled {} timers", cancelled);
     /// }
     /// ```
     #[inline]
-    pub fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
+    pub fn cancel_batch(&self, task_ids: &[TaskId]) -> Result<usize, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.cancel_batch(task_ids)
     }
@@ -494,7 +506,8 @@ impl TimerWheel {
     /// - `callback`: New callback function, pass `None` to keep original callback, pass `Some` to replace with new callback
     ///
     /// # Returns
-    /// Returns true if task exists and is successfully postponed, otherwise false
+    /// Returns `Ok(true)` when postponed, `Ok(false)` when absent, or
+    /// `Err(TimerError::WrongWheel)` for an ID from another wheel.
     ///
     /// 推迟定时器
     ///
@@ -504,7 +517,8 @@ impl TimerWheel {
     /// - `callback`: 新的回调函数，传递 `None` 保持原始回调，传递 `Some` 替换为新的回调
     ///
     /// # 返回值
-    /// 如果任务存在且成功推迟则返回 true，否则返回 false
+    /// 任务存在且延期成功时返回 `Ok(true)`，任务不存在时返回 `Ok(false)`，
+    /// ID 属于其他时间轮时返回 `Err(TimerError::WrongWheel)`。
     ///
     /// # Note
     /// - Task ID remains unchanged after postponement
@@ -533,11 +547,13 @@ impl TimerWheel {
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
     ///         println!("Timer fired!");
     ///     })));
-    ///     let _handle = timer.register(allocated_handle, task);
+    ///     let _handle = timer.register(allocated_handle, task).unwrap();
     ///     
     ///     // Postpone to 10 seconds after triggering, and keep original callback
     ///     // 推迟到 10 秒后触发，并保持原始回调
-    ///     let success = timer.postpone(task_id, Duration::from_secs(10), None);
+    ///     let success = timer
+    ///         .postpone(task_id, Duration::from_secs(10), None)
+    ///         .unwrap();
     ///     println!("Postponed successfully: {}", success);
     /// }
     /// ```
@@ -558,13 +574,13 @@ impl TimerWheel {
     ///     let task = TimerTask::new_oneshot(Duration::from_secs(5), Some(CallbackWrapper::new(|| async {
     ///         println!("Original callback!");
     ///     })));
-    ///     let _handle = timer.register(allocated_handle, task);
+    ///     let _handle = timer.register(allocated_handle, task).unwrap();
     ///     
     ///     // Postpone to 10 seconds after triggering, and replace with new callback
     ///     // 推迟到 10 秒后触发，并替换为新的回调
     ///     let success = timer.postpone(task_id, Duration::from_secs(10), Some(CallbackWrapper::new(|| async {
     ///         println!("New callback!");
-    ///     })));
+    ///     }))).unwrap();
     ///     println!("Postponed successfully: {}", success);
     /// }
     /// ```
@@ -574,7 +590,7 @@ impl TimerWheel {
         task_id: TaskId,
         new_delay: Duration,
         callback: Option<CallbackWrapper>,
-    ) -> bool {
+    ) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.postpone(task_id, new_delay, callback)
     }
@@ -585,7 +601,8 @@ impl TimerWheel {
     /// - `updates`: List of tuples of (task ID, new delay)
     ///
     /// # Returns
-    /// Number of successfully postponed tasks
+    /// Number of successfully postponed tasks, or
+    /// `Err(TimerError::WrongWheel)` if any ID belongs to another wheel.
     ///
     /// 批量推迟定时器 (保持原始回调)
     ///
@@ -593,7 +610,8 @@ impl TimerWheel {
     /// - `updates`: (任务 ID, 新延迟) 元组列表
     ///
     /// # 返回值
-    /// 成功推迟的任务数量
+    /// 成功推迟的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # Note
     /// - This method keeps all tasks' original callbacks unchanged
@@ -639,18 +657,18 @@ impl TimerWheel {
     ///         (h3.task_id(), Duration::from_secs(20)),
     ///     ];
     ///     
-    ///     timer.register(h1, task1);
-    ///     timer.register(h2, task2);
-    ///     timer.register(h3, task3);
+    ///     timer.register(h1, task1).unwrap();
+    ///     timer.register(h2, task2).unwrap();
+    ///     timer.register(h3, task3).unwrap();
     ///     
     ///     // Batch postpone (keep original callbacks)
     ///     // 批量推迟 (保持原始回调)
-    ///     let postponed = timer.postpone_batch(task_ids);
+    ///     let postponed = timer.postpone_batch(task_ids).unwrap();
     ///     println!("Postponed {} timers", postponed);
     /// }
     /// ```
     #[inline]
-    pub fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> usize {
+    pub fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> Result<usize, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.postpone_batch(updates)
     }
@@ -661,7 +679,8 @@ impl TimerWheel {
     /// - `updates`: List of tuples of (task ID, new delay, new callback)
     ///
     /// # Returns
-    /// Number of successfully postponed tasks
+    /// Number of successfully postponed tasks, or
+    /// `Err(TimerError::WrongWheel)` if any ID belongs to another wheel.
     ///
     /// 批量推迟定时器 (替换回调)
     ///
@@ -669,7 +688,8 @@ impl TimerWheel {
     /// - `updates`: (任务 ID, 新延迟, 新回调) 元组列表
     ///
     /// # 返回值
-    /// 成功推迟的任务数量
+    /// 成功推迟的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # Performance Advantages
     /// - Batch processing reduces lock contention
@@ -698,8 +718,8 @@ impl TimerWheel {
     ///     let id1 = h1.task_id();
     ///     let id2 = h2.task_id();
     ///     
-    ///     timer.register(h1, task1);
-    ///     timer.register(h2, task2);
+    ///     timer.register(h1, task1).unwrap();
+    ///     timer.register(h2, task2).unwrap();
     ///     
     ///     // Batch postpone and replace callbacks
     ///     // 批量推迟并替换回调
@@ -713,7 +733,7 @@ impl TimerWheel {
     ///             })))
     ///         })
     ///         .collect();
-    ///     let postponed = timer.postpone_batch_with_callbacks(updates);
+    ///     let postponed = timer.postpone_batch_with_callbacks(updates).unwrap();
     ///     println!("Postponed {} timers", postponed);
     /// }
     /// ```
@@ -721,9 +741,9 @@ impl TimerWheel {
     pub fn postpone_batch_with_callbacks(
         &self,
         updates: Vec<(TaskId, Duration, Option<CallbackWrapper>)>,
-    ) -> usize {
+    ) -> Result<usize, TimerError> {
         let mut wheel = self.wheel.lock();
-        wheel.postpone_batch_with_callbacks(updates.to_vec())
+        wheel.postpone_batch_with_callbacks(updates)
     }
 
     /// Core tick loop
@@ -832,7 +852,7 @@ mod tests {
             })),
         );
         let allocate_handle = timer.allocate_handle();
-        let _handle = timer.register(allocate_handle, task);
+        let _handle = timer.register(allocate_handle, task).unwrap();
 
         // Wait for timer to trigger
         // 等待定时器触发

@@ -23,6 +23,11 @@ pub enum TimerError {
     /// 注册失败，内部通道已满或已关闭
     RegisterFailed,
 
+    /// A task handle or task ID belongs to another timing wheel
+    ///
+    /// 任务句柄或任务 ID 属于另一个时间轮
+    WrongWheel,
+
     /// Batch operation failed: handles and tasks length mismatch
     ///
     /// 批量操作失败：handles 和 tasks 长度不匹配
@@ -53,6 +58,12 @@ impl fmt::Display for TimerError {
                 write!(
                     f,
                     "Registration failed: internal channel is full or closed (注册失败: 内部通道已满或已关闭)"
+                )
+            }
+            TimerError::WrongWheel => {
+                write!(
+                    f,
+                    "Task belongs to a different timing wheel (任务属于另一个时间轮)"
                 )
             }
             TimerError::BatchLengthMismatch {

@@ -27,7 +27,7 @@ async fn test_periodic_basic() {
         None, // use default buffer size
     );
     let allocate_handle = timer.allocate_handle();
-    let (mut rx, _handle) = timer.register(allocate_handle, task).into_parts();
+    let (mut rx, _handle) = timer.register(allocate_handle, task).unwrap().into_parts();
 
     // Wait for 3 periodic executions (50ms initial + 50ms * 2)
     // 等待 3 次周期执行（50ms 初始 + 50ms * 2）
@@ -77,7 +77,7 @@ async fn test_periodic_cancel() {
         None,
     );
     let allocate_handle = timer.allocate_handle();
-    let handle = timer.register(allocate_handle, task);
+    let handle = timer.register(allocate_handle, task).unwrap();
 
     // Wait for first execution
     // 等待第一次执行
@@ -90,7 +90,7 @@ async fn test_periodic_cancel() {
 
     // Cancel periodic task
     // 取消周期任务
-    let cancelled = handle.cancel();
+    let cancelled = handle.cancel().unwrap();
     assert!(cancelled);
 
     // Wait some more time and verify task stopped
@@ -128,7 +128,7 @@ async fn test_periodic_cancel_notification() {
         None,
     );
     let allocate_handle = timer.allocate_handle();
-    let (mut rx, handle) = timer.register(allocate_handle, task).into_parts();
+    let (mut rx, handle) = timer.register(allocate_handle, task).unwrap().into_parts();
 
     // Wait for first execution
     // 等待第一次执行
@@ -136,7 +136,7 @@ async fn test_periodic_cancel_notification() {
 
     // Cancel the task
     // 取消任务
-    let cancelled = handle.cancel();
+    let cancelled = handle.cancel().unwrap();
     assert!(cancelled);
 
     // Wait a bit for the cancel notification
@@ -184,11 +184,13 @@ async fn test_periodic_postpone() {
     );
     let allocate_handle = timer.allocate_handle();
     let task_id = allocate_handle.task_id();
-    let _handle = timer.register(allocate_handle, task);
+    let _handle = timer.register(allocate_handle, task).unwrap();
 
     // Immediately postpone the task to 150ms
     // 立即推迟任务到 150ms
-    let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
+    let postponed = timer
+        .postpone(task_id, Duration::from_millis(150), None)
+        .unwrap();
     assert!(postponed);
 
     // Wait original time, should not trigger
@@ -236,20 +238,22 @@ async fn test_periodic_postpone_with_callback() {
     );
     let allocate_handle = timer.allocate_handle();
     let task_id = allocate_handle.task_id();
-    let _handle = timer.register(allocate_handle, task);
+    let _handle = timer.register(allocate_handle, task).unwrap();
 
     // Postpone task and replace callback, new callback adds 10
     // 推迟任务并替换回调，新回调增加 10
-    let postponed = timer.postpone(
-        task_id,
-        Duration::from_millis(100),
-        Some(CallbackWrapper::new(move || {
-            let counter = Arc::clone(&counter_clone2);
-            async move {
-                counter.fetch_add(10, Ordering::SeqCst);
-            }
-        })),
-    );
+    let postponed = timer
+        .postpone(
+            task_id,
+            Duration::from_millis(100),
+            Some(CallbackWrapper::new(move || {
+                let counter = Arc::clone(&counter_clone2);
+                async move {
+                    counter.fetch_add(10, Ordering::SeqCst);
+                }
+            })),
+        )
+        .unwrap();
     assert!(postponed);
 
     // Wait for task to trigger
@@ -295,7 +299,7 @@ async fn test_periodic_completion_receiver() {
         None,
     );
     let allocate_handle = timer.allocate_handle();
-    let (mut rx, _handle) = timer.register(allocate_handle, task).into_parts();
+    let (mut rx, _handle) = timer.register(allocate_handle, task).unwrap().into_parts();
 
     // Continuously receive completion notifications
     // 持续接收完成通知

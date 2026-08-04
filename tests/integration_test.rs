@@ -34,7 +34,9 @@ async fn test_large_scale_timers() {
                 })),
             );
             let handle = timer_clone.allocate_handle();
-            timer_clone.register(handle, task)
+            timer_clone
+                .register(handle, task)
+                .expect("register should succeed")
         };
         futures.push(future);
     }
@@ -77,7 +79,7 @@ async fn test_timer_precision() {
         })),
     );
     let allocated_handle = timer.allocate_handle();
-    let handle = timer.register(allocated_handle, task);
+    let handle = timer.register(allocated_handle, task).unwrap();
 
     // Use completion_receiver to wait for timer completion, instead of fixed sleep time
     // This can avoid race conditions
@@ -135,7 +137,9 @@ async fn test_concurrent_operations() {
                     })),
                 );
                 let handle = timer_clone.allocate_handle();
-                timer_clone.register(handle, task)
+                timer_clone
+                    .register(handle, task)
+                    .expect("register should succeed")
             };
 
             all_futures.push(future);
@@ -178,7 +182,7 @@ async fn test_timer_with_different_delays() {
             })),
         );
         let allocated_handle = timer.allocate_handle();
-        let handle = timer.register(allocated_handle, task);
+        let handle = timer.register(allocated_handle, task).unwrap();
 
         handles.push(handle);
     }
@@ -221,7 +225,9 @@ async fn test_memory_efficiency() {
         let future = async move {
             let task = TimerTask::new_oneshot(Duration::from_secs(10), None);
             let handle = timer_clone.allocate_handle();
-            timer_clone.register(handle, task)
+            timer_clone
+                .register(handle, task)
+                .expect("register should succeed")
         };
         create_futures.push(future);
     }
@@ -232,7 +238,7 @@ async fn test_memory_efficiency() {
     // 取消所有定时器（现在同步操作）
     let cancelled_count = handles
         .into_iter()
-        .map(|handle| handle.cancel())
+        .map(|handle| handle.cancel().unwrap())
         .filter(|&success| success)
         .count();
 
@@ -312,7 +318,7 @@ async fn test_batch_cancel() {
     // Batch cancel (using BatchHandle's cancel_all method)
     // 批量取消（使用 BatchHandle 的 cancel_all 方法）
     let start = Instant::now();
-    let cancelled = batch.cancel_all();
+    let cancelled = batch.cancel_all().unwrap();
     let elapsed = start.elapsed();
 
     println!("Batch canceling {} timers took: {:?}", TIMER_COUNT, elapsed);
@@ -347,7 +353,7 @@ async fn test_batch_cancel_partial() {
     // Cancel first 5 (取消前 5 个)
     let mut cancelled_count = 0;
     for handle in handles {
-        if handle.cancel() {
+        if handle.cancel().unwrap() {
             cancelled_count += 1;
         }
     }
@@ -363,7 +369,7 @@ async fn test_batch_cancel_partial() {
     // 尝试取消已经触发的定时器
     let mut cancelled_after = 0;
     for handle in remaining_handles {
-        if handle.cancel() {
+        if handle.cancel().unwrap() {
             cancelled_after += 1;
         }
     }
@@ -425,11 +431,13 @@ async fn test_postpone_single_timer() {
             }
         })),
     );
-    let handle = timer.register(allocated_handle, task);
+    let handle = timer.register(allocated_handle, task).unwrap();
 
     // Postpone task to 150ms
     // 推迟任务到 150ms
-    let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
+    let postponed = timer
+        .postpone(task_id, Duration::from_millis(150), None)
+        .unwrap();
     assert!(postponed, "Task should have been successfully postponed");
 
     // Wait for original time 50ms, task should not trigger
@@ -483,20 +491,22 @@ async fn test_postpone_with_new_callback() {
             }
         })),
     );
-    let handle = timer.register(allocated_handle, task);
+    let handle = timer.register(allocated_handle, task).unwrap();
 
     // Postpone task and replace callback, new callback adds 10
     // 推迟任务并替换回调，新回调增加 10
-    let postponed = timer.postpone(
-        task_id,
-        Duration::from_millis(100),
-        Some(CallbackWrapper::new(move || {
-            let counter = Arc::clone(&counter_clone2);
-            async move {
-                counter.fetch_add(10, Ordering::SeqCst);
-            }
-        })),
-    );
+    let postponed = timer
+        .postpone(
+            task_id,
+            Duration::from_millis(100),
+            Some(CallbackWrapper::new(move || {
+                let counter = Arc::clone(&counter_clone2);
+                async move {
+                    counter.fetch_add(10, Ordering::SeqCst);
+                }
+            })),
+        )
+        .unwrap();
     assert!(
         postponed,
         "Task should have been successfully postponed and replaced callback"
@@ -548,13 +558,13 @@ async fn test_batch_postpone() {
             })),
         );
         task_ids.push((task_id, Duration::from_millis(150)));
-        timer.register(allocated_handle, task);
+        timer.register(allocated_handle, task).unwrap();
     }
 
     // Batch postpone
     // 批量推迟
     let start = Instant::now();
-    let postponed = timer.postpone_batch(task_ids);
+    let postponed = timer.postpone_batch(task_ids).unwrap();
     let elapsed = start.elapsed();
 
     println!("Batch postponing {} timers took: {:?}", BATCH_SIZE, elapsed);
@@ -598,7 +608,7 @@ async fn test_postpone_batch_with_callbacks() {
         let task_id = allocated_handle.task_id();
         let task = TimerTask::new_oneshot(Duration::from_millis(50), None);
         task_ids.push(task_id);
-        timer.register(allocated_handle, task);
+        timer.register(allocated_handle, task).unwrap();
     }
 
     // Batch postpone and replace callbacks
@@ -621,7 +631,7 @@ async fn test_postpone_batch_with_callbacks() {
         .collect();
 
     let start = Instant::now();
-    let postponed = timer.postpone_batch_with_callbacks(updates);
+    let postponed = timer.postpone_batch_with_callbacks(updates).unwrap();
     let elapsed = start.elapsed();
 
     println!(
@@ -671,11 +681,15 @@ async fn test_postpone_multiple_times() {
             }
         })),
     );
-    let handle = timer.register(allocated_handle, task);
+    let handle = timer.register(allocated_handle, task).unwrap();
 
     // First postpone to 100ms
     // 第一次推迟到 100ms
-    assert!(timer.postpone(task_id, Duration::from_millis(100), None));
+    assert!(
+        timer
+            .postpone(task_id, Duration::from_millis(100), None)
+            .unwrap()
+    );
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert_eq!(
         counter.load(Ordering::SeqCst),
@@ -685,7 +699,11 @@ async fn test_postpone_multiple_times() {
 
     // Second postpone to 150ms
     // 第二次推迟到 150ms
-    assert!(timer.postpone(task_id, Duration::from_millis(150), None));
+    assert!(
+        timer
+            .postpone(task_id, Duration::from_millis(150), None)
+            .unwrap()
+    );
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert_eq!(
         counter.load(Ordering::SeqCst),
@@ -695,7 +713,11 @@ async fn test_postpone_multiple_times() {
 
     // Third postpone to 100ms
     // 第三次推迟到 100ms
-    assert!(timer.postpone(task_id, Duration::from_millis(100), None));
+    assert!(
+        timer
+            .postpone(task_id, Duration::from_millis(100), None)
+            .unwrap()
+    );
 
     // Wait for final trigger
     // 等待最终触发
@@ -742,7 +764,9 @@ async fn test_postpone_with_service() {
 
     // Postpone task
     // 推迟任务
-    let postponed = service.postpone(task_id, Duration::from_millis(150), None);
+    let postponed = service
+        .postpone(task_id, Duration::from_millis(150), None)
+        .unwrap();
     assert!(postponed, "Task should have been successfully postponed");
 
     // Wait for original time, task should not trigger
@@ -903,14 +927,16 @@ async fn test_multiple_services_concurrent_operations() {
                     // Service 0, 3: Postpone some timers
                     // 服务 0, 3: 推迟一些定时器
                     for task_id in task_ids.iter().step_by(2) {
-                        service.postpone(*task_id, Duration::from_millis(150), None);
+                        service
+                            .postpone(*task_id, Duration::from_millis(150), None)
+                            .unwrap();
                     }
                 }
                 1 => {
                     // Service 1, 4: Cancel some timers
                     // 服务 1, 4: 取消一些定时器
                     for task_id in task_ids.iter().step_by(3) {
-                        timer_clone.cancel(*task_id);
+                        timer_clone.cancel(*task_id).unwrap();
                     }
                 }
                 _ => {
@@ -1017,7 +1043,7 @@ async fn test_service_isolation() {
     // Cancel all tasks of service1
     // 取消服务 1 的所有任务
     for task_id in task_ids_1 {
-        timer.cancel(task_id);
+        timer.cancel(task_id).unwrap();
     }
 
     // Wait for timers to trigger

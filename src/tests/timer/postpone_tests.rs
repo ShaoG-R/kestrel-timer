@@ -21,11 +21,13 @@ async fn test_postpone_timer() {
     );
     let allocate_handle = timer.allocate_handle();
     let task_id = allocate_handle.task_id();
-    let handle = timer.register(allocate_handle, task);
+    let handle = timer.register(allocate_handle, task).unwrap();
 
     // Postpone task to 150ms
     // 推迟任务到 150ms
-    let postponed = timer.postpone(task_id, Duration::from_millis(150), None);
+    let postponed = timer
+        .postpone(task_id, Duration::from_millis(150), None)
+        .unwrap();
     assert!(postponed);
 
     // Wait for original time 50ms, task should not trigger
@@ -71,20 +73,22 @@ async fn test_postpone_with_callback() {
     );
     let allocate_handle = timer.allocate_handle();
     let task_id = allocate_handle.task_id();
-    let handle = timer.register(allocate_handle, task);
+    let handle = timer.register(allocate_handle, task).unwrap();
 
     // Postpone task and replace callback, new callback adds 10
     // 推迟任务并替换回调，新回调增加 10
-    let postponed = timer.postpone(
-        task_id,
-        Duration::from_millis(100),
-        Some(CallbackWrapper::new(move || {
-            let counter = Arc::clone(&counter_clone2);
-            async move {
-                counter.fetch_add(10, Ordering::SeqCst);
-            }
-        })),
-    );
+    let postponed = timer
+        .postpone(
+            task_id,
+            Duration::from_millis(100),
+            Some(CallbackWrapper::new(move || {
+                let counter = Arc::clone(&counter_clone2);
+                async move {
+                    counter.fetch_add(10, Ordering::SeqCst);
+                }
+            })),
+        )
+        .unwrap();
     assert!(postponed);
 
     // Wait for task to trigger (after postponed, need to wait 100ms, plus margin)
@@ -126,11 +130,13 @@ async fn test_postpone_keeps_completion_receiver_valid() {
     );
     let allocate_handle = timer.allocate_handle();
     let task_id = allocate_handle.task_id();
-    let handle = timer.register(allocate_handle, task);
+    let handle = timer.register(allocate_handle, task).unwrap();
 
     // Postpone task
     // 推迟任务
-    timer.postpone(task_id, Duration::from_millis(100), None);
+    timer
+        .postpone(task_id, Duration::from_millis(100), None)
+        .unwrap();
 
     // Verify original completion_receiver is still valid (after postponed, need to wait 100ms, plus margin)
     // 验证原始完成接收器是否仍然有效（推迟后，需要等待 100ms，加上余量）

@@ -310,8 +310,9 @@ impl TimerService {
     /// - `task_id`: Task ID to cancel
     ///
     /// # Returns
-    /// - `true`: Task exists and cancellation is successful
-    /// - `false`: Task does not exist or cancellation fails
+    /// - `Ok(true)`: Task exists and cancellation is successful
+    /// - `Ok(false)`: Task does not exist or cancellation fails
+    /// - `Err(TimerError::WrongWheel)`: Task ID belongs to another wheel
     ///
     /// 取消指定任务
     ///
@@ -319,8 +320,9 @@ impl TimerService {
     /// - `task_id`: 任务 ID
     ///
     /// # 返回值
-    /// - `true`: 任务存在且取消成功
-    /// - `false`: 任务不存在或取消失败
+    /// - `Ok(true)`: 任务存在且取消成功
+    /// - `Ok(false)`: 任务不存在或取消失败
+    /// - `Err(TimerError::WrongWheel)`: 任务 ID 属于另一个时间轮
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -342,12 +344,12 @@ impl TimerService {
     /// service.register(handle, task).unwrap(); // 注册定时器
     ///
     /// // Cancel task
-    /// let cancelled = service.cancel_task(task_id);
+    /// let cancelled = service.cancel_task(task_id).unwrap();
     /// println!("Task cancelled: {}", cancelled); // 任务取消
     /// # }
     /// ```
     #[inline]
-    pub fn cancel_task(&self, task_id: TaskId) -> bool {
+    pub fn cancel_task(&self, task_id: TaskId) -> Result<bool, TimerError> {
         // Direct cancellation, no need to notify Actor
         // FuturesUnordered will automatically clean up when tasks are cancelled
         // 直接取消，无需通知 Actor
@@ -364,7 +366,8 @@ impl TimerService {
     /// - `task_ids`: List of task IDs to cancel
     ///
     /// # Returns
-    /// Number of successfully cancelled tasks
+    /// Number of successfully cancelled tasks, or
+    /// `Err(TimerError::WrongWheel)` if any ID belongs to another wheel.
     ///
     /// 批量取消任务
     ///
@@ -372,7 +375,8 @@ impl TimerService {
     /// - `task_ids`: 任务 ID 列表
     ///
     /// # 返回值
-    /// 成功取消的任务数量
+    /// 成功取消的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -397,14 +401,14 @@ impl TimerService {
     /// service.register_batch(handles, tasks).unwrap(); // 注册定时器
     ///
     /// // Batch cancel
-    /// let cancelled = service.cancel_batch(&task_ids);
+    /// let cancelled = service.cancel_batch(&task_ids).unwrap();
     /// println!("Cancelled {} tasks", cancelled); // 任务取消
     /// # }
     /// ```
     #[inline]
-    pub fn cancel_batch(&self, task_ids: &[TaskId]) -> usize {
+    pub fn cancel_batch(&self, task_ids: &[TaskId]) -> Result<usize, TimerError> {
         if task_ids.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         // Direct batch cancellation, no need to notify Actor
@@ -423,8 +427,9 @@ impl TimerService {
     /// - `callback`: New callback function (if `None`, keeps the original callback)
     ///
     /// # Returns
-    /// - `true`: Task exists and is successfully postponed
-    /// - `false`: Task does not exist or postponement fails
+    /// - `Ok(true)`: Task exists and is successfully postponed
+    /// - `Ok(false)`: Task does not exist or postponement fails
+    /// - `Err(TimerError::WrongWheel)`: Task ID belongs to another wheel
     ///
     /// # Notes
     /// - Task ID remains unchanged after postponement
@@ -440,8 +445,9 @@ impl TimerService {
     /// - `callback`: 新的回调函数 (如果为 `None`，则保留原回调)
     ///
     /// # 返回值
-    /// - `true`: 任务存在且延期成功
-    /// - `false`: 任务不存在或延期失败
+    /// - `Ok(true)`: 任务存在且延期成功
+    /// - `Ok(false)`: 任务不存在或延期失败
+    /// - `Err(TimerError::WrongWheel)`: 任务 ID 属于另一个时间轮
     ///
     /// # 注意
     /// - 任务 ID 在延期后保持不变
@@ -469,11 +475,9 @@ impl TimerService {
     ///
     /// // Postpone and replace callback (延期并替换回调)
     /// let new_callback = Some(CallbackWrapper::new(|| async { println!("New callback!"); }));
-    /// let success = service.postpone(
-    ///     task_id,
-    ///     Duration::from_secs(10),
-    ///     new_callback
-    /// );
+    /// let success = service
+    ///     .postpone(task_id, Duration::from_secs(10), new_callback)
+    ///     .unwrap();
     /// println!("Postponed successfully: {}", success);
     /// # }
     /// ```
@@ -483,7 +487,7 @@ impl TimerService {
         task_id: TaskId,
         new_delay: Duration,
         callback: Option<CallbackWrapper>,
-    ) -> bool {
+    ) -> Result<bool, TimerError> {
         let mut wheel = self.wheel.lock();
         wheel.postpone(task_id, new_delay, callback)
     }
@@ -494,7 +498,8 @@ impl TimerService {
     /// - `updates`: List of tuples of (task ID, new delay)
     ///
     /// # Returns
-    /// Number of successfully postponed tasks
+    /// Number of successfully postponed tasks, or
+    /// `Err(TimerError::WrongWheel)` if any ID belongs to another wheel.
     ///
     /// 批量延期任务 (保持原始回调)
     ///
@@ -502,7 +507,8 @@ impl TimerService {
     /// - `updates`: (任务 ID, 新延迟) 元组列表
     ///
     /// # 返回值
-    /// 成功延期的任务数量
+    /// 成功延期的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -532,14 +538,14 @@ impl TimerService {
     ///     .into_iter()
     ///     .map(|id| (id, Duration::from_secs(10)))
     ///     .collect();
-    /// let postponed = service.postpone_batch(updates);
+    /// let postponed = service.postpone_batch(updates).unwrap();
     /// println!("Postponed {} tasks", postponed);
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> usize {
+    pub fn postpone_batch(&self, updates: Vec<(TaskId, Duration)>) -> Result<usize, TimerError> {
         if updates.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         let mut wheel = self.wheel.lock();
@@ -552,7 +558,8 @@ impl TimerService {
     /// - `updates`: List of tuples of (task ID, new delay, new callback)
     ///
     /// # Returns
-    /// Number of successfully postponed tasks
+    /// Number of successfully postponed tasks, or
+    /// `Err(TimerError::WrongWheel)` if any ID belongs to another wheel.
     ///
     /// 批量延期任务 (替换回调)
     ///
@@ -560,7 +567,8 @@ impl TimerService {
     /// - `updates`: (任务 ID, 新延迟, 新回调) 元组列表
     ///
     /// # 返回值
-    /// 成功延期的任务数量
+    /// 成功延期的任务数量；如果任一 ID 属于其他时间轮则返回
+    /// `Err(TimerError::WrongWheel)`，且不修改任何任务。
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -596,7 +604,7 @@ impl TimerService {
     ///         (id, Duration::from_secs(10), callback)
     ///     })
     ///     .collect();
-    /// let postponed = service.postpone_batch_with_callbacks(updates);
+    /// let postponed = service.postpone_batch_with_callbacks(updates).unwrap();
     /// println!("Postponed {} tasks", postponed);
     /// # }
     /// ```
@@ -604,9 +612,9 @@ impl TimerService {
     pub fn postpone_batch_with_callbacks(
         &self,
         updates: Vec<(TaskId, Duration, Option<CallbackWrapper>)>,
-    ) -> usize {
+    ) -> Result<usize, TimerError> {
         if updates.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         let mut wheel = self.wheel.lock();
@@ -622,6 +630,7 @@ impl TimerService {
     /// # Returns
     /// - `Ok(TimerHandle)`: Register successfully
     /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
+    /// - `Err(TimerError::WrongWheel)`: Handle belongs to another wheel
     ///
     /// 注册定时器任务到服务 (注册阶段)
     /// # 参数
@@ -631,6 +640,7 @@ impl TimerService {
     /// # 返回值
     /// - `Ok(TimerHandle)`: 注册成功
     /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
+    /// - `Err(TimerError::WrongWheel)`: handle 属于其他时间轮
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -669,7 +679,7 @@ impl TimerService {
         // 单次锁定，完成所有操作
         {
             let mut wheel_guard = self.wheel.lock();
-            wheel_guard.insert(handle, task);
+            wheel_guard.insert(handle, task)?;
         }
 
         // The wheel insertion is provisional until the actor accepts this command.
@@ -697,6 +707,7 @@ impl TimerService {
     /// - `Ok(BatchHandle)`: Register successfully
     /// - `Err(TimerError::RegisterFailed)`: Register failed (internal channel is full or closed)
     /// - `Err(TimerError::BatchLengthMismatch)`: Handles and tasks lengths don't match
+    /// - `Err(TimerError::WrongWheel)`: Any handle belongs to another wheel
     ///
     /// 批量注册定时器任务到服务 (注册阶段)
     /// # 参数
@@ -707,6 +718,7 @@ impl TimerService {
     /// - `Ok(BatchHandle)`: 注册成功
     /// - `Err(TimerError::RegisterFailed)`: 注册失败 (内部通道已满或关闭)
     /// - `Err(TimerError::BatchLengthMismatch)`: handles 和 tasks 长度不匹配
+    /// - `Err(TimerError::WrongWheel)`: 任一 handle 属于其他时间轮
     ///
     /// # Examples (示例)
     /// ```no_run
@@ -798,7 +810,7 @@ impl TimerService {
         }
 
         let mut wheel = self.wheel.lock();
-        wheel.cancel_batch(task_ids);
+        let _ = wheel.cancel_batch(task_ids);
     }
 
     /// Graceful shutdown of TimerService
@@ -1155,7 +1167,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         // Try to cancel the timed-out task, should return false (尝试取消超时任务，应返回 false)
-        let cancelled = service.cancel_task(task_id);
+        let cancelled = service.cancel_task(task_id).unwrap();
         assert!(!cancelled, "Timed out task should not exist anymore");
     }
 
@@ -1236,8 +1248,8 @@ mod tests {
         );
 
         assert!(matches!(result, Err(TimerError::RegisterFailed)));
-        assert!(!service.cancel_task(failed_task_id));
-        assert!(service.cancel_task(first_task_id));
+        assert!(!service.cancel_task(failed_task_id).unwrap());
+        assert!(service.cancel_task(first_task_id).unwrap());
         assert!(service.wheel.lock().is_empty());
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(callback_count.load(Ordering::SeqCst), 0);
@@ -1272,8 +1284,8 @@ mod tests {
         let result = service.register_batch(failed_handles, failed_tasks);
 
         assert!(matches!(result, Err(TimerError::RegisterFailed)));
-        assert_eq!(service.cancel_batch(&failed_task_ids), 0);
-        assert!(service.cancel_task(first_task_id));
+        assert_eq!(service.cancel_batch(&failed_task_ids).unwrap(), 0);
+        assert!(service.cancel_task(first_task_id).unwrap());
         assert!(service.wheel.lock().is_empty());
     }
 
@@ -1293,7 +1305,7 @@ mod tests {
         );
 
         assert!(matches!(result, Err(TimerError::RegisterFailed)));
-        assert!(!service.cancel_task(task_id));
+        assert!(!service.cancel_task(task_id).unwrap());
         assert!(service.wheel.lock().is_empty());
     }
 
@@ -1314,7 +1326,7 @@ mod tests {
         let result = service.register_batch(handles, tasks);
 
         assert!(matches!(result, Err(TimerError::RegisterFailed)));
-        assert_eq!(service.cancel_batch(&task_ids), 0);
+        assert_eq!(service.cancel_batch(&task_ids).unwrap(), 0);
         assert!(service.wheel.lock().is_empty());
     }
 }

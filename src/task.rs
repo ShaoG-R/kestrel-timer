@@ -1,11 +1,13 @@
 use std::future::Future;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use deferred_map::{DefaultKey, Key};
 use lite_sync::oneshot::lite::{Receiver, Sender, State, channel};
 use lite_sync::spsc::{self, TryRecvError};
+use parking_lot::Mutex;
 
 /// One-shot task completion state constants
 ///
@@ -67,24 +69,97 @@ impl State for TaskCompletion {
     }
 }
 
-/// Unique identifier for timer tasks
+/// Globally unique identity for a timing wheel instance.
 ///
-/// Now wraps a DeferredMap key (DefaultKey) which includes generation information
-/// for safe reference and prevention of use-after-free.
+/// The value is private so callers cannot manufacture an owner identity for a
+/// different wheel. It is kept separate from DeferredMap's debug-only map ID,
+/// which is not available in release builds.
 ///
-/// 定时器任务唯一标识符
+/// 时间轮实例的全局唯一身份。
 ///
-/// 现在封装 DeferredMap key (DefaultKey)，包含代数信息以实现安全引用和防止释放后使用
+/// 该值保持私有，因此调用者无法伪造另一个时间轮的 owner。它独立于
+/// DeferredMap 仅在 debug 构建中提供的 map ID。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TaskId(DefaultKey);
+pub(crate) struct WheelId(NonZeroU64);
+
+static NEXT_WHEEL_ID: AtomicU64 = AtomicU64::new(1);
+
+impl WheelId {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        let value = NEXT_WHEEL_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .expect("timing wheel owner ID space exhausted");
+
+        Self(NonZeroU64::new(value).expect("timing wheel owner ID must be non-zero"))
+    }
+}
+
+/// Shared owner state for a timing wheel.
+///
+/// Besides identifying the wheel, this state receives unconsumed deferred-map
+/// handles. The wheel drains that queue before allocating another handle, so a
+/// failed cross-wheel registration does not permanently reserve a slot.
+///
+/// 时间轮共享 owner 状态。
+///
+/// 除了标识时间轮，该状态还接收未消费的 deferred-map handle。时间轮会在
+/// 再次分配 handle 前清空队列，因此跨轮注册失败不会永久占用槽位。
+pub(crate) struct WheelOwner {
+    id: WheelId,
+    released_handles: Mutex<Vec<deferred_map::Handle>>,
+}
+
+impl WheelOwner {
+    #[inline]
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            id: WheelId::new(),
+            released_handles: Mutex::new(Vec::new()),
+        })
+    }
+
+    #[inline]
+    pub(crate) fn id(&self) -> WheelId {
+        self.id
+    }
+
+    #[inline]
+    fn release_handle(&self, handle: deferred_map::Handle) {
+        self.released_handles.lock().push(handle);
+    }
+
+    #[inline]
+    pub(crate) fn take_released_handles(&self) -> Vec<deferred_map::Handle> {
+        std::mem::take(&mut *self.released_handles.lock())
+    }
+}
+
+/// Unique identifier for timer tasks.
+///
+/// A task ID includes the owning timing wheel identity in addition to the
+/// generational DeferredMap key. The owner field is private and is checked by
+/// every wheel map operation before the raw key reaches DeferredMap.
+///
+/// 定时器任务唯一标识符。
+///
+/// 任务 ID 除了包含 DeferredMap 的代数 key，还包含所属时间轮身份。owner
+/// 字段保持私有，所有时间轮 map 操作都会在使用 raw key 前先校验它。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TaskId {
+    wheel_id: WheelId,
+    key: DefaultKey,
+}
 
 impl TaskId {
     /// Create TaskId from DeferredMap key (internal use)
     ///
     /// 从 DeferredMap key 创建 TaskId (内部使用)
     #[inline]
-    pub(crate) fn from_key(key: DefaultKey) -> Self {
-        TaskId(key)
+    pub(crate) fn from_key(wheel_id: WheelId, key: DefaultKey) -> Self {
+        Self { wheel_id, key }
     }
 
     /// Get the DeferredMap key
@@ -92,7 +167,21 @@ impl TaskId {
     /// 获取 DeferredMap key
     #[inline]
     pub(crate) fn key(&self) -> DefaultKey {
-        self.0
+        self.key
+    }
+
+    /// Check whether this ID belongs to the specified timing wheel.
+    ///
+    /// 检查该 ID 是否属于指定时间轮。
+    #[inline]
+    pub(crate) fn belongs_to(&self, wheel_id: WheelId) -> bool {
+        self.wheel_id == wheel_id
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn wheel_id(&self) -> WheelId {
+        self.wheel_id
     }
 
     /// Get the numeric value of the task ID
@@ -100,12 +189,13 @@ impl TaskId {
     /// 获取任务 ID 的数值
     #[inline]
     pub fn raw(&self) -> u64 {
-        self.0.raw()
+        self.key.raw()
     }
 }
 
 pub struct TaskHandle {
-    handle: deferred_map::Handle,
+    owner: Arc<WheelOwner>,
+    handle: Option<deferred_map::Handle>,
 }
 
 impl TaskHandle {
@@ -113,8 +203,11 @@ impl TaskHandle {
     ///
     /// 创建一个新的任务句柄
     #[inline]
-    pub(crate) fn new(handle: deferred_map::Handle) -> Self {
-        Self { handle }
+    pub(crate) fn new(owner: Arc<WheelOwner>, handle: deferred_map::Handle) -> Self {
+        Self {
+            owner,
+            handle: Some(handle),
+        }
     }
 
     /// Get the task ID
@@ -122,15 +215,37 @@ impl TaskHandle {
     /// 获取任务 ID
     #[inline]
     pub fn task_id(&self) -> TaskId {
-        TaskId::from_key(self.handle.key())
+        let handle = self
+            .handle
+            .as_ref()
+            .expect("task handle has already been consumed");
+        TaskId::from_key(self.owner.id(), handle.key())
+    }
+
+    /// Check whether this handle belongs to the specified timing wheel.
+    ///
+    /// 检查该 handle 是否属于指定时间轮。
+    #[inline]
+    pub(crate) fn belongs_to(&self, wheel_id: WheelId) -> bool {
+        self.owner.id() == wheel_id
     }
 
     /// Convert to deferred map handle
     ///
     /// 转换为 deferred map 句柄
     #[inline]
-    pub(crate) fn into_handle(self) -> deferred_map::Handle {
+    pub(crate) fn into_handle(mut self) -> deferred_map::Handle {
         self.handle
+            .take()
+            .expect("task handle has already been consumed")
+    }
+}
+
+impl Drop for TaskHandle {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.owner.release_handle(handle);
+        }
     }
 }
 

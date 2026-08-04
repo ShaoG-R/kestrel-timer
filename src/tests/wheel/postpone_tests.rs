@@ -20,10 +20,12 @@ fn test_postpone_single_task() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     // Postpone task to 200ms (keep original callback) (延期任务到 200毫秒 (保留原始回调))
-    let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
+    let postponed = wheel
+        .postpone(task_id, Duration::from_millis(200), None)
+        .unwrap();
     assert!(postponed);
 
     // Verify task is still in the timing wheel (验证任务仍在时间轮中)
@@ -60,11 +62,13 @@ fn test_postpone_with_new_callback() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     // Postpone task and replace callback (延期任务并替换回调)
     let new_callback = CallbackWrapper::new(|| async {});
-    let postponed = wheel.postpone(task_id, Duration::from_millis(50), Some(new_callback));
+    let postponed = wheel
+        .postpone(task_id, Duration::from_millis(50), Some(new_callback))
+        .unwrap();
     assert!(postponed);
 
     // Advance 50ms (5 ticks), task should trigger (前进 50毫秒 (5个tick)，任务应该触发)
@@ -94,9 +98,10 @@ fn test_postpone_nonexistent_task() {
     // Try to postpone nonexistent task (尝试延期不存在任务)
     // We need a key with a valid map_id to avoid "Wrong map instance" panic in debug mode
     let handle = wheel.allocate_handle();
-    let valid_key = handle.task_id().key();
+    let valid_task_id = handle.task_id();
+    let wheel_id = valid_task_id.wheel_id();
     #[cfg(debug_assertions)]
-    let map_id = valid_key.map_id();
+    let map_id = valid_task_id.key().map_id();
 
     let fake_key = DefaultKey::from_parts(
         u32::MAX,
@@ -104,9 +109,11 @@ fn test_postpone_nonexistent_task() {
         #[cfg(debug_assertions)]
         map_id,
     );
-    let fake_task_id = TaskId::from_key(fake_key);
+    let fake_task_id = TaskId::from_key(wheel_id, fake_key);
 
-    let postponed = wheel.postpone(fake_task_id, Duration::from_millis(100), None);
+    let postponed = wheel
+        .postpone(fake_task_id, Duration::from_millis(100), None)
+        .unwrap();
     assert!(!postponed);
 }
 
@@ -123,7 +130,7 @@ fn test_postpone_batch() {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         task_ids.push(task_id);
     }
 
@@ -132,7 +139,7 @@ fn test_postpone_batch() {
         .iter()
         .map(|&id| (id, Duration::from_millis(150)))
         .collect();
-    let postponed_count = wheel.postpone_batch(updates);
+    let postponed_count = wheel.postpone_batch(updates).unwrap();
     assert_eq!(postponed_count, 5);
 
     // Advance 5 ticks (50ms), task should not trigger (前进 50毫秒 (5个tick)，任务不应该触发)
@@ -169,7 +176,7 @@ fn test_postpone_batch_partial() {
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
-        wheel.insert(handle, task_with_notifier);
+        wheel.insert(handle, task_with_notifier).unwrap();
         task_ids.push(task_id);
     }
 
@@ -183,7 +190,8 @@ fn test_postpone_batch_partial() {
         #[cfg(debug_assertions)]
         map_id,
     );
-    let fake_task_id = TaskId::from_key(fake_key);
+    let wheel_id = task_ids[0].wheel_id();
+    let fake_task_id = TaskId::from_key(wheel_id, fake_key);
 
     let mut updates: Vec<_> = task_ids[0..5]
         .iter()
@@ -191,7 +199,7 @@ fn test_postpone_batch_partial() {
         .collect();
     updates.push((fake_task_id, Duration::from_millis(150)));
 
-    let postponed_count = wheel.postpone_batch(updates);
+    let postponed_count = wheel.postpone_batch(updates).unwrap();
     assert_eq!(
         postponed_count, 5,
         "There should be 5 tasks successfully postponed (fake_task_id failed)"
@@ -231,18 +239,24 @@ fn test_postpone_same_task_multiple_times() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     // First postpone (第一次延期)
-    let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
+    let postponed = wheel
+        .postpone(task_id, Duration::from_millis(200), None)
+        .unwrap();
     assert!(postponed, "First postpone should succeed");
 
     // Second postpone (第二次延期)
-    let postponed = wheel.postpone(task_id, Duration::from_millis(300), None);
+    let postponed = wheel
+        .postpone(task_id, Duration::from_millis(300), None)
+        .unwrap();
     assert!(postponed, "Second postpone should succeed");
 
     // Third postpone (第三次延期)
-    let postponed = wheel.postpone(task_id, Duration::from_millis(50), None);
+    let postponed = wheel
+        .postpone(task_id, Duration::from_millis(50), None)
+        .unwrap();
     assert!(postponed, "Third postpone should succeed");
 
     // Verify task is triggered at the last postpone time (50ms = 5 ticks) (验证任务在最后一次延期时触发 (50毫秒 = 5个tick))
@@ -273,14 +287,16 @@ fn test_cancel_after_postpone() {
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     // Postpone task (延期任务)
-    let postponed = wheel.postpone(task_id, Duration::from_millis(200), None);
+    let postponed = wheel
+        .postpone(task_id, Duration::from_millis(200), None)
+        .unwrap();
     assert!(postponed, "Postpone should succeed");
 
     // Cancel postponed task (取消延期的任务)
-    let cancelled = wheel.cancel(task_id);
+    let cancelled = wheel.cancel(task_id).unwrap();
     assert!(cancelled, "Cancel should succeed");
 
     // Advance to original time, task should not trigger (前进到原始时间，任务不应该触发)
@@ -304,19 +320,27 @@ fn test_cross_layer_postpone() {
     let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
     let task_id = handle.task_id();
-    wheel.insert(handle, task_with_notifier);
+    wheel.insert(handle, task_with_notifier).unwrap();
 
     // Verify in L0 layer (验证在 L0 层)
     assert_eq!(wheel.task_index.get(task_id.key()).unwrap().level, 0);
 
     // Postpone to 10 seconds (should migrate to L1) (延期到 10 秒 (应该迁移到 L1))
-    assert!(wheel.postpone(task_id, Duration::from_secs(10), None));
+    assert!(
+        wheel
+            .postpone(task_id, Duration::from_secs(10), None)
+            .unwrap()
+    );
 
     // Verify migrated to L1 layer (验证迁移到 L1 层)
     assert_eq!(wheel.task_index.get(task_id.key()).unwrap().level, 1);
 
     // Postpone back to 200ms (should migrate back to L0) (延期回 200毫秒 (应该迁移回 L0))
-    assert!(wheel.postpone(task_id, Duration::from_millis(200), None));
+    assert!(
+        wheel
+            .postpone(task_id, Duration::from_millis(200), None)
+            .unwrap()
+    );
 
     // Verify migrated back to L0 layer (验证迁移回 L0 层)
     assert_eq!(wheel.task_index.get(task_id.key()).unwrap().level, 0);

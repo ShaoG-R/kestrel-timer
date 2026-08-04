@@ -452,7 +452,9 @@ async fn test_postpone_single_timer() {
     let (rx, _handle) = handle.into_parts();
     let result = match rx {
         CompletionReceiver::OneShot(receiver) => {
-            tokio::time::timeout(Duration::from_millis(200), receiver.recv()).await.unwrap()
+            tokio::time::timeout(Duration::from_millis(200), receiver.recv())
+                .await
+                .unwrap()
         }
         _ => panic!("Expected OneShot receiver"),
     };
@@ -511,7 +513,9 @@ async fn test_postpone_with_new_callback() {
     let (rx, _handle) = handle.into_parts();
     let result = match rx {
         CompletionReceiver::OneShot(receiver) => {
-            tokio::time::timeout(Duration::from_millis(200), receiver.recv()).await.unwrap()
+            tokio::time::timeout(Duration::from_millis(200), receiver.recv())
+                .await
+                .unwrap()
         }
         _ => panic!("Expected OneShot receiver"),
     };
@@ -704,7 +708,9 @@ async fn test_postpone_multiple_times() {
     let (rx, _handle) = handle.into_parts();
     let result = match rx {
         CompletionReceiver::OneShot(receiver) => {
-            tokio::time::timeout(Duration::from_millis(200), receiver.recv()).await.unwrap()
+            tokio::time::timeout(Duration::from_millis(200), receiver.recv())
+                .await
+                .unwrap()
         }
         _ => panic!("Expected OneShot receiver"),
     };

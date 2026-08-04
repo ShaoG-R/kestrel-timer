@@ -359,7 +359,7 @@ impl TimerWheel {
         let mut prepared_tasks = Vec::with_capacity(task_count);
 
         // Step 1: Prepare all channels and notifiers
-        for (handle, task) in handles.into_iter().zip(tasks.into_iter()) {
+        for (handle, task) in handles.into_iter().zip(tasks) {
             let task_id = handle.task_id();
             let (task, completion_rx) =
                 crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);

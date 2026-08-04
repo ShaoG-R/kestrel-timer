@@ -267,7 +267,8 @@ async fn test_timer_wheel_batch_64_delay_order() {
     tokio::time::pause();
 
     let timer = TimerWheel::with_defaults();
-    let fired_order: Arc<parking_lot::Mutex<Vec<usize>>> = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let fired_order: Arc<parking_lot::Mutex<Vec<usize>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
 
     // Step 1: Batch allocate handles
     let handles = timer.allocate_handles(100);
@@ -304,7 +305,8 @@ async fn test_timer_wheel_batch_64_delay_order() {
     assert_eq!(fired.len(), 100);
 
     let expected: Vec<usize> = (0..100).collect();
-    assert_eq!(fired, expected, "Timers 0..100 should fire in exact sequential order (including 64s)");
+    assert_eq!(
+        fired, expected,
+        "Timers 0..100 should fire in exact sequential order (including 64s)"
+    );
 }
-
-

@@ -61,6 +61,3 @@ async fn test_cancel_immediate() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(counter.load(Ordering::SeqCst), 0);
 }
-
-
-

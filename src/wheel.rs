@@ -342,8 +342,7 @@ impl Wheel {
 
         // Insert task location into DeferredMap using handle
         // 使用 handle 将任务位置插入 DeferredMap
-        self.task_index
-            .insert(handle.into_handle(), location);
+        self.task_index.insert(handle.into_handle(), location);
     }
 
     /// Batch insert timer tasks
@@ -390,7 +389,7 @@ impl Wheel {
             });
         }
 
-        for (handle, task) in handles.into_iter().zip(tasks.into_iter()) {
+        for (handle, task) in handles.into_iter().zip(tasks) {
             let task_id = handle.task_id();
 
             let (level, ticks, rounds) = self.determine_layer(task.delay);
@@ -420,8 +419,7 @@ impl Wheel {
 
             // Insert task location into DeferredMap using handle
             // 使用 handle 将任务位置插入 DeferredMap
-            self.task_index
-                .insert(handle.into_handle(), location);
+            self.task_index.insert(handle.into_handle(), location);
         }
 
         Ok(())
@@ -585,7 +583,7 @@ impl Wheel {
 
             // Sort by vec_index in descending order, delete from back to front to avoid index invalidation
             // 按 vec_index 降序排序，从后向前删除以避免索引失效
-            tasks.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            tasks.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
 
             let slot = &mut self.l0.slots[slot_index];
 
@@ -636,7 +634,7 @@ impl Wheel {
                 continue;
             }
 
-            tasks.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            tasks.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
 
             let slot = &mut self.l1.slots[slot_index];
 

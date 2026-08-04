@@ -759,7 +759,7 @@ impl TimerService {
 
         // Step 1: prepare all channels and notifiers (no lock)
         // 步骤 1: 准备所有通道和通知器（无锁）
-        for (handle, task) in handles.into_iter().zip(tasks.into_iter()) {
+        for (handle, task) in handles.into_iter().zip(tasks) {
             let task_id = handle.task_id();
             let (task, completion_rx) =
                 crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);

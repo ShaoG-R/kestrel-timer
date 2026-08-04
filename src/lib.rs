@@ -165,6 +165,7 @@ pub mod wheel;
 mod tests;
 
 // Re-export public API
+pub use lite_sync::spsc;
 pub use service::{TaskNotification, TimerService};
 pub use task::CompletionReceiver;
 pub use task::{CallbackWrapper, TaskCompletion, TaskId, TimerTask};
@@ -172,7 +173,6 @@ pub use timer::TimerWheel;
 pub use timer::handle::{
     BatchHandle, BatchHandleWithCompletion, TimerHandle, TimerHandleWithCompletion,
 };
-pub use lite_sync::spsc;
 
 #[cfg(test)]
 mod integration_tests {

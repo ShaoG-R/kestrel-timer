@@ -217,4 +217,3 @@ fn test_batch_allocation_firing_order() {
         "Timers with 0..100s delays should fire in exact sequential order (including 64s)"
     );
 }
-

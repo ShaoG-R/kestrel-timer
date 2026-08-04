@@ -10,7 +10,7 @@
 
 [中文文档](README_CN.md)
 
-## 📚 Table of Contents
+## Table of Contents
 
 - [Overview](#overview)
 - [Key Features](#key-features)
@@ -34,13 +34,13 @@
 
 ## Key Features
 
-### 🏗️ Hierarchical Timing Wheel
+### Hierarchical Timing Wheel
 
 - **Dual-layer design**: L0 layer (high-precision short-delay) + L1 layer (long-delay) with automatic layering
 - **Smart demotion**: L1 tasks automatically demote to L0 layer when due
 - **No round checks**: L0 layer eliminates rounds checking for 90% of tasks
 
-### ⚡ High Performance
+### High Performance
 
 - **O(1) time complexity**: Insert, delete, and trigger operations are all O(1)
 - **Optimized data structures**: 
@@ -49,14 +49,14 @@
 - **Bitwise optimization**: Slot count is power of 2 for fast modulo operations
 - **Large-scale support**: Easily handles 10,000+ concurrent timers
 
-### 🔄 Complete Features
+### Complete Features
 
-- ✅ Async callback support (based on Tokio)
-- ✅ Timer postponement (keep or replace callback)
-- ✅ Batch operations (schedule, cancel, postpone)
-- ✅ Completion notification mechanism
-- ✅ TimerService (Actor-based management)
-- ✅ Thread-safe
+- Async callback support (based on Tokio)
+- Timer postponement (keep or replace callback)
+- Batch operations (schedule, cancel, postpone)
+- Completion notification mechanism
+- TimerService (Actor-based management)
+- Thread-safe
 
 ## Quick Start
 
@@ -370,9 +370,9 @@ Compared to traditional heap-based (BinaryHeap) timer implementations:
 cargo test --test integration_test test_large_scale_timers
 ```
 
-- ✅ 10,000 concurrent timers
-- ✅ Creation time < 100ms
-- ✅ All timers fire correctly
+- 10,000 concurrent timers
+- Creation time < 100ms
+- All timers fire correctly
 
 ## Use Cases
 

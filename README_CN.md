@@ -8,7 +8,7 @@
 [![Documentation](https://docs.rs/kestrel-timer/badge.svg)](https://docs.rs/kestrel-timer)
 [![License](https://img.shields.io/crates/l/kestrel-timer.svg)](https://github.com/ShaoG-R/kestrel-timer#license)
 
-## 📚 目录
+## 目录
 
 - [项目概述](#项目概述)
 - [核心特性](#核心特性)
@@ -32,13 +32,13 @@
 
 ## 核心特性
 
-### 🏗️ 分层时间轮架构
+### 分层时间轮架构
 
 - **双层设计**：L0 层（高精度短延迟）+ L1 层（长延迟）自动分层
 - **智能降级**：L1 层任务到期后自动降级到 L0 层执行
 - **无轮次检查**：L0 层无需 rounds 判断，减少 90% 任务的检查开销
 
-### ⚡ 高性能
+### 高性能
 
 - **O(1) 时间复杂度**：插入、删除、触发操作均为 O(1)
 - **优化数据结构**：
@@ -47,14 +47,14 @@
 - **位运算优化**：槽位数量为 2 的幂次方，快速取模
 - **支持大规模**：轻松处理 10,000+ 并发定时器
 
-### 🔄 完整功能
+### 完整功能
 
-- ✅ 异步回调支持（基于 Tokio）
-- ✅ 定时器推迟（保持或替换回调）
-- ✅ 批量操作（调度、取消、推迟）
-- ✅ 完成通知机制
-- ✅ TimerService（Actor 模式管理）
-- ✅ 线程安全
+- 异步回调支持（基于 Tokio）
+- 定时器推迟（保持或替换回调）
+- 批量操作（调度、取消、推迟）
+- 完成通知机制
+- TimerService（Actor 模式管理）
+- 线程安全
 
 ## 快速开始
 
@@ -368,9 +368,9 @@ cargo bench
 cargo test --test integration_test test_large_scale_timers
 ```
 
-- ✅ 10,000 个并发定时器
-- ✅ 创建时间 < 100ms
-- ✅ 所有定时器正确触发
+- 10,000 个并发定时器
+- 创建时间 < 100ms
+- 所有定时器正确触发
 
 ## 使用场景
 

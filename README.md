@@ -264,7 +264,7 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 
 **TimerTask**:
 - `TimerTask::new_oneshot(delay, callback)` - Create one-shot task
-- `TimerTask::new_periodic(initial_delay, interval, callback, buffer_size)` - Create periodic task
+- `TimerTask::new_periodic(initial_delay, interval, callback, buffer_size)` - Create periodic task, rejecting a zero interval
 - `get_task_type()` - Get task type
 - `get_interval()` - Get interval for periodic tasks
 
@@ -273,7 +273,7 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 
 **TimerWheel**:
 - `TimerWheel::with_defaults()` - Create with default config
-- `TimerWheel::new(config)` - Create with custom config
+- `TimerWheel::new(config, batch_config)` - Create with custom config and return a `Result`
 - `allocate_handle()` - Allocate single handle
 - `allocate_handles(count)` - Batch allocate handles
 - `register(handle, task)` - Register task with handle
@@ -312,7 +312,8 @@ let timer = TimerWheel::with_defaults();
 ### Custom Configuration
 
 ```rust
-use kestrel_timer::WheelConfig;
+use kestrel_timer::{config::BatchConfig, config::WheelConfig, TimerWheel};
+use std::time::Duration;
 
 let config = WheelConfig::builder()
     .l0_tick_duration(Duration::from_millis(10))  // L0 tick
@@ -320,7 +321,7 @@ let config = WheelConfig::builder()
     .l1_tick_duration(Duration::from_secs(1))      // L1 tick
     .l1_slot_count(64)                             // L1 slots (must be power of 2)
     .build()?;
-let timer = TimerWheel::new(config);
+let timer = TimerWheel::new(config, BatchConfig::default())?;
 ```
 
 ### Recommended Configurations

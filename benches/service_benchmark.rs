@@ -700,6 +700,7 @@ fn bench_periodic_register_comparison(c: &mut Criterion) {
                                 None,
                                 None,
                             )
+                            .unwrap()
                         })
                         .collect();
 
@@ -780,6 +781,7 @@ fn bench_periodic_cancel_comparison(c: &mut Criterion) {
                                 None,
                                 None,
                             )
+                            .unwrap()
                         })
                         .collect();
                     service.register_batch(handles, tasks).unwrap();
@@ -857,7 +859,8 @@ fn bench_periodic_single_register_comparison(c: &mut Criterion) {
                     Duration::from_secs(1),
                     None,
                     None,
-                );
+                )
+                .unwrap();
                 service.register(handle, task).unwrap();
 
                 total_duration += start.elapsed();
@@ -927,6 +930,7 @@ fn bench_periodic_with_callback_comparison(c: &mut Criterion) {
                                 })),
                                 None,
                             )
+                            .unwrap()
                         })
                         .collect();
 

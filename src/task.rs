@@ -1,3 +1,4 @@
+use crate::error::TimerError;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -674,7 +675,6 @@ impl TimerTask {
     ///
     /// # Note
     /// TaskId will be assigned when the task is inserted into the timing wheel.
-    ///
     /// 创建一个新的一次性定时器任务
     ///
     /// # 参数
@@ -703,6 +703,10 @@ impl TimerTask {
     ///
     /// # Note
     /// TaskId will be assigned when the task is inserted into the timing wheel.
+    /// The interval must be greater than zero. The timing wheel also requires it
+    /// to be at least the configured L0 tick duration.
+    ///
+    /// Returns `Err(TimerError::InvalidConfiguration)` for a zero interval.
     ///
     /// 创建一个新的周期性定时器任务
     ///
@@ -722,15 +726,22 @@ impl TimerTask {
         interval: std::time::Duration,
         callback: Option<CallbackWrapper>,
         buffer_size: Option<NonZeroUsize>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, TimerError> {
+        if interval.is_zero() {
+            return Err(TimerError::InvalidConfiguration {
+                field: "interval".to_string(),
+                reason: "periodic interval must be greater than zero".to_string(),
+            });
+        }
+
+        Ok(Self {
             task_type: TaskType::Periodic {
                 interval,
                 buffer_size,
             },
             delay: initial_delay,
             callback,
-        }
+        })
     }
 
     /// Get task type

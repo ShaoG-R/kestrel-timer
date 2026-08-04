@@ -5,6 +5,42 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 #[tokio::test]
+async fn test_batch_postpone_length_mismatch_preserves_handle() {
+    let timer = TimerWheel::with_defaults();
+    let handles = timer.allocate_handles(2);
+    let tasks = vec![
+        TimerTask::new_oneshot(Duration::from_secs(10), None),
+        TimerTask::new_oneshot(Duration::from_secs(10), None),
+    ];
+    let (_receivers, mut batch) = timer.register_batch(handles, tasks).unwrap().into_parts();
+
+    let error = batch.postpone_each(vec![Duration::from_secs(1)]);
+    assert!(matches!(
+        error,
+        Err(crate::error::TimerError::BatchLengthMismatch {
+            handles_len: 2,
+            tasks_len: 1,
+        })
+    ));
+    assert_eq!(batch.len(), 2);
+
+    let postponed = batch
+        .postpone_each(vec![Duration::from_secs(1), Duration::from_secs(1)])
+        .unwrap();
+    assert_eq!(postponed, 2);
+
+    let error = batch.postpone_each_with_callbacks(vec![]);
+    assert!(matches!(
+        error,
+        Err(crate::error::TimerError::BatchLengthMismatch {
+            handles_len: 2,
+            tasks_len: 0,
+        })
+    ));
+    assert_eq!(batch.len(), 2);
+}
+
+#[tokio::test]
 async fn test_postpone_batch() {
     let timer = TimerWheel::with_defaults();
     let counter = Arc::new(AtomicU32::new(0));
@@ -124,7 +160,8 @@ async fn test_periodic_batch_cancel() {
                 }
             })),
             None,
-        );
+        )
+        .unwrap();
         let allocate_handle = timer.allocate_handle();
         let task_id = allocate_handle.task_id();
         task_ids.push(task_id);
@@ -180,7 +217,8 @@ async fn test_periodic_batch_postpone() {
                 }
             })),
             None,
-        );
+        )
+        .unwrap();
         let allocate_handle = timer.allocate_handle();
         let task_id = allocate_handle.task_id();
         let _handle = timer.register(allocate_handle, task).unwrap();
@@ -238,6 +276,7 @@ async fn test_periodic_batch_register() {
                 })),
                 None,
             )
+            .unwrap()
         })
         .collect();
 

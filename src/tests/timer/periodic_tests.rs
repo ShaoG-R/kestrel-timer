@@ -25,7 +25,8 @@ async fn test_periodic_basic() {
             }
         })),
         None, // use default buffer size
-    );
+    )
+    .unwrap();
     let allocate_handle = timer.allocate_handle();
     let (mut rx, _handle) = timer.register(allocate_handle, task).unwrap().into_parts();
 
@@ -75,7 +76,8 @@ async fn test_periodic_cancel() {
             }
         })),
         None,
-    );
+    )
+    .unwrap();
     let allocate_handle = timer.allocate_handle();
     let handle = timer.register(allocate_handle, task).unwrap();
 
@@ -126,7 +128,8 @@ async fn test_periodic_cancel_notification() {
             }
         })),
         None,
-    );
+    )
+    .unwrap();
     let allocate_handle = timer.allocate_handle();
     let (mut rx, handle) = timer.register(allocate_handle, task).unwrap().into_parts();
 
@@ -181,7 +184,8 @@ async fn test_periodic_postpone() {
             }
         })),
         None,
-    );
+    )
+    .unwrap();
     let allocate_handle = timer.allocate_handle();
     let task_id = allocate_handle.task_id();
     let _handle = timer.register(allocate_handle, task).unwrap();
@@ -235,7 +239,8 @@ async fn test_periodic_postpone_with_callback() {
             }
         })),
         None,
-    );
+    )
+    .unwrap();
     let allocate_handle = timer.allocate_handle();
     let task_id = allocate_handle.task_id();
     let _handle = timer.register(allocate_handle, task).unwrap();
@@ -297,7 +302,8 @@ async fn test_periodic_completion_receiver() {
             }
         })),
         None,
-    );
+    )
+    .unwrap();
     let allocate_handle = timer.allocate_handle();
     let (mut rx, _handle) = timer.register(allocate_handle, task).unwrap().into_parts();
 

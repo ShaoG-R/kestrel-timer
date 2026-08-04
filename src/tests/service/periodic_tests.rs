@@ -25,7 +25,8 @@ async fn test_periodic_task_basic() {
             }
         })),
         None,
-    );
+    )
+    .unwrap();
     service.register(handle, task).unwrap();
 
     // Receive periodic notifications (接收周期性通知)
@@ -79,7 +80,8 @@ async fn test_periodic_task_cancel_no_notification() {
         Duration::from_millis(50),
         None,
         None,
-    );
+    )
+    .unwrap();
     service.register(handle, task).unwrap();
 
     // Wait for first notification (等待第一个通知)
@@ -120,7 +122,8 @@ async fn test_mixed_oneshot_and_periodic_tasks() {
         Duration::from_millis(40),
         None,
         None,
-    );
+    )
+    .unwrap();
     service.register(handle2, periodic_task).unwrap();
 
     // Receive notifications (接收通知)
@@ -180,6 +183,7 @@ async fn test_periodic_task_batch_register() {
                 })),
                 None,
             )
+            .unwrap()
         })
         .collect();
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 #[test]
 fn test_postpone_single_task() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert task, delay 100ms (插入任务，延迟 100毫秒)
     let callback = CallbackWrapper::new(|| async {});
@@ -53,7 +53,7 @@ fn test_postpone_single_task() {
 
 #[test]
 fn test_postpone_with_new_callback() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert task, with original callback (插入任务，原始回调)
     let old_callback = CallbackWrapper::new(|| async {});
@@ -93,7 +93,7 @@ fn test_postpone_with_new_callback() {
 
 #[test]
 fn test_postpone_nonexistent_task() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Try to postpone nonexistent task (尝试延期不存在任务)
     // We need a key with a valid map_id to avoid "Wrong map instance" panic in debug mode
@@ -119,7 +119,7 @@ fn test_postpone_nonexistent_task() {
 
 #[test]
 fn test_postpone_batch() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert 5 tasks, delay 50ms (5 ticks) (插入 5 个任务，延迟 50毫秒 (5个tick))
     let mut task_ids = Vec::new();
@@ -165,7 +165,7 @@ fn test_postpone_batch() {
 
 #[test]
 fn test_postpone_batch_partial() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert 10 tasks, delay 50ms (5 ticks) (插入 10 个任务，延迟 50毫秒 (5个tick))
     let mut task_ids = Vec::new();
@@ -230,7 +230,7 @@ fn test_postpone_batch_partial() {
 
 #[test]
 fn test_postpone_same_task_multiple_times() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert task (插入任务)
     let callback = CallbackWrapper::new(|| async {});
@@ -278,7 +278,7 @@ fn test_postpone_same_task_multiple_times() {
 
 #[test]
 fn test_cancel_after_postpone() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert task (插入任务)
     let callback = CallbackWrapper::new(|| async {});
@@ -312,7 +312,7 @@ fn test_cancel_after_postpone() {
 fn test_cross_layer_postpone() {
     let config = WheelConfig::default();
 
-    let mut wheel = Wheel::new(config, BatchConfig::default());
+    let mut wheel = Wheel::new(config, BatchConfig::default()).unwrap();
 
     // Insert L0 task (100ms) (插入 L0 任务 (100毫秒))
     let callback = CallbackWrapper::new(|| async {});

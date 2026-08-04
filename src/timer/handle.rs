@@ -427,7 +427,7 @@ impl BatchHandle {
     ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
     /// let batch_with_completion = timer.register_batch(handles, tasks).unwrap();
-    /// let (rxs, batch) = batch_with_completion.into_parts();
+    /// let (rxs, mut batch) = batch_with_completion.into_parts();
     ///
     /// // Postpone each timer with different delays
     /// let new_delays = vec![
@@ -440,8 +440,15 @@ impl BatchHandle {
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> Result<usize, TimerError> {
-        let updates: Vec<_> = self.task_ids.into_iter().zip(delays).collect();
+    pub fn postpone_each(&mut self, delays: Vec<std::time::Duration>) -> Result<usize, TimerError> {
+        if self.task_ids.len() != delays.len() {
+            return Err(TimerError::BatchLengthMismatch {
+                handles_len: self.task_ids.len(),
+                tasks_len: delays.len(),
+            });
+        }
+
+        let updates: Vec<_> = self.task_ids.iter().copied().zip(delays).collect();
         let mut wheel = self.wheel.lock();
         wheel.postpone_batch_at(updates)
     }
@@ -475,7 +482,7 @@ impl BatchHandle {
     ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
     /// let batch_with_completion = timer.register_batch(handles, tasks).unwrap();
-    /// let (rxs, batch) = batch_with_completion.into_parts();
+    /// let (rxs, mut batch) = batch_with_completion.into_parts();
     ///
     /// // Postpone each timer with different delays and callbacks
     /// let updates = vec![
@@ -489,12 +496,20 @@ impl BatchHandle {
     /// ```
     #[inline]
     pub fn postpone_each_with_callbacks(
-        self,
+        &mut self,
         updates: Vec<(std::time::Duration, Option<crate::task::CallbackWrapper>)>,
     ) -> Result<usize, TimerError> {
+        if self.task_ids.len() != updates.len() {
+            return Err(TimerError::BatchLengthMismatch {
+                handles_len: self.task_ids.len(),
+                tasks_len: updates.len(),
+            });
+        }
+
         let updates_with_ids: Vec<_> = self
             .task_ids
-            .into_iter()
+            .iter()
+            .copied()
             .zip(updates)
             .map(|(id, (delay, callback))| (id, delay, callback))
             .collect();
@@ -731,7 +746,7 @@ impl BatchHandleWithCompletion {
     /// let tasks: Vec<_> = (0..3)
     ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let batch = timer.register_batch(handles, tasks).unwrap();
+    /// let mut batch = timer.register_batch(handles, tasks).unwrap();
     ///
     /// // Postpone each timer with different delays
     /// let new_delays = vec![
@@ -744,7 +759,7 @@ impl BatchHandleWithCompletion {
     /// # }
     /// ```
     #[inline]
-    pub fn postpone_each(self, delays: Vec<std::time::Duration>) -> Result<usize, TimerError> {
+    pub fn postpone_each(&mut self, delays: Vec<std::time::Duration>) -> Result<usize, TimerError> {
         self.handles.postpone_each(delays)
     }
 
@@ -776,7 +791,7 @@ impl BatchHandleWithCompletion {
     /// let tasks: Vec<_> = (0..3)
     ///     .map(|_| TimerTask::new_oneshot(Duration::from_secs(1), None))
     ///     .collect();
-    /// let batch = timer.register_batch(handles, tasks).unwrap();
+    /// let mut batch = timer.register_batch(handles, tasks).unwrap();
     ///
     /// // Postpone each timer with different delays and callbacks
     /// let updates = vec![
@@ -790,7 +805,7 @@ impl BatchHandleWithCompletion {
     /// ```
     #[inline]
     pub fn postpone_each_with_callbacks(
-        self,
+        &mut self,
         updates: Vec<(std::time::Duration, Option<crate::task::CallbackWrapper>)>,
     ) -> Result<usize, TimerError> {
         self.handles.postpone_each_with_callbacks(updates)

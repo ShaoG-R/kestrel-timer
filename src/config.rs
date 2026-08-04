@@ -37,22 +37,22 @@ pub struct WheelConfig {
     /// Duration of each tick in L0 layer, bottom layer
     ///
     /// L0 层每个 tick 的持续时间
-    pub l0_tick_duration: Duration,
+    l0_tick_duration: Duration,
 
     /// Number of slots in L0 layer, must be power of 2
     ///
     /// L0 层槽位数，必须是 2 的幂
-    pub l0_slot_count: usize,
+    l0_slot_count: usize,
 
     /// Duration of each tick in L1 layer, upper layer
     ///
     /// L1 层每个 tick 的持续时间
-    pub l1_tick_duration: Duration,
+    l1_tick_duration: Duration,
 
     /// Number of slots in L1 layer, must be power of 2
     ///
     /// L1 层槽位数，必须是 2 的幂
-    pub l1_slot_count: usize,
+    l1_slot_count: usize,
 }
 
 impl Default for WheelConfig {
@@ -70,6 +70,36 @@ impl WheelConfig {
     /// Create configuration builder (创建配置构建器)
     pub fn builder() -> WheelConfigBuilder {
         WheelConfigBuilder::default()
+    }
+
+    /// Get the L0 tick duration.
+    pub fn l0_tick_duration(&self) -> Duration {
+        self.l0_tick_duration
+    }
+
+    /// Get the L0 slot count.
+    pub fn l0_slot_count(&self) -> usize {
+        self.l0_slot_count
+    }
+
+    /// Get the L1 tick duration.
+    pub fn l1_tick_duration(&self) -> Duration {
+        self.l1_tick_duration
+    }
+
+    /// Get the L1 slot count.
+    pub fn l1_slot_count(&self) -> usize {
+        self.l1_slot_count
+    }
+
+    pub(crate) fn validate(self) -> Result<Self, TimerError> {
+        WheelConfigBuilder {
+            l0_tick_duration: self.l0_tick_duration,
+            l0_slot_count: self.l0_slot_count,
+            l1_tick_duration: self.l1_tick_duration,
+            l1_slot_count: self.l1_slot_count,
+        }
+        .build()
     }
 }
 
@@ -186,6 +216,13 @@ impl WheelConfigBuilder {
                     "L1 tick duration ({:?}) must be an integer multiple of L0 tick duration ({:?})",
                     self.l1_tick_duration, self.l0_tick_duration
                 ),
+            });
+        }
+
+        if u64::try_from(l1_nanos / l0_nanos).is_err() {
+            return Err(TimerError::InvalidConfiguration {
+                field: "l1_tick_duration".to_string(),
+                reason: "L1/L0 tick ratio must fit in u64".to_string(),
             });
         }
 
@@ -452,10 +489,10 @@ mod tests {
     #[test]
     fn test_wheel_config_default() {
         let config = WheelConfig::default();
-        assert_eq!(config.l0_tick_duration, Duration::from_millis(10));
-        assert_eq!(config.l0_slot_count, 512);
-        assert_eq!(config.l1_tick_duration, Duration::from_secs(1));
-        assert_eq!(config.l1_slot_count, 64);
+        assert_eq!(config.l0_tick_duration(), Duration::from_millis(10));
+        assert_eq!(config.l0_slot_count(), 512);
+        assert_eq!(config.l1_tick_duration(), Duration::from_secs(1));
+        assert_eq!(config.l1_slot_count(), 64);
     }
 
     #[test]
@@ -468,10 +505,10 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(config.l0_tick_duration, Duration::from_millis(20));
-        assert_eq!(config.l0_slot_count, 1024);
-        assert_eq!(config.l1_tick_duration, Duration::from_secs(2));
-        assert_eq!(config.l1_slot_count, 128);
+        assert_eq!(config.l0_tick_duration(), Duration::from_millis(20));
+        assert_eq!(config.l0_slot_count(), 1024);
+        assert_eq!(config.l1_tick_duration(), Duration::from_secs(2));
+        assert_eq!(config.l1_slot_count(), 128);
     }
 
     #[test]
@@ -491,6 +528,20 @@ mod tests {
             .build();
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_wheel_config_rejects_tick_ratio_overflow() {
+        let result = WheelConfig::builder()
+            .l0_tick_duration(Duration::from_nanos(1))
+            .l1_tick_duration(Duration::MAX)
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(TimerError::InvalidConfiguration { field, .. })
+                if field == "l1_tick_duration"
+        ));
     }
 
     #[test]
@@ -526,7 +577,7 @@ mod tests {
     #[test]
     fn test_timer_config_default() {
         let config = TimerConfig::default();
-        assert_eq!(config.wheel.l0_slot_count, 512);
+        assert_eq!(config.wheel.l0_slot_count(), 512);
         assert_eq!(
             config.service.command_channel_capacity,
             NonZeroUsize::new(512).unwrap()

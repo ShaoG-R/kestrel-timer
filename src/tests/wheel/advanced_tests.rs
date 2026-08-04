@@ -17,7 +17,7 @@ fn test_hierarchical_l1_to_l0_demotion() {
         .build()
         .unwrap();
 
-    let mut wheel = Wheel::new(config, BatchConfig::default());
+    let mut wheel = Wheel::new(config, BatchConfig::default()).unwrap();
     let l1_tick_ratio = wheel.l1_tick_ratio;
     assert_eq!(l1_tick_ratio, 10); // 100ms / 10ms = 10 (100毫秒 / 10毫秒 = 10)
 
@@ -55,7 +55,7 @@ fn test_hierarchical_l1_to_l0_demotion() {
 
 #[test]
 fn test_multi_round_tasks() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Test multi-round tasks in L1 layer in hierarchical mode (在分层模式下测试 L1 层的多轮任务)
     // L1: 64 slots * 1000ms = 64000ms

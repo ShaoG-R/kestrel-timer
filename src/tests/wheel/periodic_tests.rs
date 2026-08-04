@@ -11,8 +11,62 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 #[test]
+fn test_periodic_zero_interval_is_rejected() {
+    let result = TimerTask::new_periodic(Duration::from_millis(1), Duration::ZERO, None, None);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_periodic_interval_below_l0_tick_is_rejected() {
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
+    let task = TimerTask::new_periodic(
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+        None,
+        None,
+    )
+    .unwrap();
+    let (task_with_notifier, _completion_receiver) =
+        TimerTaskWithCompletionNotifier::from_timer_task(task);
+
+    let handle = wheel.allocate_handle();
+    assert!(wheel.insert(handle, task_with_notifier).is_err());
+    assert!(wheel.is_empty());
+}
+
+#[test]
+fn test_periodic_batch_interval_validation_is_atomic() {
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
+    let valid_task = TimerTask::new_periodic(
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        None,
+        None,
+    )
+    .unwrap();
+    let invalid_task = TimerTask::new_periodic(
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+        None,
+        None,
+    )
+    .unwrap();
+    let (valid_task, _valid_receiver) =
+        TimerTaskWithCompletionNotifier::from_timer_task(valid_task);
+    let (invalid_task, _invalid_receiver) =
+        TimerTaskWithCompletionNotifier::from_timer_task(invalid_task);
+
+    let handles = wheel.allocate_handles(2);
+    let result = wheel.insert_batch(handles, vec![valid_task, invalid_task]);
+
+    assert!(result.is_err());
+    assert!(wheel.is_empty());
+}
+
+#[test]
 fn test_periodic_task_basic() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task with 50ms interval (插入 50毫秒间隔的周期性任务)
     let callback = CallbackWrapper::new(|| async {});
@@ -21,7 +75,8 @@ fn test_periodic_task_basic() {
         Duration::from_millis(50), // interval
         Some(callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -76,7 +131,7 @@ fn test_periodic_task_basic() {
 
 #[test]
 fn test_periodic_task_cancel() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task (插入周期性任务)
     let callback = CallbackWrapper::new(|| async {});
@@ -85,7 +140,8 @@ fn test_periodic_task_cancel() {
         Duration::from_millis(100),
         Some(callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -129,7 +185,7 @@ fn test_periodic_task_cancel() {
 
 #[test]
 fn test_periodic_task_multiple_triggers() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task with 30ms interval (插入 30毫秒间隔的周期性任务)
     let callback = CallbackWrapper::new(|| async {});
@@ -138,7 +194,8 @@ fn test_periodic_task_multiple_triggers() {
         Duration::from_millis(30),
         Some(callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -177,7 +234,7 @@ fn test_periodic_task_multiple_triggers() {
 
 #[test]
 fn test_periodic_task_cross_layer() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task with long interval (exceeds L0 range)
     // 插入长间隔的周期性任务（超过 L0 范围）
@@ -188,7 +245,8 @@ fn test_periodic_task_cross_layer() {
         Duration::from_secs(10),
         Some(callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -231,7 +289,7 @@ fn test_periodic_task_cross_layer() {
 
 #[test]
 fn test_periodic_task_batch_cancel() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert multiple periodic tasks (插入多个周期性任务)
     let mut task_ids = Vec::new();
@@ -244,7 +302,8 @@ fn test_periodic_task_batch_cancel() {
             Duration::from_millis(100),
             Some(callback),
             None,
-        );
+        )
+        .unwrap();
         let (task_with_notifier, completion_receiver) =
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
@@ -276,13 +335,14 @@ fn test_periodic_task_batch_cancel() {
 
 #[test]
 fn test_bounded_periodic_completion_limits_called_notifications() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
     let task = TimerTask::new_periodic(
         Duration::from_millis(10),
         Duration::from_millis(10),
         None,
         Some(NonZeroUsize::new(1).unwrap()),
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -307,13 +367,14 @@ fn test_bounded_periodic_completion_limits_called_notifications() {
 
 #[test]
 fn test_unbounded_periodic_completion_keeps_all_notifications() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
     let task = TimerTask::new_periodic(
         Duration::from_millis(10),
         Duration::from_millis(10),
         None,
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -339,7 +400,7 @@ fn test_unbounded_periodic_completion_keeps_all_notifications() {
 
 #[test]
 fn test_periodic_task_with_initial_delay() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task with different initial delay and interval
     // 插入具有不同初始延迟和间隔的周期性任务
@@ -349,7 +410,8 @@ fn test_periodic_task_with_initial_delay() {
         Duration::from_millis(50),  // interval 50ms
         Some(callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -390,7 +452,7 @@ fn test_periodic_task_with_initial_delay() {
 
 #[test]
 fn test_periodic_task_postpone() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task with 50ms interval
     // 插入 50毫秒间隔的周期性任务
@@ -400,7 +462,8 @@ fn test_periodic_task_postpone() {
         Duration::from_millis(50),
         Some(callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -456,7 +519,7 @@ fn test_periodic_task_postpone() {
 
 #[test]
 fn test_periodic_task_postpone_cross_layer() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task in L0 (short interval)
     // 在 L0 层插入周期性任务（短间隔）
@@ -466,7 +529,8 @@ fn test_periodic_task_postpone_cross_layer() {
         Duration::from_millis(100),
         Some(callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();
@@ -519,7 +583,7 @@ fn test_periodic_task_postpone_cross_layer() {
 
 #[test]
 fn test_periodic_task_batch_insert() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Create batch of periodic tasks
     // 创建批量周期性任务
@@ -534,7 +598,8 @@ fn test_periodic_task_batch_insert() {
             Duration::from_millis(50),
             Some(callback),
             None,
-        );
+        )
+        .unwrap();
         let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         tasks.push(task_with_notifier);
     }
@@ -570,7 +635,7 @@ fn test_periodic_task_batch_insert() {
 
 #[test]
 fn test_periodic_task_batch_postpone() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert multiple periodic tasks
     // 插入多个周期性任务
@@ -582,7 +647,8 @@ fn test_periodic_task_batch_postpone() {
             Duration::from_millis(50),
             Some(callback),
             None,
-        );
+        )
+        .unwrap();
         let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
         let task_id = handle.task_id();
@@ -628,7 +694,7 @@ fn test_periodic_task_batch_postpone() {
 
 #[test]
 fn test_mixed_oneshot_and_periodic_tasks() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert oneshot tasks
     // 插入一次性任务
@@ -654,7 +720,8 @@ fn test_mixed_oneshot_and_periodic_tasks() {
             Duration::from_millis(100),
             Some(callback),
             None,
-        );
+        )
+        .unwrap();
         let (task_with_notifier, completion_receiver) =
             TimerTaskWithCompletionNotifier::from_timer_task(task);
         let handle = wheel.allocate_handle();
@@ -718,7 +785,7 @@ fn test_mixed_oneshot_and_periodic_tasks() {
 
 #[test]
 fn test_periodic_task_postpone_with_callback() {
-    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
     // Insert periodic task
     // 插入周期性任务
@@ -728,7 +795,8 @@ fn test_periodic_task_postpone_with_callback() {
         Duration::from_millis(50),
         Some(old_callback),
         None,
-    );
+    )
+    .unwrap();
     let (task_with_notifier, completion_receiver) =
         TimerTaskWithCompletionNotifier::from_timer_task(task);
     let handle = wheel.allocate_handle();

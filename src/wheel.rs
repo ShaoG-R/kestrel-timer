@@ -153,32 +153,36 @@ impl Wheel {
     /// Create new timing wheel
     ///
     /// # Parameters
-    /// - `config`: Timing wheel configuration (already validated)
+    /// - `config`: Timing wheel configuration
     /// - `batch_config`: Batch processing configuration
     ///
     /// # Notes
-    /// Configuration parameters have been validated in WheelConfig::builder().build(), so this method will not fail.
+    /// Configuration is validated again at this public construction boundary.
     /// Now uses DeferredMap for task indexing with generational safety.
     ///
     /// 创建新的时间轮
     ///
     /// # 参数
-    /// - `config`: 时间轮配置（已验证）
+    /// - `config`: 时间轮配置
     /// - `batch_config`: 批处理配置
     ///
     /// # 注意
-    /// 配置参数已在 WheelConfig::builder().build() 中验证，因此此方法不会失败。
+    /// 此公开构造边界会再次验证配置。
     /// 现在使用 DeferredMap 进行任务索引，具有代数安全特性。
-    pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
+    pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Result<Self, TimerError> {
+        let config = config.validate()?;
         let owner = WheelOwner::new();
-        let l0 = WheelLayer::new(config.l0_slot_count, config.l0_tick_duration);
-        let l1 = WheelLayer::new(config.l1_slot_count, config.l1_tick_duration);
+        let l0 = WheelLayer::new(config.l0_slot_count(), config.l0_tick_duration());
+        let l1 = WheelLayer::new(config.l1_slot_count(), config.l1_tick_duration());
         let now = Instant::now();
 
         // Calculate L1 tick ratio relative to L0 tick
         // 计算 L1 tick 相对于 L0 tick 的比率
         let l1_tick_ratio = u64::try_from(l1.tick_duration_nanos / l0.tick_duration_nanos)
-            .expect("L1/L0 tick ratio must fit in u64");
+            .map_err(|_| TimerError::InvalidConfiguration {
+                field: "l1_tick_duration".to_string(),
+                reason: "L1/L0 tick ratio must fit in u64".to_string(),
+            })?;
 
         // Pre-calculate capacity to avoid repeated calculation in insert
         // 预计算容量，避免在 insert 中重复计算
@@ -189,7 +193,7 @@ impl Wheel {
         // 根据 L0 槽数量估算 DeferredMap 的初始容量
         let estimated_capacity = (l0.slot_count / 4).max(64);
 
-        Self {
+        Ok(Self {
             owner,
             l0,
             l1,
@@ -200,7 +204,7 @@ impl Wheel {
             l1_capacity_ticks,
             clock_origin: now,
             clock_at: now,
-        }
+        })
     }
 
     /// Get current tick (L0 layer tick)
@@ -314,6 +318,27 @@ impl Wheel {
         }
     }
 
+    fn validate_periodic_interval(&self, interval: Duration) -> Result<(), TimerError> {
+        if interval.is_zero() {
+            return Err(TimerError::InvalidConfiguration {
+                field: "interval".to_string(),
+                reason: "periodic interval must be greater than zero".to_string(),
+            });
+        }
+
+        if interval < self.l0.tick_duration {
+            return Err(TimerError::InvalidConfiguration {
+                field: "interval".to_string(),
+                reason: format!(
+                    "periodic interval ({interval:?}) must be at least the L0 tick duration ({:?})",
+                    self.l0.tick_duration
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Insert timer task
     ///
     /// # Parameters
@@ -379,6 +404,10 @@ impl Wheel {
 
         if !handle.belongs_to(self.owner.id()) {
             return Err(TimerError::WrongWheel);
+        }
+
+        if let Some(interval) = task.get_interval() {
+            self.validate_periodic_interval(interval)?;
         }
 
         let task_id = handle.task_id();
@@ -493,6 +522,12 @@ impl Wheel {
             .any(|handle| !handle.belongs_to(self.owner.id()))
         {
             return Err(TimerError::WrongWheel);
+        }
+
+        for task in &tasks {
+            if let Some(interval) = task.get_interval() {
+                self.validate_periodic_interval(interval)?;
+            }
         }
 
         for (handle, task) in handles.into_iter().zip(tasks) {
@@ -1431,7 +1466,7 @@ mod tests {
 
     #[test]
     fn test_wheel_creation() {
-        let wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
         assert_eq!(wheel.slot_count(), 512);
         assert_eq!(wheel.current_tick(), 0);
         assert!(wheel.is_empty());
@@ -1441,7 +1476,7 @@ mod tests {
     fn test_hierarchical_wheel_creation() {
         let config = WheelConfig::default();
 
-        let wheel = Wheel::new(config, BatchConfig::default());
+        let wheel = Wheel::new(config, BatchConfig::default()).unwrap();
         assert_eq!(wheel.slot_count(), 512); // L0 slot count (L0 层槽数量)
         assert_eq!(wheel.current_tick(), 0);
         assert!(wheel.is_empty());
@@ -1477,7 +1512,7 @@ mod tests {
     fn test_layer_determination() {
         let config = WheelConfig::default();
 
-        let wheel = Wheel::new(config, BatchConfig::default());
+        let wheel = Wheel::new(config, BatchConfig::default()).unwrap();
 
         // Short delay should enter L0 layer (短延迟应该进入 L0 层)
         // L0: 512 slots * 10ms = 5120ms
@@ -1509,7 +1544,7 @@ mod tests {
     fn test_hierarchical_insert_and_advance() {
         let config = WheelConfig::default();
 
-        let mut wheel = Wheel::new(config, BatchConfig::default());
+        let mut wheel = Wheel::new(config, BatchConfig::default()).unwrap();
 
         // Insert short delay task into L0 (插入短延迟任务到 L0)
         let callback = CallbackWrapper::new(|| async {});
@@ -1540,7 +1575,7 @@ mod tests {
     fn test_cross_layer_cancel() {
         let config = WheelConfig::default();
 
-        let mut wheel = Wheel::new(config, BatchConfig::default());
+        let mut wheel = Wheel::new(config, BatchConfig::default()).unwrap();
 
         // Insert L0 task (插入 L0 任务)
         let callback1 = CallbackWrapper::new(|| async {});
@@ -1575,7 +1610,7 @@ mod tests {
 
     #[test]
     fn test_delay_to_ticks() {
-        let wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(100)), 10);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(50)), 5);
         assert_eq!(wheel.delay_to_ticks(Duration::from_millis(1)), 1); // Minimum 1 tick (最小 1 个 tick)
@@ -1597,7 +1632,7 @@ mod tests {
 
     #[test]
     fn test_minimum_delay() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
         // Test minimum delay (delays less than 1 tick should be rounded up to 1 tick) (测试最小延迟 (延迟小于 1 个 tick 应该向上舍入到 1 个 tick))
         let callback = CallbackWrapper::new(|| async {});
@@ -1620,7 +1655,7 @@ mod tests {
 
     #[test]
     fn test_advance_empty_slots() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
         // Do not insert any tasks, advance multiple ticks (不插入任何任务，前进多个tick)
         for _ in 0..100 {
@@ -1640,7 +1675,7 @@ mod tests {
 
     #[test]
     fn test_slot_boundary() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
         // Test slot boundary and wraparound (测试槽边界和环绕)
         // 第一个任务：延迟 10ms（1 tick），应该在 slot 1 触发
@@ -1687,7 +1722,7 @@ mod tests {
 
     #[test]
     fn test_task_id_uniqueness() {
-        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
         // Insert multiple tasks, verify TaskId uniqueness (插入多个任务，验证 TaskId 唯一性)
         let mut task_ids = std::collections::HashSet::new();
@@ -1707,8 +1742,8 @@ mod tests {
 
     #[test]
     fn test_cross_wheel_handle_is_rejected() {
-        let mut source = Wheel::new(WheelConfig::default(), BatchConfig::default());
-        let mut target = Wheel::new(WheelConfig::default(), BatchConfig::default());
+        let mut source = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
+        let mut target = Wheel::new(WheelConfig::default(), BatchConfig::default()).unwrap();
 
         let handle = source.allocate_handle();
         let task = TimerTask::new_oneshot(Duration::from_secs(10), None);

@@ -128,7 +128,8 @@ enum ServiceCommand {
 ///         Duration::from_millis(50),
 ///         Some(CallbackWrapper::new(|| async { println!("Periodic timer fired!"); })),
 ///         None
-///     );
+///     )
+///     .unwrap();
 ///     service.register(handle, periodic_task).unwrap();
 ///     
 ///     // Receive notifications (接收通知)
@@ -1445,7 +1446,8 @@ mod tests {
                     }
                 })),
                 None,
-            ),
+            )
+            .unwrap(),
         );
 
         assert!(matches!(result, Err(TimerError::RegisterFailed)));

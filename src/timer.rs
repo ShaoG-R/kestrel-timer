@@ -30,13 +30,13 @@ impl TimerWheel {
     /// Create a new timer manager
     ///
     /// # Parameters
-    /// - `config`: Timing wheel configuration, already validated
+    /// - `config`: Timing wheel configuration
     /// - `batch_config`: Batch operation configuration
     ///
     /// 创建新的定时器管理器
     ///
     /// # 参数
-    /// - `config`: 时间轮配置，已验证
+    /// - `config`: 时间轮配置
     /// - `batch_config`: 批量操作配置
     ///
     /// # Examples (示例)
@@ -53,7 +53,7 @@ impl TimerWheel {
     ///         .l1_slot_count(64)
     ///         .build()
     ///         .unwrap();
-    ///     let timer = TimerWheel::new(config, BatchConfig::default());
+    ///     let timer = TimerWheel::new(config, BatchConfig::default()).unwrap();
     ///     
     ///     // Use two-step API: allocate handle first, then register
     ///     // 使用两步 API：先分配 handle，再注册
@@ -62,9 +62,9 @@ impl TimerWheel {
     ///     let _timer_handle = timer.register(handle, task).unwrap();
     /// }
     /// ```
-    pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Self {
-        let tick_duration = config.l0_tick_duration;
-        let wheel = Wheel::new(config, batch_config);
+    pub fn new(config: WheelConfig, batch_config: BatchConfig) -> Result<Self, TimerError> {
+        let tick_duration = config.l0_tick_duration();
+        let wheel = Wheel::new(config, batch_config)?;
         let wheel = Arc::new(Mutex::new(wheel));
         let wheel_clone = wheel.clone();
 
@@ -74,10 +74,10 @@ impl TimerWheel {
             Self::tick_loop(wheel_clone, tick_duration).await;
         });
 
-        Self {
+        Ok(Self {
             wheel,
             tick_handle: Some(tick_handle),
-        }
+        })
     }
 
     /// Create timer manager with default configuration, hierarchical mode
@@ -105,6 +105,7 @@ impl TimerWheel {
     /// ```
     pub fn with_defaults() -> Self {
         Self::new(WheelConfig::default(), BatchConfig::default())
+            .expect("default timer wheel configuration must be valid")
     }
 
     /// Create TimerService bound to this timing wheel with default configuration
@@ -936,7 +937,8 @@ mod tests {
                         Duration::from_secs(10),
                         None,
                         Some(std::num::NonZeroUsize::new(1).unwrap()),
-                    ),
+                    )
+                    .unwrap(),
                 )
                 .unwrap()
                 .into_parts()

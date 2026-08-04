@@ -1,6 +1,9 @@
 use crate::config::ServiceConfig;
 use crate::error::TimerError;
-use crate::task::{CallbackWrapper, CompletionReceiver, TaskCompletion, TaskId};
+use crate::task::{
+    CallbackWrapper, CompletionReceiver, TaskCompletion, TaskHandle, TaskId, TimerTask,
+    TimerTaskWithCompletionNotifier,
+};
 use crate::wheel::Wheel;
 use crate::{BatchHandle, TimerHandle};
 use futures::future::BoxFuture;
@@ -185,7 +188,7 @@ impl TimerService {
     /// let handle = service.allocate_handle();
     /// # }
     /// ```
-    pub fn allocate_handle(&self) -> crate::task::TaskHandle {
+    pub fn allocate_handle(&self) -> TaskHandle {
         self.wheel.lock().allocate_handle()
     }
 
@@ -217,7 +220,7 @@ impl TimerService {
     /// assert_eq!(handles.len(), 10);
     /// # }
     /// ```
-    pub fn allocate_handles(&self, count: usize) -> Vec<crate::task::TaskHandle> {
+    pub fn allocate_handles(&self, count: usize) -> Vec<TaskHandle> {
         self.wheel.lock().allocate_handles(count)
     }
 
@@ -657,15 +660,10 @@ impl TimerService {
     /// # }
     /// ```
     #[inline]
-    pub fn register(
-        &self,
-        handle: crate::task::TaskHandle,
-        task: crate::task::TimerTask,
-    ) -> Result<TimerHandle, TimerError> {
+    pub fn register(&self, handle: TaskHandle, task: TimerTask) -> Result<TimerHandle, TimerError> {
         let task_id = handle.task_id();
 
-        let (task, completion_rx) =
-            crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
+        let (task, completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
 
         // Single lock, complete all operations
         // 单次锁定，完成所有操作
@@ -674,16 +672,19 @@ impl TimerService {
             wheel_guard.insert(handle, task);
         }
 
-        // Add to service management (only send necessary data)
-        // 添加到服务管理（只发送必要数据）
-        self.command_tx
-            .try_send(ServiceCommand::AddTimerHandle {
-                task_id,
-                completion_rx,
-            })
-            .map_err(|_| TimerError::RegisterFailed)?;
-
-        Ok(TimerHandle::new(task_id, self.wheel.clone()))
+        // The wheel insertion is provisional until the actor accepts this command.
+        // 时间轮插入在 actor 接受命令前只是暂存状态。
+        match self.command_tx.try_send(ServiceCommand::AddTimerHandle {
+            task_id,
+            completion_rx,
+        }) {
+            Ok(()) => Ok(TimerHandle::new(task_id, self.wheel.clone())),
+            Err(error) => {
+                drop(error);
+                self.rollback_registration(&[task_id]);
+                Err(TimerError::RegisterFailed)
+            }
+        }
     }
 
     /// Batch register timer tasks to service (registration phase)
@@ -741,8 +742,8 @@ impl TimerService {
     #[inline]
     pub fn register_batch(
         &self,
-        handles: Vec<crate::task::TaskHandle>,
-        tasks: Vec<crate::task::TimerTask>,
+        handles: Vec<TaskHandle>,
+        tasks: Vec<TimerTask>,
     ) -> Result<BatchHandle, TimerError> {
         // Validate lengths match
         if handles.len() != tasks.len() {
@@ -762,8 +763,7 @@ impl TimerService {
         // 步骤 1: 准备所有通道和通知器（无锁）
         for (handle, task) in handles.into_iter().zip(tasks) {
             let task_id = handle.task_id();
-            let (task, completion_rx) =
-                crate::task::TimerTaskWithCompletionNotifier::from_timer_task(task);
+            let (task, completion_rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
             task_ids.push(task_id);
             completion_rxs.push(completion_rx);
             prepared_handles.push(handle);
@@ -777,16 +777,28 @@ impl TimerService {
             wheel_guard.insert_batch(prepared_handles, prepared_tasks)?;
         }
 
-        // Add to service management (only send necessary data)
-        // 添加到服务管理（只发送必要数据）
-        self.command_tx
-            .try_send(ServiceCommand::AddBatchHandle {
-                task_ids: task_ids.clone(),
-                completion_rxs,
-            })
-            .map_err(|_| TimerError::RegisterFailed)?;
+        // The batch insertion is provisional until the actor accepts this command.
+        // 批量插入在 actor 接受命令前只是暂存状态。
+        match self.command_tx.try_send(ServiceCommand::AddBatchHandle {
+            task_ids: task_ids.clone(),
+            completion_rxs,
+        }) {
+            Ok(()) => Ok(BatchHandle::new(task_ids, self.wheel.clone())),
+            Err(error) => {
+                drop(error);
+                self.rollback_registration(&task_ids);
+                Err(TimerError::RegisterFailed)
+            }
+        }
+    }
 
-        Ok(BatchHandle::new(task_ids, self.wheel.clone()))
+    fn rollback_registration(&self, task_ids: &[TaskId]) {
+        if task_ids.is_empty() {
+            return;
+        }
+
+        let mut wheel = self.wheel.lock();
+        wheel.cancel_batch(task_ids);
     }
 
     /// Graceful shutdown of TimerService
@@ -939,12 +951,13 @@ impl ServiceActor {
                                 match rx {
                                     crate::task::CompletionReceiver::OneShot(receiver) => {
                                         let future: BoxFuture<'static, (TaskId, TaskCompletion)> = Box::pin(async move {
-                                            // unwrap() is safe here: the sender is held by the task and will send
-                                            // before being dropped. If the sender is dropped without sending,
-                                            // it's a logic error in the task implementation.
-                                            // unwrap() 在这里是安全的：发送器由任务持有，在被丢弃前会发送。
-                                            // 如果发送器在未发送的情况下被丢弃，这是任务实现中的逻辑错误。
-                                            (task_id, receiver.recv().await.unwrap())
+                                            // A dropped task closes the receiver without a completion event.
+                                            // 任务被丢弃时接收器会关闭，此时没有完成事件。
+                                            let completion = receiver
+                                                .recv()
+                                                .await
+                                                .unwrap_or(TaskCompletion::Cancelled);
+                                            (task_id, completion)
                                         });
                                         oneshot_futures.push(future);
                                     },
@@ -964,12 +977,13 @@ impl ServiceActor {
                             match completion_rx {
                                 crate::task::CompletionReceiver::OneShot(receiver) => {
                                     let future: BoxFuture<'static, (TaskId, TaskCompletion)> = Box::pin(async move {
-                                        // unwrap() is safe here: the sender is held by the task and will send
-                                        // before being dropped. If the sender is dropped without sending,
-                                        // it's a logic error in the task implementation.
-                                        // unwrap() 在这里是安全的：发送器由任务持有，在被丢弃前会发送。
-                                        // 如果发送器在未发送的情况下被丢弃，这是任务实现中的逻辑错误。
-                                        (task_id, receiver.recv().await.unwrap())
+                                        // A dropped task closes the receiver without a completion event.
+                                        // 任务被丢弃时接收器会关闭，此时没有完成事件。
+                                        let completion = receiver
+                                            .recv()
+                                            .await
+                                            .unwrap_or(TaskCompletion::Cancelled);
+                                        (task_id, completion)
                                     });
                                     oneshot_futures.push(future);
                                 },
@@ -999,6 +1013,7 @@ impl ServiceActor {
 mod tests {
     use super::*;
     use crate::{TimerTask, TimerWheel};
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
@@ -1182,5 +1197,124 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_register_failure_rolls_back_single_task_when_channel_is_full() {
+        let config = ServiceConfig::builder()
+            .command_channel_capacity(NonZeroUsize::new(1).unwrap())
+            .build();
+        let timer = TimerWheel::with_defaults();
+        let service = timer.create_service(config);
+
+        let first_handle = service.allocate_handle();
+        let first_task_id = first_handle.task_id();
+        service
+            .register(
+                first_handle,
+                TimerTask::new_oneshot(Duration::from_secs(10), None),
+            )
+            .unwrap();
+
+        let failed_handle = service.allocate_handle();
+        let failed_task_id = failed_handle.task_id();
+        let callback_count = Arc::new(AtomicU32::new(0));
+        let callback_count_clone = Arc::clone(&callback_count);
+        let result = service.register(
+            failed_handle,
+            TimerTask::new_periodic(
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+                Some(CallbackWrapper::new(move || {
+                    let callback_count = Arc::clone(&callback_count_clone);
+                    async move {
+                        callback_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                })),
+                None,
+            ),
+        );
+
+        assert!(matches!(result, Err(TimerError::RegisterFailed)));
+        assert!(!service.cancel_task(failed_task_id));
+        assert!(service.cancel_task(first_task_id));
+        assert!(service.wheel.lock().is_empty());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(callback_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_register_batch_failure_rolls_back_all_tasks_when_channel_is_full() {
+        let config = ServiceConfig::builder()
+            .command_channel_capacity(NonZeroUsize::new(1).unwrap())
+            .build();
+        let timer = TimerWheel::with_defaults();
+        let service = timer.create_service(config);
+
+        let first_handle = service.allocate_handle();
+        let first_task_id = first_handle.task_id();
+        service
+            .register(
+                first_handle,
+                TimerTask::new_oneshot(Duration::from_secs(10), None),
+            )
+            .unwrap();
+
+        let failed_handles = service.allocate_handles(2);
+        let failed_task_ids: Vec<_> = failed_handles
+            .iter()
+            .map(|handle| handle.task_id())
+            .collect();
+        let failed_tasks = vec![
+            TimerTask::new_oneshot(Duration::from_secs(10), None),
+            TimerTask::new_oneshot(Duration::from_secs(10), None),
+        ];
+        let result = service.register_batch(failed_handles, failed_tasks);
+
+        assert!(matches!(result, Err(TimerError::RegisterFailed)));
+        assert_eq!(service.cancel_batch(&failed_task_ids), 0);
+        assert!(service.cancel_task(first_task_id));
+        assert!(service.wheel.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_register_failure_rolls_back_when_actor_is_closed() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+        let actor_handle = service.actor_handle.take().unwrap();
+        actor_handle.abort();
+        let _ = actor_handle.await;
+
+        let handle = service.allocate_handle();
+        let task_id = handle.task_id();
+        let result = service.register(
+            handle,
+            TimerTask::new_oneshot(Duration::from_secs(10), None),
+        );
+
+        assert!(matches!(result, Err(TimerError::RegisterFailed)));
+        assert!(!service.cancel_task(task_id));
+        assert!(service.wheel.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_register_batch_failure_rolls_back_when_actor_is_closed() {
+        let timer = TimerWheel::with_defaults();
+        let mut service = timer.create_service(ServiceConfig::default());
+        let actor_handle = service.actor_handle.take().unwrap();
+        actor_handle.abort();
+        let _ = actor_handle.await;
+
+        let handles = service.allocate_handles(2);
+        let task_ids: Vec<_> = handles.iter().map(|handle| handle.task_id()).collect();
+        let tasks = vec![
+            TimerTask::new_oneshot(Duration::from_secs(10), None),
+            TimerTask::new_oneshot(Duration::from_secs(10), None),
+        ];
+        let result = service.register_batch(handles, tasks);
+
+        assert!(matches!(result, Err(TimerError::RegisterFailed)));
+        assert_eq!(service.cancel_batch(&task_ids), 0);
+        assert!(service.wheel.lock().is_empty());
     }
 }

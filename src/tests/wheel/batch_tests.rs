@@ -173,3 +173,48 @@ fn test_insert_batch_length_mismatch() {
         panic!("Expected BatchLengthMismatch error");
     }
 }
+
+#[test]
+fn test_batch_allocation_firing_order() {
+    let mut wheel = Wheel::new(WheelConfig::default(), BatchConfig::default());
+
+    // Step 1: Batch allocate handles
+    let handles = wheel.allocate_handles(100);
+
+    // Step 2: Create tasks with delays 0..100 seconds
+    let mut tasks = Vec::new();
+    let mut id_to_index = std::collections::HashMap::new();
+
+    for i in 0..100 {
+        let handle_id = handles[i].task_id();
+        id_to_index.insert(handle_id, i);
+
+        let delay = Duration::from_secs(i as u64);
+        let task = TimerTask::new_oneshot(delay, None);
+        let (task_with_notifier, _rx) = TimerTaskWithCompletionNotifier::from_timer_task(task);
+        tasks.push(task_with_notifier);
+    }
+
+    // Step 3: Insert batch
+    wheel.insert_batch(handles, tasks).unwrap();
+
+    let mut fired_order = Vec::new();
+    // 120 seconds = 12,000 ticks at 10ms/tick
+    for _ in 0..12000 {
+        let expired = wheel.advance();
+        for res in expired {
+            if let Some(&idx) = id_to_index.get(&res.id) {
+                fired_order.push(idx);
+            }
+        }
+    }
+
+    assert_eq!(fired_order.len(), 100);
+
+    let expected: Vec<usize> = (0..100).collect();
+    assert_eq!(
+        fired_order, expected,
+        "Timers with 0..100s delays should fire in exact sequential order (including 64s)"
+    );
+}
+

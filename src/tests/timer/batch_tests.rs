@@ -261,3 +261,50 @@ async fn test_periodic_batch_register() {
         count
     );
 }
+
+#[tokio::test]
+async fn test_timer_wheel_batch_64_delay_order() {
+    tokio::time::pause();
+
+    let timer = TimerWheel::with_defaults();
+    let fired_order: Arc<parking_lot::Mutex<Vec<usize>>> = Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+    // Step 1: Batch allocate handles
+    let handles = timer.allocate_handles(100);
+    let _task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+
+    // Step 2: Create tasks
+    let fired_order_clone = Arc::clone(&fired_order);
+    let tasks: Vec<_> = (0..100)
+        .map(|i: usize| {
+            let delay = Duration::from_secs(i as u64);
+            let fired_order = Arc::clone(&fired_order_clone);
+            let callback = Some(CallbackWrapper::new(move || {
+                let fired_order = Arc::clone(&fired_order);
+                async move {
+                    fired_order.lock().push(i);
+                }
+            }));
+            TimerTask::new_oneshot(delay, callback)
+        })
+        .collect();
+
+    // Step 3: Batch register
+    timer.register_batch(handles, tasks).unwrap();
+
+    // Sleep 105s in virtual time to allow all 100 timers (0..100s) to fire
+    tokio::time::sleep(Duration::from_secs(105)).await;
+
+    // Yield multiple times to give spawned tokio callback tasks time to run
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+
+    let fired = fired_order.lock().clone();
+    assert_eq!(fired.len(), 100);
+
+    let expected: Vec<usize> = (0..100).collect();
+    assert_eq!(fired, expected, "Timers 0..100 should fire in exact sequential order (including 64s)");
+}
+
+

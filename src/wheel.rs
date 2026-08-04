@@ -241,13 +241,8 @@ impl Wheel {
         // Slow path: L1 layer tasks (using cached values)
         // 慢速路径：L1 层任务（使用缓存的值）
         let l1_ticks = (delay_ms / self.l1.tick_duration_ms).max(1);
-
-        if l1_ticks < self.l1_capacity_ticks {
-            (1, l1_ticks, 0)
-        } else {
-            let rounds = (l1_ticks / self.l1_capacity_ticks) as u32;
-            (1, l1_ticks, rounds)
-        }
+        let rounds = ((l1_ticks - 1) / self.l1_capacity_ticks) as u32;
+        (1, l1_ticks, rounds)
     }
 
     /// Allocate a handle from DeferredMap

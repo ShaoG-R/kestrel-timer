@@ -2,7 +2,7 @@
 
 > High-performance async timer library based on Hierarchical Timing Wheel algorithm
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.87%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tokio](https://img.shields.io/badge/tokio-1.48-blue.svg)](https://tokio.rs/)
 [![Crates.io](https://img.shields.io/crates/v/kestrel-timer.svg)](https://crates.io/crates/kestrel-timer)
 [![Documentation](https://docs.rs/kestrel-timer/badge.svg)](https://docs.rs/kestrel-timer)
@@ -72,7 +72,7 @@ tokio = { version = "1.48", features = ["full"] }
 
 ### Basic Usage
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
@@ -83,7 +83,7 @@ async fn main() {
     
     // Step 1: Allocate handle
     let handle = timer.allocate_handle();
-    let task_id = handle.task_id();
+    let _task_id = handle.task_id();
     
     // Step 2: Create task
     let callback = Some(CallbackWrapper::new(|| async {
@@ -92,7 +92,7 @@ async fn main() {
     let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     
     // Step 3: Register task
-    let timer_handle = timer.register(handle, task).unwrap();
+    let _timer_handle = timer.register(handle, task).unwrap();
     
     // Wait for completion or cancel
     // timer_handle.cancel();
@@ -101,7 +101,7 @@ async fn main() {
 
 ### Batch Operations
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
@@ -109,7 +109,7 @@ let timer = TimerWheel::with_defaults();
 
 // Step 1: Batch allocate handles
 let handles = timer.allocate_handles(100);
-let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+let _task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
 
 // Step 2: Create tasks
 let tasks: Vec<_> = (0..100)
@@ -131,7 +131,7 @@ batch_handle.cancel_all().unwrap();
 
 ### Postpone Timer
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
@@ -146,7 +146,7 @@ let callback = Some(CallbackWrapper::new(|| async {
     println!("Original callback");
 }));
 let task = TimerTask::new_oneshot(Duration::from_millis(50), callback);
-let timer_handle = timer.register(handle, task).unwrap();
+let _timer_handle = timer.register(handle, task).unwrap();
 
 // Postpone and keep original callback
 timer.postpone(task_id, Duration::from_millis(150), None).unwrap();
@@ -160,11 +160,13 @@ timer.postpone(task_id, Duration::from_millis(200), new_callback).unwrap();
 
 ### TimerService Usage
 
-```rust
-use kestrel_timer::{TimerWheel, TimerService, TimerTask, CallbackWrapper, TaskNotification};
+```rust,no_run
+use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper, TaskNotification};
 use kestrel_timer::config::ServiceConfig;
 use std::time::Duration;
 
+#[tokio::main]
+async fn main() {
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
@@ -180,27 +182,30 @@ let tasks: Vec<_> = vec![
 // Step 3: Batch register
 service.register_batch(handles, tasks).unwrap();
 
-// Receive timeout notifications
+// Receive the two timeout notifications, then shut down the service
 let mut timeout_rx = service.take_receiver().unwrap();
-while let Some(notification) = timeout_rx.recv().await {
-    match notification {
-        TaskNotification::OneShot(task_id) => {
-            println!("One-shot task {:?} completed", task_id);
-        },
-        TaskNotification::Periodic(task_id) => {
-            println!("Periodic task {:?} called", task_id);
-        },
+for _ in 0..2 {
+    if let Some(notification) = timeout_rx.recv().await {
+        match notification {
+            TaskNotification::OneShot(task_id) => {
+                println!("One-shot task {:?} completed", task_id);
+            },
+            TaskNotification::Periodic(task_id) => {
+                println!("Periodic task {:?} called", task_id);
+            },
+        }
     }
 }
 
 service.shutdown().await;
+}
 ```
 
 ## Architecture
 
 ### Hierarchical Timing Wheel Design
 
-```
+```text
 ┌─────────────────────────────────────────────┐
 │              L1 Layer (Upper)               │
 │  Slots: 64 | Tick: 1s | Range: 64s          │
@@ -285,7 +290,6 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 
 **TimerHandle** (Returned after registration):
 - `cancel()` - Cancel timer
-- `task_id()` - Get task ID
 
 **TimerService**:
 - `allocate_handle()` - Allocate single handle
@@ -303,16 +307,18 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 
 ### Default Configuration
 
-```rust
-let timer = TimerWheel::with_defaults();
+```rust,no_run
+use kestrel_timer::TimerWheel;
+
+let _timer = TimerWheel::with_defaults();
 // L0: 512 slots × 10ms = 5.12 seconds
 // L1: 64 slots × 1s = 64 seconds
 ```
 
 ### Custom Configuration
 
-```rust
-use kestrel_timer::{config::BatchConfig, config::WheelConfig, TimerWheel};
+```rust,no_run
+use kestrel_timer::{config::{BatchConfig, WheelConfig}, TimerWheel};
 use std::time::Duration;
 
 let config = WheelConfig::builder()
@@ -320,30 +326,39 @@ let config = WheelConfig::builder()
     .l0_slot_count(512)                            // L0 slots (must be power of 2)
     .l1_tick_duration(Duration::from_secs(1))      // L1 tick
     .l1_slot_count(64)                             // L1 slots (must be power of 2)
-    .build()?;
-let timer = TimerWheel::new(config, BatchConfig::default())?;
+    .build()
+    .unwrap();
+let _timer = TimerWheel::new(config, BatchConfig::default()).unwrap();
 ```
 
 ### Recommended Configurations
 
 **High Precision (Network Timeouts)**:
-```rust
+```rust,no_run
+use kestrel_timer::config::WheelConfig;
+use std::time::Duration;
+
 let config = WheelConfig::builder()
     .l0_tick_duration(Duration::from_millis(5))
     .l0_slot_count(1024)
     .l1_tick_duration(Duration::from_millis(500))
     .l1_slot_count(64)
-    .build()?;
+    .build()
+    .unwrap();
 ```
 
 **Low Precision (Heartbeat Detection)**:
-```rust
+```rust,no_run
+use kestrel_timer::config::WheelConfig;
+use std::time::Duration;
+
 let config = WheelConfig::builder()
     .l0_tick_duration(Duration::from_millis(100))
     .l0_slot_count(512)
     .l1_tick_duration(Duration::from_secs(10))
     .l1_slot_count(128)
-    .build()?;
+    .build()
+    .unwrap();
 ```
 
 ## Benchmarks
@@ -379,9 +394,11 @@ cargo test --test integration_test test_large_scale_timers
 
 ### 1. Network Timeout Management
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
+
+# async fn close_connection(_conn_id: u64) {}
 
 async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
     // Allocate handle first
@@ -395,7 +412,7 @@ async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
     let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
     
     // Register task
-    let timer_handle = timer.register(handle, task).unwrap();
+    let _timer_handle = timer.register(handle, task).unwrap();
     
     // Cancel timeout when connection completes
     // timer_handle.cancel();
@@ -404,13 +421,14 @@ async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
 
 ### 2. Heartbeat Detection
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
 use kestrel_timer::config::ServiceConfig;
 use std::time::Duration;
 
+# let client_ids = [1_u64, 2_u64];
 let timer = TimerWheel::with_defaults();
-let mut service = timer.create_service(ServiceConfig::default());
+let service = timer.create_service(ServiceConfig::default());
 
 for client_id in client_ids {
     // Allocate handle
@@ -427,11 +445,19 @@ for client_id in client_ids {
 
 ### 3. Cache Expiration
 
-```rust
-use kestrel_timer::{TimerTask, CallbackWrapper};
+```rust,no_run
+use kestrel_timer::{CallbackWrapper, TimerTask, TimerWheel};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
+use std::collections::HashMap;
 
+# struct Cache {
+#     cache: Arc<Mutex<HashMap<String, String>>>,
+#     timer: TimerWheel,
+# }
+#
+# impl Cache {
 async fn set_cache(&self, key: String, value: String, ttl: Duration) {
     self.cache.lock().insert(key.clone(), value);
     
@@ -452,13 +478,17 @@ async fn set_cache(&self, key: String, value: String, ttl: Duration) {
     // Register task
     self.timer.register(handle, task).unwrap();
 }
+# }
 ```
 
 ### 4. Game Buff System
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper, TaskId};
 use std::time::Duration;
+
+# type BuffType = u8;
+# async fn remove_buff(_player_id: u64, _buff_type: BuffType) {}
 
 async fn apply_buff(
     timer: &TimerWheel,
@@ -480,17 +510,23 @@ async fn apply_buff(
     task_id
 }
 
+# async fn extend_buff(timer: &TimerWheel, task_id: TaskId, new_duration: Duration) {
 // Extend buff duration
 timer.postpone(task_id, new_duration, None).unwrap();
+# }
 ```
 
 ### 5. Retry Mechanism
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
+use std::sync::Arc;
 use std::time::Duration;
 
-async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
+async fn retry_with_backoff(
+    timer: &TimerWheel,
+    operation: Arc<dyn Fn() + Send + Sync>,
+) {
     for retry in 1..=5 {
         let delay = Duration::from_secs(2_u64.pow(retry - 1));
         
@@ -498,8 +534,12 @@ async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
         let handle = timer.allocate_handle();
         
         // Create and register task
-        let callback = Some(CallbackWrapper::new(move || async move {
-            operation().await;
+        let operation = Arc::clone(&operation);
+        let callback = Some(CallbackWrapper::new(move || {
+            let operation = Arc::clone(&operation);
+            async move {
+                operation();
+            }
         }));
         let task = TimerTask::new_oneshot(delay, callback);
         timer.register(handle, task).unwrap();
@@ -511,8 +551,8 @@ async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
 
 This project is licensed under either of:
 
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-- Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or [opensource.org](https://opensource.org/licenses/MIT))
+- Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or [apache.org](https://www.apache.org/licenses/LICENSE-2.0))
 
 ## Acknowledgments
 

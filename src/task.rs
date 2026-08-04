@@ -492,11 +492,11 @@ impl PeriodicCompletionQueue {
             return false;
         }
 
-        if let Some(capacity) = state.capacity
-            && state.events.len() >= capacity.get()
-        {
-            state.dropped_called = state.dropped_called.saturating_add(1);
-            return false;
+        if let Some(capacity) = state.capacity {
+            if state.events.len() >= capacity.get() {
+                state.dropped_called = state.dropped_called.saturating_add(1);
+                return false;
+            }
         }
 
         state.events.push_back(completion);

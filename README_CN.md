@@ -2,7 +2,7 @@
 
 > 基于分层时间轮（Hierarchical Timing Wheel）算法的高性能异步定时器库
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.87%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tokio](https://img.shields.io/badge/tokio-1.48-blue.svg)](https://tokio.rs/)
 [![Crates.io](https://img.shields.io/crates/v/kestrel-timer.svg)](https://crates.io/crates/kestrel-timer)
 [![Documentation](https://docs.rs/kestrel-timer/badge.svg)](https://docs.rs/kestrel-timer)
@@ -70,7 +70,7 @@ tokio = { version = "1.48", features = ["full"] }
 
 ### 基础使用
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
@@ -81,7 +81,7 @@ async fn main() {
     
     // 步骤 1: 分配 handle
     let handle = timer.allocate_handle();
-    let task_id = handle.task_id();
+    let _task_id = handle.task_id();
     
     // 步骤 2: 创建任务
     let callback = Some(CallbackWrapper::new(|| async {
@@ -90,7 +90,7 @@ async fn main() {
     let task = TimerTask::new_oneshot(Duration::from_secs(1), callback);
     
     // 步骤 3: 注册任务
-    let timer_handle = timer.register(handle, task).unwrap();
+    let _timer_handle = timer.register(handle, task).unwrap();
     
     // 等待完成或取消
     // timer_handle.cancel();
@@ -99,7 +99,7 @@ async fn main() {
 
 ### 批量操作
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
@@ -107,7 +107,7 @@ let timer = TimerWheel::with_defaults();
 
 // 步骤 1: 批量分配 handles
 let handles = timer.allocate_handles(100);
-let task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
+let _task_ids: Vec<_> = handles.iter().map(|h| h.task_id()).collect();
 
 // 步骤 2: 创建任务
 let tasks: Vec<_> = (0..100)
@@ -129,7 +129,7 @@ batch_handle.cancel_all().unwrap();
 
 ### 推迟定时器
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
 
@@ -144,7 +144,7 @@ let callback = Some(CallbackWrapper::new(|| async {
     println!("原始回调");
 }));
 let task = TimerTask::new_oneshot(Duration::from_millis(50), callback);
-let timer_handle = timer.register(handle, task).unwrap();
+let _timer_handle = timer.register(handle, task).unwrap();
 
 // 推迟并保持原回调
 timer.postpone(task_id, Duration::from_millis(150), None).unwrap();
@@ -158,11 +158,13 @@ timer.postpone(task_id, Duration::from_millis(200), new_callback).unwrap();
 
 ### TimerService 使用
 
-```rust
-use kestrel_timer::{TimerWheel, TimerService, TimerTask, CallbackWrapper, TaskNotification};
+```rust,no_run
+use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper, TaskNotification};
 use kestrel_timer::config::ServiceConfig;
 use std::time::Duration;
 
+#[tokio::main]
+async fn main() {
 let timer = TimerWheel::with_defaults();
 let mut service = timer.create_service(ServiceConfig::default());
 
@@ -178,27 +180,30 @@ let tasks: Vec<_> = vec![
 // 步骤 3: 批量注册
 service.register_batch(handles, tasks).unwrap();
 
-// 接收超时通知
+// 接收两个超时通知，然后关闭服务
 let mut timeout_rx = service.take_receiver().unwrap();
-while let Some(notification) = timeout_rx.recv().await {
-    match notification {
-        TaskNotification::OneShot(task_id) => {
-            println!("一次性任务 {:?} 完成", task_id);
-        },
-        TaskNotification::Periodic(task_id) => {
-            println!("周期性任务 {:?} 被调用", task_id);
-        },
+for _ in 0..2 {
+    if let Some(notification) = timeout_rx.recv().await {
+        match notification {
+            TaskNotification::OneShot(task_id) => {
+                println!("一次性任务 {:?} 完成", task_id);
+            },
+            TaskNotification::Periodic(task_id) => {
+                println!("周期性任务 {:?} 被调用", task_id);
+            },
+        }
     }
 }
 
 service.shutdown().await;
+}
 ```
 
 ## 架构说明
 
 ### 分层时间轮设计
 
-```
+```text
 ┌─────────────────────────────────────────────┐
 │              L1 层（高层）                  │
 │  槽位数：64 | Tick: 1s | 覆盖：64秒         │
@@ -271,7 +276,7 @@ service.shutdown().await;
 
 **TimerWheel**：
 - `TimerWheel::with_defaults()` - 使用默认配置创建
-- `TimerWheel::new(config)` - 使用自定义配置创建
+- `TimerWheel::new(config, batch_config)` - 使用自定义配置创建并返回 `Result`
 - `allocate_handle()` - 分配单个 handle
 - `allocate_handles(count)` - 批量分配 handles
 - `register(handle, task)` - 使用 handle 注册任务
@@ -283,7 +288,6 @@ service.shutdown().await;
 
 **TimerHandle**（注册后返回的句柄）：
 - `cancel()` - 取消定时器
-- `task_id()` - 获取任务 ID
 
 **TimerService**：
 - `allocate_handle()` - 分配单个 handle
@@ -301,46 +305,58 @@ service.shutdown().await;
 
 ### 默认配置
 
-```rust
-let timer = TimerWheel::with_defaults();
+```rust,no_run
+use kestrel_timer::TimerWheel;
+
+let _timer = TimerWheel::with_defaults();
 // L0: 512 槽位 × 10ms = 5.12 秒
 // L1: 64 槽位 × 1s = 64 秒
 ```
 
 ### 自定义配置
 
-```rust
-use kestrel_timer::WheelConfig;
+```rust,no_run
+use kestrel_timer::{config::{BatchConfig, WheelConfig}, TimerWheel};
+use std::time::Duration;
 
 let config = WheelConfig::builder()
     .l0_tick_duration(Duration::from_millis(10))  // L0 tick
     .l0_slot_count(512)                            // L0 槽位（必须是 2 的幂）
     .l1_tick_duration(Duration::from_secs(1))      // L1 tick
     .l1_slot_count(64)                             // L1 槽位（必须是 2 的幂）
-    .build()?;
-let timer = TimerWheel::new(config);
+    .build()
+    .unwrap();
+let _timer = TimerWheel::new(config, BatchConfig::default()).unwrap();
 ```
 
 ### 推荐配置
 
 **高精度场景（网络超时）**：
-```rust
+```rust,no_run
+use kestrel_timer::config::WheelConfig;
+use std::time::Duration;
+
 let config = WheelConfig::builder()
     .l0_tick_duration(Duration::from_millis(5))
     .l0_slot_count(1024)
     .l1_tick_duration(Duration::from_millis(500))
     .l1_slot_count(64)
-    .build()?;
+    .build()
+    .unwrap();
 ```
 
 **低精度场景（心跳检测）**：
-```rust
+```rust,no_run
+use kestrel_timer::config::WheelConfig;
+use std::time::Duration;
+
 let config = WheelConfig::builder()
     .l0_tick_duration(Duration::from_millis(100))
     .l0_slot_count(512)
     .l1_tick_duration(Duration::from_secs(10))
     .l1_slot_count(128)
-    .build()?;
+    .build()
+    .unwrap();
 ```
 
 ## 性能基准
@@ -376,9 +392,11 @@ cargo test --test integration_test test_large_scale_timers
 
 ### 1. 网络超时管理
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, CallbackWrapper, TimerTask};
 use std::time::Duration;
+
+# async fn close_connection(_conn_id: u64) {}
 
 async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
     // 先分配 handle
@@ -392,7 +410,7 @@ async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
     let task = TimerTask::new_oneshot(Duration::from_secs(30), callback);
     
     // 注册任务
-    let timer_handle = timer.register(handle, task).unwrap();
+    let _timer_handle = timer.register(handle, task).unwrap();
     
     // 连接完成时取消超时
     // timer_handle.cancel();
@@ -401,13 +419,14 @@ async fn handle_connection(timer: &TimerWheel, conn_id: u64) {
 
 ### 2. 心跳检测
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
 use kestrel_timer::config::ServiceConfig;
 use std::time::Duration;
 
+# let client_ids = [1_u64, 2_u64];
 let timer = TimerWheel::with_defaults();
-let mut service = timer.create_service(ServiceConfig::default());
+let service = timer.create_service(ServiceConfig::default());
 
 for client_id in client_ids {
     // 分配 handle
@@ -424,11 +443,19 @@ for client_id in client_ids {
 
 ### 3. 缓存过期
 
-```rust
-use kestrel_timer::{TimerTask, CallbackWrapper};
+```rust,no_run
+use kestrel_timer::{CallbackWrapper, TimerTask, TimerWheel};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
+use std::collections::HashMap;
 
+# struct Cache {
+#     cache: Arc<Mutex<HashMap<String, String>>>,
+#     timer: TimerWheel,
+# }
+#
+# impl Cache {
 async fn set_cache(&self, key: String, value: String, ttl: Duration) {
     self.cache.lock().insert(key.clone(), value);
     
@@ -449,13 +476,17 @@ async fn set_cache(&self, key: String, value: String, ttl: Duration) {
     // 注册任务
     self.timer.register(handle, task).unwrap();
 }
+# }
 ```
 
 ### 4. 游戏 Buff 系统
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper, TaskId};
 use std::time::Duration;
+
+# type BuffType = u8;
+# async fn remove_buff(_player_id: u64, _buff_type: BuffType) {}
 
 async fn apply_buff(
     timer: &TimerWheel,
@@ -477,17 +508,23 @@ async fn apply_buff(
     task_id
 }
 
+# async fn extend_buff(timer: &TimerWheel, task_id: TaskId, new_duration: Duration) {
 // 延长 Buff
 timer.postpone(task_id, new_duration, None).unwrap();
+# }
 ```
 
 ### 5. 重试机制
 
-```rust
+```rust,no_run
 use kestrel_timer::{TimerWheel, TimerTask, CallbackWrapper};
+use std::sync::Arc;
 use std::time::Duration;
 
-async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
+async fn retry_with_backoff(
+    timer: &TimerWheel,
+    operation: Arc<dyn Fn() + Send + Sync>,
+) {
     for retry in 1..=5 {
         let delay = Duration::from_secs(2_u64.pow(retry - 1));
         
@@ -495,8 +532,12 @@ async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
         let handle = timer.allocate_handle();
         
         // 创建并注册任务
-        let callback = Some(CallbackWrapper::new(move || async move {
-            operation().await;
+        let operation = Arc::clone(&operation);
+        let callback = Some(CallbackWrapper::new(move || {
+            let operation = Arc::clone(&operation);
+            async move {
+                operation();
+            }
         }));
         let task = TimerTask::new_oneshot(delay, callback);
         timer.register(handle, task).unwrap();
@@ -508,8 +549,8 @@ async fn retry_with_backoff(timer: &TimerWheel, operation: impl Fn()) {
 
 本项目采用 MIT 或 Apache-2.0 双许可证。
 
-- MIT License ([LICENSE-MIT](LICENSE-MIT) 或 http://opensource.org/licenses/MIT)
-- Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE) 或 http://www.apache.org/licenses/LICENSE-2.0)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) 或 [opensource.org](https://opensource.org/licenses/MIT))
+- Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE) 或 [apache.org](https://www.apache.org/licenses/LICENSE-2.0))
 
 ## 致谢
 

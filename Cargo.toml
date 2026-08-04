@@ -2,6 +2,7 @@
 name = "kestrel-timer"
 version = "0.3.7"
 edition = "2024"
+rust-version = "1.87"
 authors = ["ShaoG-R"]
 license = "MIT OR Apache-2.0"
 description = "High-performance async timer library based on Hierarchical Timing Wheel algorithm"

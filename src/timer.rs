@@ -15,9 +15,9 @@ use tokio::time::Instant;
 ///
 /// 时间轮定时器管理器
 pub struct TimerWheel {
-    /// Timing wheel instance, wrapped in Arc<Mutex> for multi-threaded access
+    /// Timing wheel instance, wrapped in `Arc<Mutex>` for multi-threaded access
     ///
-    /// 时间轮实例，包装在 Arc<Mutex> 中以支持多线程访问
+    /// 时间轮实例，包装在 `Arc<Mutex>` 中以支持多线程访问
     wheel: Arc<Mutex<Wheel>>,
 
     /// Background tick loop task handle

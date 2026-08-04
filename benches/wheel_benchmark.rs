@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use kestrel_timer::{TimerTask, TimerWheel};
+use kestrel_timer::{CallbackWrapper, TimerTask, TimerWheel};
 use std::time::Duration;
 
 /// Benchmark: single task insertion (through TimerWheel API)
@@ -562,12 +562,13 @@ fn bench_wheel_postpone_with_callback(c: &mut Criterion) {
                 let task_id = handle.task_id();
                 let task = TimerTask::new_oneshot(Duration::from_millis(100), None);
                 let _result = timer.register(handle, task);
+                let callback = Some(CallbackWrapper::new(|| async {}));
 
                 // Measurement stage: only measure the performance of the postpone and replace callback operation
                 // 测量阶段：只测量推迟并替换回调操作的性能
                 let start = std::time::Instant::now();
 
-                let _postponed = timer.postpone(task_id, Duration::from_millis(200), None);
+                let _postponed = timer.postpone(task_id, Duration::from_millis(200), callback);
 
                 total_duration += start.elapsed();
             }
@@ -605,17 +606,23 @@ fn bench_wheel_postpone_batch_with_callbacks(c: &mut Criterion) {
                         .collect();
                     let _result = timer.register_batch(handles, tasks);
 
-                    // Preparation stage: prepare postpone parameters (include new callback)
+                    // Preparation stage: prepare postpone parameters and callbacks (not measured)
                     let postpone_updates: Vec<_> = task_ids
                         .into_iter()
-                        .map(|id| (id, Duration::from_millis(200)))
+                        .map(|id| {
+                            (
+                                id,
+                                Duration::from_millis(200),
+                                Some(CallbackWrapper::new(|| async {})),
+                            )
+                        })
                         .collect();
 
                     // Measurement stage: only measure the performance of the batch postpone and replace callback operation
                     // 测量阶段：只测量批量推迟并替换回调操作的性能
                     let start = std::time::Instant::now();
 
-                    let _postponed = timer.postpone_batch(postpone_updates);
+                    let _postponed = timer.postpone_batch_with_callbacks(postpone_updates);
                     total_duration += start.elapsed();
                 }
 

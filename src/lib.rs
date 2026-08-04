@@ -163,6 +163,9 @@ pub mod task;
 pub mod timer;
 pub mod wheel;
 
+#[doc(hidden)]
+pub mod readme_docs;
+
 #[cfg(test)]
 mod tests;
 

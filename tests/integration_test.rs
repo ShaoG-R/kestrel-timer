@@ -844,9 +844,7 @@ async fn test_single_wheel_multiple_services() {
     // 等待所有服务完成注册
     let mut all_receivers = Vec::new();
     for handle in handles {
-        if let Ok(receiver) = handle.await
-            && let Some(rx) = receiver
-        {
+        if let Ok(Some(rx)) = handle.await {
             all_receivers.push(rx);
         }
     }

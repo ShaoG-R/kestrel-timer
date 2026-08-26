@@ -27,6 +27,7 @@
 `kestrel-timer` is a high-performance async timer library based on the Hierarchical Timing Wheel algorithm, designed for Rust and Tokio runtime. It provides O(1) time complexity for timer operations and easily handles 10,000+ concurrent timers.
 
 **Core Advantages**:
+
 - Hierarchical timing wheel architecture that automatically separates short-delay and long-delay tasks
 - 2-12x performance improvement over traditional heap-based implementations
 - Support for timer postponement, batch operations, and completion notifications
@@ -43,7 +44,7 @@
 ### High Performance
 
 - **O(1) time complexity**: Insert, delete, and trigger operations are all O(1)
-- **Optimized data structures**: 
+- **Optimized data structures**:
   - `DeferredMap` (generational arena) for task indexing with O(1) operations
   - `parking_lot::Mutex` for efficient locking
 - **Bitwise optimization**: Slot count is power of 2 for fast modulo operations
@@ -220,16 +221,19 @@ service.shutdown().await;
 ```
 
 **L0 Layer (Lower - High Precision)**:
+
 - Slots: 512 (default), Tick: 10ms
 - Coverage: 5.12 seconds
 - Handles 80-90% of short-delay tasks
 
 **L1 Layer (Upper - Long Duration)**:
+
 - Slots: 64 (default), Tick: 1000ms
 - Coverage: 64 seconds
 - Handles long-delay tasks with rounds mechanism
 
 **Workflow**:
+
 1. Short delay (< 5.12s) → Insert directly into L0 layer
 2. Long delay (≥ 5.12s) → Insert into L1 layer
 3. L1 task due → Automatically demote to L0 layer
@@ -239,7 +243,7 @@ service.shutdown().await;
 
 Uses `DeferredMap` (a generational arena) for efficient task management:
 
-- **Two-Step Registration**: 
+- **Two-Step Registration**:
   - Allocate handle to get task ID (cheap, no value needed)
   - Insert task using the handle (with completion notifiers)
 
@@ -268,15 +272,18 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 ### Main APIs
 
 **TimerTask**:
+
 - `TimerTask::new_oneshot(delay, callback)` - Create one-shot task
 - `TimerTask::new_periodic(initial_delay, interval, callback, buffer_size)` - Create periodic task, rejecting a zero interval
 - `get_task_type()` - Get task type
 - `get_interval()` - Get interval for periodic tasks
 
 **TaskHandle** (Pre-allocated handle):
+
 - `task_id()` - Get task ID from handle
 
 **TimerWheel**:
+
 - `TimerWheel::with_defaults()` - Create with default config
 - `TimerWheel::new(config, batch_config)` - Create with custom config and return a `Result`
 - `allocate_handle()` - Allocate single handle
@@ -289,9 +296,11 @@ Full API documentation at [docs.rs/kestrel-timer](https://docs.rs/kestrel-timer)
 - `postpone_batch(updates)` - Batch postpone
 
 **TimerHandle** (Returned after registration):
+
 - `cancel()` - Cancel timer
 
 **TimerService**:
+
 - `allocate_handle()` - Allocate single handle
 - `allocate_handles(count)` - Batch allocate handles
 - `register(handle, task)` - Register task with handle
@@ -334,6 +343,7 @@ let _timer = TimerWheel::new(config, BatchConfig::default()).unwrap();
 ### Recommended Configurations
 
 **High Precision (Network Timeouts)**:
+
 ```rust,no_run
 use kestrel_timer::config::WheelConfig;
 use std::time::Duration;
@@ -348,6 +358,7 @@ let config = WheelConfig::builder()
 ```
 
 **Low Precision (Heartbeat Detection)**:
+
 ```rust,no_run
 use kestrel_timer::config::WheelConfig;
 use std::time::Duration;
@@ -374,7 +385,7 @@ cargo bench
 Compared to traditional heap-based (BinaryHeap) timer implementations:
 
 | Operation | Hierarchical Wheel | Heap Implementation | Advantage |
-|-----------|-------------------|---------------------|-----------|
+| --- | --- | --- | --- |
 | Insert Single | O(1) ~5μs | O(log n) ~10-20μs | 2-4x faster |
 | Batch Insert 1000 | ~2ms | ~15-25ms | 7-12x faster |
 | Cancel Task | O(1) ~2μs | O(n) ~50-100μs | 25-50x faster |

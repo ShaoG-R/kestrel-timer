@@ -20,8 +20,9 @@ When making modifications to this repository, please adhere to the following str
 
 - **质量与测试**: 注重代码质量、可测试性和测试覆盖。
 - **编码规范**:
-    - **禁止长路径**: 禁止在代码中使用全限定命名空间（尤其是以 `crate::` 开头的路径）超过 15 个字符。必须通过 `use` 语句导入后再调用。
-    - **合并相同前缀的use语句**: 当有多个`use`语句具有相同前缀时，应合并为一条`use`语句，例如：
+  - **禁止长路径**: 禁止在代码中使用全限定命名空间（尤其是以 `crate::` 开头的路径）超过 15 个字符。必须通过 `use` 语句导入后再调用。
+  - **合并相同前缀的use语句**: 当有多个`use`语句具有相同前缀时，应合并为一条`use`语句，例如：
+
     ```rust
     //Bad
     use crate::nix::build;
@@ -36,13 +37,13 @@ When making modifications to this repository, please adhere to the following str
         refpath,
     };
     ```
-    - **cfg属性分组与换行隔离**: 所有 `#[cfg(...)]` 内的条件相同的use语句必须放在一起，并且与其他不同条件或不带 `cfg` 的use语句显式使用空行分隔。
-    - **禁止在use嵌套导入内使用cfg**: 禁止在 `use {...}` 的 `{...}` 内部使用 `#[cfg(...)]`。
+
+  - **cfg属性分组与换行隔离**: 所有 `#[cfg(...)]` 内的条件相同的use语句必须放在一起，并且与其他不同条件或不带 `cfg` 的use语句显式使用空行分隔。
+  - **禁止在use嵌套导入内使用cfg**: 禁止在 `use {...}` 的 `{...}` 内部使用 `#[cfg(...)]`。
 
 如任一检查未通过，必须先修复再提交。
 
 ## 通用 Git 提交信息规范 (Conventional Commits Specification)
-
 
 ### 1. 提交信息结构
 
@@ -63,29 +64,35 @@ When making modifications to this repository, please adhere to the following str
 标题控制在 **50~72 字符内**，单行展示，保持精练。
 
 #### 2.1 `<type>`（类型，必填）
+
 描述本次变更的性质，**必须全部小写**：
-* `feat`: 新增功能 (Feature)
-* `fix`: 修复 Bug
-* `refactor`: 代码重构（既不修复 Bug 也不添加新功能）
-* `perf`: 性能优化 (Performance)
-* `style`: 代码格式调整（不影响运行逻辑，如缩进、空格、缺失的分号等）
-* `test`: 新增或修改测试代码
-* `docs`: 文档变更 (Documentation)
-* `build`: 构建系统或外部依赖变更（如 npm, Cargo, Maven, Dockerfile 等）
-* `ci`: CI/CD 配置文件与脚本变更（如 GitHub Actions, GitLab CI）
-* `chore`: 其它辅助工具变动或例行维护（不修改 src 或 test 目录）
-* `revert`: 撤销之前的提交
+
+- `feat`: 新增功能 (Feature)
+- `fix`: 修复 Bug
+- `refactor`: 代码重构（既不修复 Bug 也不添加新功能）
+- `perf`: 性能优化 (Performance)
+- `style`: 代码格式调整（不影响运行逻辑，如缩进、空格、缺失的分号等）
+- `test`: 新增或修改测试代码
+- `docs`: 文档变更 (Documentation)
+- `build`: 构建系统或外部依赖变更（如 npm, Cargo, Maven, Dockerfile 等）
+- `ci`: CI/CD 配置文件与脚本变更（如 GitHub Actions, GitLab CI）
+- `chore`: 其它辅助工具变动或例行维护（不修改 src 或 test 目录）
+- `revert`: 撤销之前的提交
 
 #### 2.2 `<scope>`（范围，可选）
+
 表示变更影响的模块、组件或业务区域，**必须小写**（如 `auth`, `api`, `ui`, `db`, `config`, `deps`）。若涉及全局可省略或填 `global`。
 
 #### 2.3 `!`（破坏性变更标识，可选）
+
 若包含破坏性变更（BREAKING CHANGE），可在 `<type>` 或 `<scope>` 后添加 `!`，如 `feat(api)!: remove deprecated endpoints`。
 
 #### 2.4 `<subject>`（主题，必填）
+
 简短描述变更核心内容，遵守以下规定：
-* **语态与时态**：必须使用**英文现在时祈使句**（如 `add` 而非 `added`，`fix` 而非 `fixed`）。
-* **大小写与标点**：首字母小写，结尾**不加句号**或其他标点符号。
+
+- **语态与时态**：必须使用**英文现在时祈使句**（如 `add` 而非 `added`，`fix` 而非 `fixed`）。
+- **大小写与标点**：首字母小写，结尾**不加句号**或其他标点符号。
 
 ---
 
@@ -98,27 +105,27 @@ When making modifications to this repository, please adhere to the following str
 对于非微小改动，正文建议按以下四个维度展开，确保描述充实、逻辑清晰：
 
 1. **背景与动机 (Motivation & Context)**：
-   * 详细说明为什么需要本次修改。
-   * 描述改动之前的旧逻辑/现象、触发问题的场景或业务需求背景。如果是 Bug，说明根因 (Root Cause)。
+   - 详细说明为什么需要本次修改。
+   - 描述改动之前的旧逻辑/现象、触发问题的场景或业务需求背景。如果是 Bug，说明根因 (Root Cause)。
 2. **核心变更与技术细节 (Technical Implementation)**：
-   * 使用无序列表 (`-`) 分点阐述具体的代码实现变动。
-   * 涉及核心算法、架构调整、数据模型变动或 API 签名变更时，给予详细解释。
+   - 使用无序列表 (`-`) 分点阐述具体的代码实现变动。
+   - 涉及核心算法、架构调整、数据模型变动或 API 签名变更时，给予详细解释。
 3. **副作用与影响评估 (Side Effects & Risks)**：
-   * 改动是否对现有性能、并发、内存或数据库产生影响？
-   * 是否引入了新的配置项、环境变量或依赖包？
-   * 是否存在潜在的向后兼容风险？
+   - 改动是否对现有性能、并发、内存或数据库产生影响？
+   - 是否引入了新的配置项、环境变量或依赖包？
+   - 是否存在潜在的向后兼容风险？
 4. **验证与测试覆盖 (Verification & Testing)**：
-   * 说明如何验证本次变更的正确性（如添加的单元测试、集成测试或压测结果）。
-   * 性能优化类变更需附带优化前后的指标对比数据（如 QPS、延迟、内存占用等）。
+   - 说明如何验证本次变更的正确性（如添加的单元测试、集成测试或压测结果）。
+   - 性能优化类变更需附带优化前后的指标对比数据（如 QPS、延迟、内存占用等）。
 
 #### 3.2 写作规范与自查清单
 
-* **排版格式**：正文每行建议控制在 **72 字符以内**，段落之间空一行，合理使用无序列表提升可读性。
-* **语言要求**：提交信息（包含 Header, Body, Footer）**必须统一使用英文**。
-* **反模式自查 (Anti-Patterns to Avoid)**：
-  * ❌ *错误写法*：正文只重复标题或用一句话概括（例如："Fix user bug."）。
-  * ❌ *错误写法*：未交代改动动机，直接粘贴代码 Diff。
-  * ✅ *正确做法*：清晰说明问题根由 -> 技术解法 -> 影响点 -> 测试手段。
+- **排版格式**：正文每行建议控制在 **72 字符以内**，段落之间空一行，合理使用无序列表提升可读性。
+- **语言要求**：提交信息（包含 Header, Body, Footer）**必须统一使用英文**。
+- **反模式自查 (Anti-Patterns to Avoid)**：
+  - ❌ *错误写法*：正文只重复标题或用一句话概括（例如："Fix user bug."）。
+  - ❌ *错误写法*：未交代改动动机，直接粘贴代码 Diff。
+  - ✅ *正确做法*：清晰说明问题根由 -> 技术解法 -> 影响点 -> 测试手段。
 
 ---
 
@@ -127,14 +134,18 @@ When making modifications to this repository, please adhere to the following str
 页脚通常用于标识 **破坏性变更 (Breaking Changes)** 或关联 **Task / Issue / PR**。
 
 #### 4.1 破坏性变更 (Breaking Changes)
+
 如果包含不兼容改动，页脚**必须**以 `BREAKING CHANGE:` 开头，后跟：
+
 1. 破坏性变动的具体内容说明。
 2. **迁移指南 (Migration Guide)**：清晰指导使用者如何修改原有代码以适配新版本。
 
 #### 4.2 Issue 关联与状态变更
+
 使用标准关联词连接 Issue/Task，格式为 `<Token> #<Issue_ID>`：
-* 关闭 Issue：`Closes #123`, `Fixes #456`, `Resolves #789`
-* 引用/关联 Issue：`Refs #101`, `See also #202`
+
+- 关闭 Issue：`Closes #123`, `Fixes #456`, `Resolves #789`
+- 引用/关联 Issue：`Refs #101`, `See also #202`
 
 > **注意**：若不知道或不确定 Issue 关联与状态变更，请不要填写该部分。
 

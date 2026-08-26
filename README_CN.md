@@ -25,6 +25,7 @@
 `kestrel-timer` 是一个基于分层时间轮算法的高性能异步定时器库，专为 Rust 和 Tokio 设计。提供 O(1) 时间复杂度的定时器操作，轻松处理 10,000+ 并发定时器。
 
 **核心优势**：
+
 - 双层时间轮架构，自动分离短延迟和长延迟任务
 - 相比传统堆实现，性能提升 2-12 倍
 - 支持定时器推迟、批量操作、完成通知
@@ -218,16 +219,19 @@ service.shutdown().await;
 ```
 
 **L0 层（底层 - 高精度）**：
+
 - 槽位数：512（默认），Tick：10ms
 - 覆盖范围：5.12 秒
 - 处理 80-90% 的短延迟任务
 
 **L1 层（高层 - 长时间）**：
+
 - 槽位数：64（默认），Tick：1000ms
 - 覆盖范围：64 秒
 - 处理长延迟任务，支持 rounds 机制
 
 **工作流程**：
+
 1. 短延迟（< 5.12s）→ 直接插入 L0 层
 2. 长延迟（≥ 5.12s）→ 插入 L1 层
 3. L1 任务到期 → 自动降级到 L0 层
@@ -266,15 +270,18 @@ service.shutdown().await;
 ### 主要 API
 
 **TimerTask**：
+
 - `TimerTask::new_oneshot(delay, callback)` - 创建一次性任务
 - `TimerTask::new_periodic(initial_delay, interval, callback, buffer_size)` - 创建周期性任务
 - `get_task_type()` - 获取任务类型
 - `get_interval()` - 获取周期任务的间隔时间
 
 **TaskHandle**（预分配的句柄）：
+
 - `task_id()` - 从句柄获取任务 ID
 
 **TimerWheel**：
+
 - `TimerWheel::with_defaults()` - 使用默认配置创建
 - `TimerWheel::new(config, batch_config)` - 使用自定义配置创建并返回 `Result`
 - `allocate_handle()` - 分配单个 handle
@@ -287,9 +294,11 @@ service.shutdown().await;
 - `postpone_batch(updates)` - 批量推迟
 
 **TimerHandle**（注册后返回的句柄）：
+
 - `cancel()` - 取消定时器
 
 **TimerService**：
+
 - `allocate_handle()` - 分配单个 handle
 - `allocate_handles(count)` - 批量分配 handles
 - `register(handle, task)` - 使用 handle 注册任务
@@ -332,6 +341,7 @@ let _timer = TimerWheel::new(config, BatchConfig::default()).unwrap();
 ### 推荐配置
 
 **高精度场景（网络超时）**：
+
 ```rust,no_run
 use kestrel_timer::config::WheelConfig;
 use std::time::Duration;
@@ -346,6 +356,7 @@ let config = WheelConfig::builder()
 ```
 
 **低精度场景（心跳检测）**：
+
 ```rust,no_run
 use kestrel_timer::config::WheelConfig;
 use std::time::Duration;
@@ -372,7 +383,7 @@ cargo bench
 与基于堆（BinaryHeap）的传统定时器实现相比：
 
 | 操作 | 分层时间轮 | 堆实现 | 优势 |
-|------|-----------|--------|------|
+| --- | --- | --- | --- |
 | 插入单个任务 | O(1) ~5μs | O(log n) ~10-20μs | 2-4x 更快 |
 | 批量插入 1000 | ~2ms | ~15-25ms | 7-12x 更快 |
 | 取消任务 | O(1) ~2μs | O(n) ~50-100μs | 25-50x 更快 |
